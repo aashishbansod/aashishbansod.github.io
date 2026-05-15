@@ -6,39 +6,41 @@ import {
   Route
 } from "react-router-dom";
 
+/* GLOBAL CSS */
+
+import "./styles/cybernet.css";
+import "./styles/leaderboard.css";
+import "./styles/dashboard.css";
+import "./styles/login.css";
+import "./styles/register.css";
+import "./styles/adminLogin.css";
+import "./styles/adminDashboard.css";
+import "./styles/explore.css";
+import "./styles/exams.css";
+import "./styles/instructions.css";
+import "./styles/certificate.css";
+import "./styles/createExam.css";
+import "./styles/result.css";
+
+
+/* PAGES */
+
 import Home from "./pages/Home";
-
 import Login from "./pages/Login";
-
 import Register from "./pages/Register";
-
 import Dashboard from "./pages/Dashboard";
-
 import Exams from "./pages/Exams";
-
 import Result from "./pages/Result";
-
-import Instructions from "./pages/Instructions";
-
-import AdminLogin from "./pages/AdminLogin";
-
-import AdminDashboard from "./pages/AdminDashboard";
-
-import CreateExam from "./pages/CreateExam";
-
-import ProtectedRoute from "./components/ProtectedRoute";
-
-import CertificateForm from "./pages/CertificateForm";
-
 import ExploreExams from "./pages/ExploreExams";
-
-import CodingArena from "./pages/CodingArena";
-
+import Instructions from "./pages/Instructions";
+import AdminLogin from "./pages/AdminLogin";
+import AdminDashboard from "./pages/AdminDashboard";
+import CreateExam from "./pages/CreateExam";
+import Leaderboard from "./pages/Leaderboard";
 import InternshipPlans from "./pages/InternshipPlans";
-
 import PaymentPage from "./pages/PaymentPage";
-
-
+import AdminCertificates from "./pages/AdminCertificates";
+import Certificate from "./pages/Certificate";
 
 function App() {
 
@@ -69,56 +71,54 @@ function App() {
           element={<Register />}
         />
 
-        {/* DASHBOARD */}
+        {/* USER DASHBOARD */}
 
         <Route
           path="/dashboard"
-          element={
-            <ProtectedRoute>
+          element={<Dashboard />}
+        />
 
-              <Dashboard />
+        {/* EXPLORE EXAMS */}
 
-            </ProtectedRoute>
-          }
+        <Route
+          path="/explore"
+          element={<ExploreExams />}
         />
 
         {/* INSTRUCTIONS */}
 
         <Route
           path="/instructions"
-          element={
-            <ProtectedRoute>
-
-              <Instructions />
-
-            </ProtectedRoute>
-          }
+          element={<Instructions />}
         />
 
-        {/* EXAMS */}
+        {/* LIVE EXAM */}
 
         <Route
           path="/exams"
-          element={
-            <ProtectedRoute>
-
-              <Exams />
-
-            </ProtectedRoute>
-          }
+          element={<Exams />}
         />
 
         {/* RESULT */}
 
         <Route
           path="/result"
-          element={
-            <ProtectedRoute>
+          element={<Result />}
+        />
 
-              <Result />
+        {/* CERTIFICATE */}
 
-            </ProtectedRoute>
-          }
+        <Route
+          path="/certificate"
+          element={<Certificate />}
+        />
+
+
+        {/* LEADERBOARD */}
+
+        <Route
+          path="/leaderboard"
+          element={<Leaderboard />}
         />
 
         {/* ADMIN LOGIN */}
@@ -141,65 +141,25 @@ function App() {
           path="/admin/create-exam"
           element={<CreateExam />}
         />
-        {/* CERTIFICATE FORM */}
-        
-        <Route
-          path="/certificate-form"
-          element={
-            <ProtectedRoute>
-
-              <CertificateForm />
-
-            </ProtectedRoute>
-          }
-        />
-
-        {/* EXPLORE EXAMS */}
-
-        <Route
-          path="/explore"
-          element={<ExploreExams />}
-        />
-        {/* CODING ARENA */}
-
-        <Route
-          path="/coding-arena"
-          element={
-            <ProtectedRoute>
-
-              <CodingArena />
-
-            </ProtectedRoute>
-          }
-        />
-
         {/* INTERNSHIP PLANS */}
 
         <Route
           path="/internship-plans"
-          element={
-            <ProtectedRoute>
-
-              <InternshipPlans />
-
-            </ProtectedRoute>
-          }
+          element={<InternshipPlans />}
         />
 
         {/* PAYMENT PAGE */}
 
         <Route
           path="/payment"
-          element={
-            <ProtectedRoute>
+          element={<PaymentPage />}
+        />  
+      {/* ADMIN CERTIFICATES */}
 
-              <PaymentPage />
-
-            </ProtectedRoute>
-          }
-        />
-
-
+        <Route
+          path="/admin/certificates"
+          element={<AdminCertificates />}
+        />  
       </Routes>
 
     </BrowserRouter>

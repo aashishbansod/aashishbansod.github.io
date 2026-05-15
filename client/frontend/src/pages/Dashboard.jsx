@@ -1,18 +1,69 @@
-import React from "react";
+import React, {
+  useEffect
+} from "react";
 
-import { useNavigate } from "react-router-dom";
+import {
+  FaLaptopCode,
+  FaCertificate,
+  FaCode,
+  FaRocket,
+  FaTrophy,
+  FaBell,
+  FaBrain,
+  FaFire,
+  FaChartLine,
+  FaSignOutAlt
+} from "react-icons/fa";
 
-import "../styles/cybernet.css";
+import { MdDashboard } from "react-icons/md";
+
+import {
+  NavLink,
+  useNavigate
+} from "react-router-dom";
+
+import "../styles/dashboard.css";
 
 function Dashboard() {
 
   const navigate = useNavigate();
 
-  // LOGOUT
+  /* ========================= */
+  /* PROTECTED ROUTE */
+  /* ========================= */
 
-  const logoutUser = () => {
+  useEffect(() => {
+
+    const token =
+    localStorage.getItem("token");
+
+    if(!token){
+
+      navigate("/login");
+
+    }
+
+  }, []);
+
+  /* ========================= */
+  /* USER DATA */
+  /* ========================= */
+
+  const user = JSON.parse(
+
+    localStorage.getItem("user")
+
+  );
+
+  /* ========================= */
+  /* LOGOUT */
+  /* ========================= */
+
+  const handleLogout = () => {
 
     localStorage.removeItem("token");
+
+    localStorage.removeItem("user");
 
     navigate("/login");
 
@@ -22,126 +73,182 @@ function Dashboard() {
 
     <div className="dashboard-page">
 
-      {/* ========================= */}
       {/* SIDEBAR */}
-      {/* ========================= */}
 
       <div className="dashboard-sidebar">
 
-        <div>
+        <div className="dashboard-logo">
 
-          <h2 className="logo-text">
-            CyberNet Technology
-          </h2>
-
-          <ul>
-
-            <li
-              onClick={() =>
-                navigate("/dashboard")
-              }
-            >
-              🏠 Dashboard
-            </li>
-
-            <li
-              onClick={() =>
-                navigate("/instructions")
-              }
-            >
-              📝 Live Exams
-            </li>
-
-            <li
-              onClick={() =>
-                navigate("/coding-arena")
-              }
-            >
-              💻 Coding Arena
-            </li>
-
-            <li
-              onClick={() =>
-                navigate("/internships")
-              }
-            >
-              🎯 Internship
-            </li>
-
-            <li
-              onClick={() =>
-                navigate("/certificate-form")
-              }
-            >
-              📜 Certificates
-            </li>
-
-            <li>
-              🏆 Leaderboard
-            </li>
-
-            <li>
-              ⚙ Settings
-            </li>
-
-          </ul>
+          Cyber <span>Net</span>
 
         </div>
 
+        {/* MENU */}
+
+        <div className="sidebar-menu">
+
+          <NavLink
+            to="/dashboard"
+            className="sidebar-item"
+          >
+
+            <MdDashboard />
+            Dashboard
+
+          </NavLink>
+
+          <NavLink
+            to="/instructions"
+            className="sidebar-item"
+          >
+
+            <FaRocket />
+            Live Exams
+
+          </NavLink>
+
+          <NavLink
+            to="/explore"
+            className="sidebar-item"
+          >
+
+            <FaCode />
+            Coding Arena
+
+          </NavLink>
+
+          <NavLink
+            to="/certificate"
+            className="sidebar-item"
+          >
+
+            <FaLaptopCode />
+            Internship
+
+          </NavLink>
+
+          <NavLink
+            to="/certificate"
+            className="sidebar-item"
+          >
+
+            <FaCertificate />
+            Certificates
+
+          </NavLink>
+
+          <NavLink
+            to="/leaderboard"
+            className="sidebar-item"
+          >
+
+            <FaTrophy />
+            Leaderboard
+
+          </NavLink>
+
+        </div>
+
+        {/* AI BOX */}
+
+        <div className="sidebar-ai-box">
+
+          <FaBrain className="sidebar-ai-icon" />
+
+          <h3>
+
+            AI Automation
+
+          </h3>
+
+          <p>
+
+            Smart AI exam tracking
+            and student analytics.
+
+          </p>
+
+        </div>
+
+        {/* LOGOUT */}
+
         <button
           className="logout-btn"
-          onClick={logoutUser}
+          onClick={handleLogout}
         >
+
+          <FaSignOutAlt />
+
           Logout
+
         </button>
 
       </div>
 
-      {/* ========================= */}
       {/* MAIN */}
-      {/* ========================= */}
 
       <div className="dashboard-main">
 
         {/* TOPBAR */}
 
-        <div className="top-navbar">
+        <div className="dashboard-topbar">
 
           <div>
 
             <h1>
+
               Welcome Back 👋
+
             </h1>
 
             <p>
-              Manage your exams,
-              internships and coding tasks.
+
+              AI Powered Student Dashboard
+
             </p>
 
           </div>
 
-          <div className="profile-box">
+          <div className="topbar-right">
 
-            <div className="notification">
-              🔔
+            {/* NOTIFICATION */}
+
+            <div className="notification-box">
+
+              <FaBell />
+
+              <span className="notify-dot"></span>
+
             </div>
 
-            <div className="profile-info">
+            {/* PROFILE */}
+
+            <div className="student-profile">
 
               <img
-                src="https://i.pravatar.cc/100"
-                alt="profile"
+                src="https://i.pravatar.cc/150?img=12"
+                alt=""
               />
 
               <div>
 
                 <h3>
-                  Student
+
+                  {
+
+                    user?.name ||
+
+                    "Student"
+
+                  }
+
                 </h3>
 
-                <p>
+                <span>
+
                   Frontend Intern
-                </p>
+
+                </span>
 
               </div>
 
@@ -151,189 +258,297 @@ function Dashboard() {
 
         </div>
 
-        {/* ========================= */}
-        {/* QUICK ACTIONS */}
-        {/* ========================= */}
+        {/* AI BANNER */}
 
-        <div className="quick-actions">
+        <div className="ai-banner">
 
-          <button
+          <div className="ai-left">
+
+            <div className="ai-badge">
+
+              <FaFire />
+
+              AI Powered Analytics
+
+            </div>
+
+            <h1>
+
+              🤖 AI Performance Analysis
+
+            </h1>
+
+            <p>
+
+              Your performance increased
+              by 28% this week.
+              Keep practicing coding tests
+              and internship tasks.
+
+            </p>
+
+            <div className="banner-buttons">
+
+              <button
+                onClick={() =>
+                  navigate("/explore")
+                }
+              >
+
+                Explore AI Insights
+
+              </button>
+
+              <button
+                className="secondary-btn"
+                onClick={() =>
+                  navigate("/leaderboard")
+                }
+              >
+
+                View Rankings
+
+              </button>
+
+            </div>
+
+          </div>
+
+          <div className="ai-right">
+
+            <FaBrain className="brain-icon" />
+
+          </div>
+
+        </div>
+
+        {/* STATS */}
+
+        <div className="stats-grid">
+
+          <div
+            className="stat-card"
             onClick={() =>
-              navigate("/instructions")
+              navigate("/exams")
             }
           >
-            🚀 Start Exam
-          </button>
 
-          <button
-            onClick={() =>
-              navigate("/coding-arena")
-            }
-          >
-            💻 Coding Arena
-          </button>
+            <div className="stat-icon blue">
 
-          <button
-            onClick={() =>
-              navigate("/internships")
-            }
-          >
-            🎯 Internship Plans
-          </button>
+              <FaRocket />
 
-          <button
+            </div>
+
+            <div>
+
+              <h2>
+
+                12
+
+              </h2>
+
+              <p>
+
+                Total Exams
+
+              </p>
+
+            </div>
+
+          </div>
+
+          <div
+            className="stat-card"
             onClick={() =>
               navigate("/certificate-form")
             }
           >
-            📜 Certificates
-          </button>
+
+            <div className="stat-icon purple">
+
+              <FaCertificate />
+
+            </div>
+
+            <div>
+
+              <h2>
+
+                5
+
+              </h2>
+
+              <p>
+
+                Certificates
+
+              </p>
+
+            </div>
+
+          </div>
+
+          <div
+            className="stat-card"
+            onClick={() =>
+              navigate("/explore")
+            }
+          >
+
+            <div className="stat-icon orange">
+
+              <FaCode />
+
+            </div>
+
+            <div>
+
+              <h2>
+
+                8
+
+              </h2>
+
+              <p>
+
+                Coding Tasks
+
+              </p>
+
+            </div>
+
+          </div>
+
+          <div
+            className="stat-card"
+            onClick={() =>
+              navigate("/leaderboard")
+            }
+          >
+
+            <div className="stat-icon green">
+
+              <FaChartLine />
+
+            </div>
+
+            <div>
+
+              <h2>
+
+                #12
+
+              </h2>
+
+              <p>
+
+                Global Rank
+
+              </p>
+
+            </div>
+
+          </div>
 
         </div>
 
-        {/* ========================= */}
-        {/* DASHBOARD CARDS */}
-        {/* ========================= */}
+        {/* BOTTOM */}
 
-        <div className="dashboard-cards">
+        <div className="dashboard-bottom">
 
-          <div className="dashboard-card">
-
-            <h3>
-              Total Exams
-            </h3>
-
-            <h1>
-              12
-            </h1>
-
-            <p>
-              Completed assessments
-            </p>
-
-          </div>
-
-          <div className="dashboard-card">
-
-            <h3>
-              Certificates
-            </h3>
-
-            <h1>
-              5
-            </h1>
-
-            <p>
-              Verified certificates
-            </p>
-
-          </div>
-
-          <div className="dashboard-card">
-
-            <h3>
-              Coding Tasks
-            </h3>
-
-            <h1>
-              8
-            </h1>
-
-            <p>
-              Active coding challenges
-            </p>
-
-          </div>
-
-          <div className="dashboard-card">
-
-            <h3>
-              Internship Status
-            </h3>
-
-            <h1>
-              Active
-            </h1>
-
-            <p>
-              Frontend Developer Intern
-            </p>
-
-          </div>
-
-        </div>
-
-        {/* ========================= */}
-        {/* ANALYTICS */}
-        {/* ========================= */}
-
-        <div className="analytics-section">
-
-          {/* LEFT */}
+          {/* ANALYTICS */}
 
           <div className="analytics-card">
 
-            <h2>
-              📈 Performance Analytics
-            </h2>
+            <div className="card-top">
+
+              <h2>
+
+                📊 Performance Analytics
+
+              </h2>
+
+              <span>
+
+                AI Updated
+
+              </span>
+
+            </div>
 
             <div className="progress-box">
 
-              <div className="progress-top">
+              <div>
 
-                <span>
-                  Overall Score
-                </span>
+                <h1>
 
-                <span>
                   92%
-                </span>
+
+                </h1>
+
+                <p>
+
+                  Overall Score
+
+                </p>
 
               </div>
 
-              <div className="progress-bar">
+              <div className="progress-circle">
 
-                <div className="progress-fill"></div>
+                92%
 
               </div>
 
             </div>
 
-            <div className="analytics-stats">
+            <div className="analytics-grid">
 
               <div>
 
-                <h1>
+                <h2>
+
                   #12
-                </h1>
 
-                <p>
+                </h2>
+
+                <span>
+
                   Global Rank
-                </p>
+
+                </span>
 
               </div>
 
               <div>
 
-                <h1>
+                <h2>
+
                   95%
-                </h1>
 
-                <p>
+                </h2>
+
+                <span>
+
                   Attendance
-                </p>
+
+                </span>
 
               </div>
 
               <div>
 
-                <h1>
-                  18
-                </h1>
+                <h2>
 
-                <p>
+                  18
+
+                </h2>
+
+                <span>
+
                   Projects
-                </p>
+
+                </span>
 
               </div>
 
@@ -341,33 +556,69 @@ function Dashboard() {
 
           </div>
 
-          {/* RIGHT */}
+          {/* ACTIVITY */}
 
           <div className="activity-card">
 
-            <h2>
-              ⚡ Recent Activity
-            </h2>
+            <div className="card-top">
 
-            <ul>
+              <h2>
 
-              <li>
-                ✔ React Exam Submitted
-              </li>
+                ⚡ Recent Activity
 
-              <li>
-                ✔ Internship Approved
-              </li>
+              </h2>
 
-              <li>
-                ✔ Certificate Generated
-              </li>
+              <span>
 
-              <li>
-                ✔ Coding Challenge Completed
-              </li>
+                Live Updates
 
-            </ul>
+              </span>
+
+            </div>
+
+            <div
+              className="activity-item"
+              onClick={() =>
+                navigate("/result")
+              }
+            >
+
+              ✅ React Exam Submitted
+
+            </div>
+
+            <div
+              className="activity-item"
+              onClick={() =>
+                navigate("/certificate-form")
+              }
+            >
+
+              🚀 Internship Approved
+
+            </div>
+
+            <div
+              className="activity-item"
+              onClick={() =>
+                navigate("/certificate-form")
+              }
+            >
+
+              📜 Certificate Generated
+
+            </div>
+
+            <div
+              className="activity-item"
+              onClick={() =>
+                navigate("/explore")
+              }
+            >
+
+              💻 Coding Challenge Completed
+
+            </div>
 
           </div>
 

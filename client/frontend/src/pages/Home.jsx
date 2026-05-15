@@ -5,176 +5,220 @@ import logo from "../assets/logo.png";
 import {
   FaInstagram,
   FaLinkedin,
-  FaGlobe
+  FaGlobe,
+  FaRobot,
+  FaChartLine,
+  FaShieldAlt,
+  FaCode,
+  FaBrain
 } from "react-icons/fa";
 
-import {
-  Link
-} from "react-router-dom";
+import { Link } from "react-router-dom";
 
-import "../styles/cybernet.css";
+import "../styles/home.css";
 
 function Home() {
 
   return (
 
-    <>
+    <div className="cyber-home">
 
-      {/* ========================= */}
-      {/* HERO PAGE */}
-      {/* ========================= */}
+      {/* AI BACKGROUND */}
 
-      <div className="hero-page">
+      <div className="ai-bg-circle ai-circle1"></div>
+      <div className="ai-bg-circle ai-circle2"></div>
+      <div className="ai-bg-circle ai-circle3"></div>
 
-        {/* ========================= */}
-        {/* NAVBAR */}
-        {/* ========================= */}
+      {/* ================= NAVBAR ================= */}
 
-        <nav className="navbar">
+      <nav className="cyber-navbar">
 
-          {/* LOGO */}
+        <div className="cyber-logo">
 
-          <div className="logo">
+          <img
+            src={logo}
+            alt="CyberNet"
+            className="logo-img"
+          />
 
-            <img
-              src={logo}
-              alt="CyberNet Logo"
-              className="logo-img"
-            />
-
-          </div>
-
-          {/* NAV BUTTONS */}
-
-          <div className="nav-buttons">
-
-            <Link to="/login">
-
-              <button className="student-btn">
-                Student Login
-              </button>
-
-            </Link>
-
-            <Link to="/admin">
-
-              <button className="admin-btn">
-                Admin Login
-              </button>
-
-            </Link>
-
-          </div>
-
-        </nav>
-
-        {/* ========================= */}
-        {/* HERO CONTENT */}
-        {/* ========================= */}
-
-        <div className="hero-content">
-
-          {/* LEFT SIDE */}
-
-          <div className="hero-left">
+          <div>
 
             <h1>
-              Future Ready <br />
-
-              <span>
-                Online Exam Platform
-              </span>
-
+              Cyber<span>Net</span>
             </h1>
 
             <p>
-
-              CyberNet Technology is a futuristic
-              software and internship platform focused
-              on coding exams, AI automation,
-              web development and real-world projects.
-
+                AI TECHNOLOGY
             </p>
 
-            {/* ACTION BUTTONS */}
+          </div>
 
-            <div className="hero-actions">
+        </div>
 
-              <Link to="/register">
+        <div className="nav-buttons">
 
-                <button className="register-btn">
-                  Register Now
-                </button>
+          <Link to="/login">
 
-              </Link>
+            <button className="student-btn">
+              Student Login
+            </button>
 
-              <Link to="/explore">
+          </Link>
 
-                <button className="explore-btn">
-                  Explore Exams
-                </button>
+          <Link to="/admin">
 
-              </Link>
+            <button className="admin-btn">
+              Admin Login
+            </button>
+
+          </Link>
+
+        </div>
+
+      </nav>
+
+      {/* ================= HERO ================= */}
+
+      <section className="hero-section">
+
+        {/* LEFT */}
+
+        <div className="hero-left">
+
+          <div className="ai-badge">
+            🤖 AI Powered Education Platform
+          </div>
+
+          <h1>
+
+            Future Ready <br />
+
+            <span>
+              AI Exam Platform
+            </span>
+
+          </h1>
+
+          <p>
+
+            CyberNet Technology is an advanced AI-powered
+            online examination, internship and automation
+            platform built for developers, students and
+            future innovators.
+
+          </p>
+
+          {/* AI TAGS */}
+
+          <div className="ai-tags">
+
+            <div className="tag">
+              🚀 AI Automation
+            </div>
+
+            <div className="tag">
+              💻 Coding Arena
+            </div>
+
+            <div className="tag">
+              🛡 Cyber Security
+            </div>
+
+            <div className="tag">
+              📜 Certificates
+            </div>
+
+          </div>
+
+          {/* BUTTONS */}
+
+          <div className="hero-actions">
+
+            <Link to="/register">
+
+              <button className="register-btn">
+                Register Now
+              </button>
+
+            </Link>
+
+            <Link to="/explore">
+
+              <button className="explore-btn">
+                Explore Exams
+              </button>
+
+            </Link>
+
+          </div>
+
+        </div>
+
+        {/* RIGHT */}
+
+        <div className="hero-right">
+
+          {/* CARD 1 */}
+
+          <div className="ai-card">
+
+            <div className="card-icon blue-card">
+              <FaRobot />
+            </div>
+
+            <div>
+
+              <h2>
+                AI Automation
+              </h2>
+
+              <p>
+                Smart AI based exams & automation systems
+              </p>
 
             </div>
 
           </div>
 
-          {/* RIGHT SIDE */}
+          {/* CARD 2 */}
 
-          <div className="hero-right">
+          <div className="ai-card">
 
-            {/* CARD 1 */}
+            <div className="card-icon green-card">
+              <FaCode />
+            </div>
 
-            <div className="hero-card">
+            <div>
 
               <h2>
-                🚀 Live Hiring
+                Coding Arena
               </h2>
 
               <p>
-                Frontend Developer Internship
+                Real coding challenges & live practice
               </p>
-
-              <span>
-                Apply Now
-              </span>
 
             </div>
 
-            {/* CARD 2 */}
+          </div>
 
-            <div className="hero-card">
+          {/* CARD 3 */}
 
-              <h2>
-                💻 Coding Arena
-              </h2>
+          <div className="ai-card">
 
-              <p>
-                Real Coding Challenges
-              </p>
-
-              <span>
-                Start Practice
-              </span>
-
+            <div className="card-icon orange-card">
+              <FaShieldAlt />
             </div>
 
-            {/* CARD 3 */}
-
-            <div className="hero-card">
+            <div>
 
               <h2>
-                📜 Certificates
+                Cyber Security
               </h2>
 
               <p>
-                Verified Internship Certificates
+                Ethical hacking & penetration testing labs
               </p>
-
-              <span>
-                Download
-              </span>
 
             </div>
 
@@ -182,22 +226,182 @@ function Home() {
 
         </div>
 
-      </div>
+      </section>
 
-      {/* ========================= */}
-      {/* FOOTER */}
-      {/* ========================= */}
+      {/* ================= AI SECTION ================= */}
 
-      <footer className="cybernet-footer">
+      <section className="automation-section">
+
+        <div className="automation-left">
+
+          <div className="section-badge">
+            ⚡ AI AUTOMATION
+          </div>
+
+          <h1>
+            Smart AI Automation
+          </h1>
+
+          <p>
+
+            Use AI to generate exams, analyze performance,
+            manage certificates and automate internship
+            systems with futuristic technology.
+
+          </p>
+
+          <div className="automation-features">
+
+            <div className="feature-item">
+
+              <FaBrain className="feature-icon" />
+
+              <div>
+
+                <h3>
+                  AI Exam Generator
+                </h3>
+
+                <p>
+                  Generate smart MCQ & coding exams
+                </p>
+
+              </div>
+
+            </div>
+
+            <div className="feature-item">
+
+              <FaChartLine className="feature-icon" />
+
+              <div>
+
+                <h3>
+                  Performance Analytics
+                </h3>
+
+                <p>
+                  AI based student analysis dashboard
+                </p>
+
+              </div>
+
+            </div>
+
+            <div className="feature-item">
+
+              <FaShieldAlt className="feature-icon" />
+
+              <div>
+
+                <h3>
+                  Secure Verification
+                </h3>
+
+                <p>
+                  Verify certificates & offer letters
+                </p>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* AI ORBIT */}
+
+        <div className="automation-right">
+
+          <div className="ai-core">
+            AI
+          </div>
+
+          <div className="orbit orbit1">
+            🤖
+          </div>
+
+          <div className="orbit orbit2">
+            📊
+          </div>
+
+          <div className="orbit orbit3">
+            📜
+          </div>
+
+          <div className="orbit orbit4">
+            💻
+          </div>
+
+        </div>
+
+      </section>
+
+      {/* ================= STATS ================= */}
+
+      <section className="stats-section">
+
+        <div className="stat-card">
+
+          <h1>
+            10K+
+          </h1>
+
+          <p>
+            Students Joined
+          </p>
+
+        </div>
+
+        <div className="stat-card">
+
+          <h1>
+            500+
+          </h1>
+
+          <p>
+            AI Exams Created
+          </p>
+
+        </div>
+
+        <div className="stat-card">
+
+          <h1>
+            120+
+          </h1>
+
+          <p>
+            Hiring Partners
+          </p>
+
+        </div>
+
+        <div className="stat-card">
+
+          <h1>
+            98%
+          </h1>
+
+          <p>
+            Success Rate
+          </p>
+
+        </div>
+
+      </section>
+
+      {/* ================= FOOTER ================= */}
+
+      <footer className="cyber-footer">
 
         <div className="footer-grid">
-
-          {/* COMPANY */}
 
           <div className="footer-box">
 
             <h2>
-              CyberNet 🚀
+              Cyber<span>Net</span>
             </h2>
 
             <p>
@@ -209,8 +413,6 @@ function Home() {
             </p>
 
           </div>
-
-          {/* CONTACT */}
 
           <div className="footer-box">
 
@@ -232,8 +434,6 @@ function Home() {
 
           </div>
 
-          {/* SERVICES */}
-
           <div className="footer-box">
 
             <h3>
@@ -245,7 +445,7 @@ function Home() {
             </p>
 
             <p>
-              ✔ Internship Programs
+              ✔ AI Automation
             </p>
 
             <p>
@@ -253,12 +453,10 @@ function Home() {
             </p>
 
             <p>
-              ✔ Certificates
+              ✔ Internship Programs
             </p>
 
           </div>
-
-          {/* SOCIAL */}
 
           <div className="footer-box">
 
@@ -294,8 +492,6 @@ function Home() {
 
         </div>
 
-        {/* FOOTER BOTTOM */}
-
         <div className="footer-bottom">
 
           © 2026 CyberNet Technology.
@@ -305,7 +501,7 @@ function Home() {
 
       </footer>
 
-    </>
+    </div>
 
   );
 

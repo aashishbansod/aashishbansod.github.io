@@ -1,0 +1,509 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap');
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+body{
+    font-family:'Poppins',sans-serif;
+    background:#edf4ff;
+}
+
+/* PAGE */
+
+.certificate-page{
+
+    min-height:100vh;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    padding:50px;
+
+    background:
+    linear-gradient(
+    135deg,
+    #edf4ff,
+    #dbeafe
+    );
+}
+
+/* MAIN CERTIFICATE */
+
+.certificate-box{
+
+    width:1400px;
+
+    background:#ffffff;
+
+    border-radius:32px;
+
+    overflow:hidden;
+
+    border:1px solid #dbeafe;
+
+    box-shadow:
+    0 25px 70px rgba(37,99,235,.10);
+
+    position:relative;
+}
+
+/* TOP LINE */
+
+.certificate-box::before{
+
+    content:"";
+
+    position:absolute;
+
+    top:0;
+    left:0;
+
+    width:100%;
+    height:8px;
+
+    background:
+    linear-gradient(
+    90deg,
+    #2563eb,
+    #60a5fa
+    );
+}
+
+/* HEADER */
+
+.certificate-header{
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    padding:42px 65px;
+
+    border-bottom:1px solid #edf2ff;
+}
+
+/* LOGO */
+
+.logo-section{
+
+    display:flex;
+
+    align-items:center;
+}
+
+.certificate-logo{
+
+    width:320px;
+
+    object-fit:contain;
+}
+
+/* RIGHT INFO */
+
+.certificate-top-right{
+
+    display:flex;
+
+    gap:30px;
+
+    align-items:center;
+}
+
+.top-info{
+
+    background:#f8fbff;
+
+    border:1px solid #dbeafe;
+
+    border-radius:18px;
+
+    padding:18px 28px;
+
+    min-width:240px;
+
+    text-align:left;
+}
+
+.top-info span{
+
+    display:block;
+
+    font-size:16px;
+
+    color:#64748b;
+
+    margin-bottom:10px;
+
+    font-weight:600;
+
+    letter-spacing:.5px;
+}
+
+.top-info h4{
+
+    font-size:36px;
+
+    color:#0f172a;
+
+    font-weight:900;
+
+    line-height:1.1;
+}
+
+/* MAIN CONTENT */
+
+.certificate-content{
+
+    padding:80px 120px 90px;
+
+    text-align:center;
+}
+
+/* SMALL TITLE */
+
+.small-text{
+
+    color:#2563eb;
+
+    font-size:16px;
+
+    letter-spacing:8px;
+
+    font-weight:700;
+
+    margin-bottom:22px;
+}
+
+/* TITLE */
+
+.certificate-title{
+
+    font-size:100px;
+
+    line-height:1;
+
+    font-weight:900;
+
+    color:#0f172a;
+
+    letter-spacing:-4px;
+}
+
+.certificate-subtitle{
+
+    margin-top:14px;
+
+    font-size:32px;
+
+    letter-spacing:14px;
+
+    color:#2563eb;
+
+    font-weight:700;
+}
+
+/* BADGE */
+
+.verify-badge{
+
+    width:125px;
+
+    height:125px;
+
+    border-radius:50%;
+
+    background:#eff6ff;
+
+    color:#2563eb;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    font-size:52px;
+
+    margin:60px auto 38px;
+
+    box-shadow:
+    0 12px 30px rgba(37,99,235,.10);
+}
+
+/* TEXT */
+
+.present-text{
+
+    font-size:30px;
+
+    color:#475569;
+
+    margin-bottom:24px;
+
+    font-weight:500;
+}
+
+.student-name{
+
+    font-size:100px;
+
+    font-weight:900;
+
+    color:#0f172a;
+
+    line-height:1.1;
+
+    margin-bottom:25px;
+}
+
+.name-line{
+
+    width:450px;
+
+    height:5px;
+
+    border-radius:30px;
+
+    background:
+    linear-gradient(
+    90deg,
+    #2563eb,
+    #60a5fa
+    );
+
+    margin:0 auto 38px;
+}
+
+.complete-text{
+
+    font-size:28px;
+
+    color:#475569;
+
+    margin-bottom:18px;
+
+    font-weight:500;
+}
+
+/* EXAM */
+
+.exam-name{
+
+    font-size:66px;
+
+    font-weight:900;
+
+    color:#2563eb;
+
+    line-height:1.2;
+
+    margin-bottom:60px;
+}
+
+/* INFO CARDS */
+
+.certificate-info{
+
+    display:flex;
+
+    justify-content:center;
+
+    gap:28px;
+
+    margin-top:20px;
+}
+
+.info-card{
+
+    width:260px;
+
+    background:#f8fbff;
+
+    border:1px solid #dbeafe;
+
+    border-radius:22px;
+
+    padding:28px;
+}
+
+.info-card span{
+
+    display:block;
+
+    font-size:15px;
+
+    color:#64748b;
+
+    margin-bottom:10px;
+
+    font-weight:600;
+}
+
+.info-card h4{
+
+    font-size:30px;
+
+    color:#0f172a;
+
+    font-weight:900;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    gap:10px;
+}
+
+.pass{
+
+    color:#16a34a !important;
+}
+
+/* BUTTON */
+
+.download-btn{
+
+    margin:60px auto 0;
+
+    border:none;
+
+    background:
+    linear-gradient(
+    135deg,
+    #2563eb,
+    #3b82f6
+    );
+
+    color:white;
+
+    padding:22px 42px;
+
+    border-radius:18px;
+
+    font-size:20px;
+
+    font-weight:700;
+
+    display:flex;
+
+    align-items:center;
+
+    gap:12px;
+
+    cursor:pointer;
+
+    transition:.3s;
+
+    box-shadow:
+    0 14px 35px rgba(37,99,235,.18);
+}
+
+.download-btn:hover{
+
+    transform:translateY(-4px);
+
+    box-shadow:
+    0 18px 40px rgba(37,99,235,.25);
+}
+
+/* LOADING */
+
+.certificate-loading{
+
+    min-height:100vh;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    background:#edf4ff;
+}
+
+.certificate-loading h1{
+
+    font-size:55px;
+
+    color:#2563eb;
+
+    font-weight:800;
+}
+
+/* PRINT */
+
+@media print{
+
+    body{
+
+        background:#ffffff;
+    }
+
+    .certificate-page{
+
+        padding:0;
+
+        background:#ffffff;
+    }
+
+    .certificate-box{
+
+        width:100%;
+
+        border:none;
+
+        border-radius:0;
+
+        box-shadow:none;
+    }
+
+    .download-btn{
+
+        display:none !important;
+    }
+}
+
+/* RESPONSIVE */
+
+@media(max-width:1400px){
+
+    .certificate-box{
+
+        width:100%;
+    }
+
+    .certificate-content{
+
+        padding:60px;
+    }
+
+    .certificate-title{
+
+        font-size:72px;
+    }
+
+    .student-name{
+
+        font-size:72px;
+    }
+
+    .exam-name{
+
+        font-size:48px;
+    }
+
+    .top-info h4{
+
+        font-size:28px;
+    }
+}

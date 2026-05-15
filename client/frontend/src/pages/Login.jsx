@@ -1,22 +1,96 @@
 import React, { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+
+import {
+  Link,
+  useNavigate
+} from "react-router-dom";
+
+import API from "../api/api";
+
+import "../styles/login.css";
 
 function Login() {
 
   const navigate = useNavigate();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [loading, setLoading] =
+  useState(false);
 
-  const loginUser = (e) => {
+  const [email, setEmail] =
+  useState("");
+
+  const [password, setPassword] =
+  useState("");
+
+  /* ========================= */
+  /* LOGIN */
+  /* ========================= */
+
+  const handleLogin = async (e) => {
 
     e.preventDefault();
 
-    if(email && password){
+    setLoading(true);
 
-      localStorage.setItem("token", "cybernetuser");
+    try{
+
+      const response =
+      await API.post(
+
+        "/auth/login",
+
+        {
+
+          email,
+          password
+
+        }
+
+      );
+
+      /* SAVE TOKEN */
+
+      localStorage.setItem(
+
+        "token",
+
+        response.data.token
+
+      );
+
+      /* SAVE USER */
+
+      localStorage.setItem(
+
+        "user",
+
+        JSON.stringify(
+          response.data.user
+        )
+
+      );
+
+      alert(
+        "✅ Login Successful"
+      );
+
+      setLoading(false);
 
       navigate("/dashboard");
+
+    }
+
+    catch(error){
+
+      setLoading(false);
+
+      alert(
+
+        error?.response?.data?.message ||
+
+        "Login Failed"
+
+      );
 
     }
 
@@ -24,40 +98,90 @@ function Login() {
 
   return (
 
-    <div className="auth-page">
+    <div className="login-page">
 
+      {/* ========================= */}
       {/* LEFT SIDE */}
+      {/* ========================= */}
 
-      <div className="auth-left">
+      <div className="login-left">
 
-        <h1>
-          CyberNet Portal 🚀
-        </h1>
+        <div className="login-overlay"></div>
 
-        <p className="main-text">
+        <div className="login-brand">
 
-          India's futuristic internship and examination platform
-          for students, developers and innovators.
+          <div className="login-badge">
 
-        </p>
+            🚀 AI Powered Career Platform
 
-        <div className="hiring-box">
+          </div>
 
-          <h2>🚀 Why Join CyberNet?</h2>
+          <h1>
+
+            CyberNet
+
+            <span>
+
+              Portal
+
+            </span>
+
+          </h1>
+
+          <p>
+
+            India’s futuristic internship,
+            coding exam and AI automation
+            platform for students,
+            developers and innovators.
+
+          </p>
+
+        </div>
+
+        {/* FEATURES */}
+
+        <div className="login-info-box">
+
+          <h2>
+
+            🎯 Why Join CyberNet?
+
+          </h2>
 
           <ul>
 
-            <li>💻 Real Internship Projects</li>
+            <li>
+              🚀 Real Internship Projects
+            </li>
 
-            <li>📜 Verified Certificates</li>
+            <li>
+              📜 Verified Certificates
+            </li>
 
-            <li>🧠 AI Based Dashboard</li>
+            <li>
+              🧠 AI Powered Dashboard
+            </li>
 
-            <li>⚡ Coding Challenges</li>
+            <li>
+              ⚡ Coding Challenges
+            </li>
 
-            <li>🎯 Student Hiring Program</li>
+            <li>
+              🤖 AI Automation Training
+            </li>
 
-            <li>🌟 Build Your Tech Career</li>
+            <li>
+              🔐 Cyber Security Labs
+            </li>
+
+            <li>
+              🌟 Student Hiring Program
+            </li>
+
+            <li>
+              💼 Career Growth System
+            </li>
 
           </ul>
 
@@ -65,52 +189,158 @@ function Login() {
 
       </div>
 
+      {/* ========================= */}
       {/* RIGHT SIDE */}
+      {/* ========================= */}
 
-      <div className="auth-right">
+      <div className="login-right">
 
         <form
-          className="auth-card"
-          onSubmit={loginUser}
+          className="login-box"
+          onSubmit={handleLogin}
         >
 
-          <h1>
-            Student Login
-          </h1>
+          {/* TOP */}
 
-          <p>
-            Login to continue your journey
-          </p>
+          <div className="login-top">
 
-          <input
-            type="email"
-            placeholder="Enter Email"
-            value={email}
-            onChange={(e)=>setEmail(e.target.value)}
-            required
-          />
+            <div className="login-ai-tag">
 
-          <input
-            type="password"
-            placeholder="Enter Password"
-            value={password}
-            onChange={(e)=>setPassword(e.target.value)}
-            required
-          />
+              🤖 AI Secure Login
 
-          <button type="submit">
-            Login Now
+            </div>
+
+            <h1>
+
+              Student Login
+
+            </h1>
+
+            <p>
+
+              Login to continue your
+              CyberNet journey
+
+            </p>
+
+          </div>
+
+          {/* EMAIL */}
+
+          <div className="input-group">
+
+            <label>
+
+              Email Address
+
+            </label>
+
+            <input
+              type="email"
+              placeholder="Enter your email"
+              value={email}
+              onChange={(e)=>
+                setEmail(
+                  e.target.value
+                )
+              }
+              required
+            />
+
+          </div>
+
+          {/* PASSWORD */}
+
+          <div className="input-group">
+
+            <label>
+
+              Password
+
+            </label>
+
+            <input
+              type="password"
+              placeholder="Enter password"
+              value={password}
+              onChange={(e)=>
+                setPassword(
+                  e.target.value
+                )
+              }
+              required
+            />
+
+          </div>
+
+          {/* OPTIONS */}
+
+          <div className="login-options">
+
+            <div className="remember-box">
+
+              <input
+                type="checkbox"
+                id="remember"
+              />
+
+              <label htmlFor="remember">
+
+                Remember Me
+
+              </label>
+
+            </div>
+
+            <span className="forgot-password">
+
+              Forgot Password?
+
+            </span>
+
+          </div>
+
+          {/* BUTTON */}
+
+          <button
+            type="submit"
+            className="login-btn"
+            disabled={loading}
+          >
+
+            {
+
+              loading
+
+              ?
+
+              "Logging In..."
+
+              :
+
+              "🚀 Login Now"
+
+            }
+
           </button>
 
-          <span>
+          {/* REGISTER */}
 
-            Don’t have account?
+          <div className="login-link">
+
+            Don’t have an account?
 
             <Link to="/register">
-              Register
+
+              <span>
+
+                Register
+
+              </span>
+
             </Link>
 
-          </span>
+          </div>
 
         </form>
 

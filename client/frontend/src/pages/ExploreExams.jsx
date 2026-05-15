@@ -1,95 +1,173 @@
 import React from "react";
 
-import { useNavigate } from "react-router-dom";
+import {
+  FaCode,
+  FaServer,
+  FaLaptopCode,
+  FaRobot,
+  FaCertificate,
+  FaArrowRight
+} from "react-icons/fa";
 
-import "../styles/cybernet.css";
+import "../styles/explore.css";
 
 function ExploreExams() {
-
-  const navigate = useNavigate();
 
   return (
 
     <div className="explore-page">
 
-      {/* HERO SECTION */}
+      {/* HERO */}
 
       <div className="explore-hero">
 
-        <div>
+        <div className="explore-left">
+
+          <span className="explore-badge">
+            🚀 AI Powered Learning Platform
+          </span>
 
           <h1>
-            🚀 Explore CyberNet Programs
+
+            Explore
+            <span> CyberNet </span>
+            Programs
+
           </h1>
 
           <p>
-            Learn about our live exams,
-            internship programs,
-            certifications and real-world
-            career opportunities.
+
+            Join futuristic internship programs,
+            coding exams, AI automation projects
+            and industry-ready technical training.
+
+          </p>
+
+          <button className="explore-main-btn">
+
+            Start Your Journey
+            <FaArrowRight />
+
+          </button>
+
+        </div>
+
+        <div className="explore-right">
+
+          <div className="ai-circle"></div>
+
+          <div className="floating-card card1">
+
+            🤖 AI Automation
+
+          </div>
+
+          <div className="floating-card card2">
+
+            💻 Coding Arena
+
+          </div>
+
+          <div className="floating-card card3">
+
+            🚀 Internship
+
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* EXAMS */}
+
+      <div className="explore-section">
+
+        <div className="section-title">
+
+          <h1>
+            📄 Available Exams
+          </h1>
+
+          <p>
+            Industry-level assessments
+            for real-world skills.
           </p>
 
         </div>
 
-      </div>
-
-      {/* EXAMS SECTION */}
-
-      <div className="explore-section">
-
-        <h2>
-          📝 Available Exams
-        </h2>
-
         <div className="explore-grid">
 
           <div className="explore-card">
 
-            <h3>
-              Frontend Development Exam
-            </h3>
+            <div className="explore-icon blue">
+
+              <FaCode />
+
+            </div>
+
+            <h2>
+              Frontend Development
+            </h2>
 
             <p>
+
               HTML, CSS, JavaScript,
               React basics and UI design.
+
             </p>
 
             <span>
-              Duration: 30 Minutes
+              ⏰ Duration: 30 Minutes
             </span>
 
           </div>
 
           <div className="explore-card">
 
-            <h3>
-              Backend Development Exam
-            </h3>
+            <div className="explore-icon purple">
+
+              <FaServer />
+
+            </div>
+
+            <h2>
+              Backend Development
+            </h2>
 
             <p>
+
               Node.js, Express,
               MongoDB and APIs.
+
             </p>
 
             <span>
-              Duration: 45 Minutes
+              ⏰ Duration: 45 Minutes
             </span>
 
           </div>
 
           <div className="explore-card">
 
-            <h3>
-              Full Stack Development Exam
-            </h3>
+            <div className="explore-icon orange">
+
+              <FaLaptopCode />
+
+            </div>
+
+            <h2>
+              Full Stack Development
+            </h2>
 
             <p>
+
               Frontend + Backend
               complete technical round.
+
             </p>
 
             <span>
-              Duration: 60 Minutes
+              ⏰ Duration: 60 Minutes
             </span>
 
           </div>
@@ -98,66 +176,96 @@ function ExploreExams() {
 
       </div>
 
-      {/* INTERNSHIP SECTION */}
+      {/* INTERNSHIP */}
 
       <div className="explore-section">
 
-        <h2>
-          🎯 Internship Programs
-        </h2>
+        <div className="section-title">
+
+          <h1>
+            🎯 Internship Programs
+          </h1>
+
+          <p>
+            Build real-world projects
+            with AI-powered learning.
+          </p>
+
+        </div>
 
         <div className="explore-grid">
 
           <div className="explore-card">
 
-            <h3>
+            <div className="explore-icon blue">
+
+              💻
+
+            </div>
+
+            <h2>
               Frontend Internship
-            </h3>
+            </h2>
 
             <p>
-              Build real websites and
-              responsive dashboards.
+
+              Build responsive websites,
+              dashboards and UI systems.
+
             </p>
 
             <span>
-              Internship Duration:
-              1 Month / 3 Months
+              🗓 Duration: 1 / 3 Months
             </span>
 
           </div>
 
           <div className="explore-card">
 
-            <h3>
+            <div className="explore-icon green">
+
+              ⚡
+
+            </div>
+
+            <h2>
               Backend Internship
-            </h3>
+            </h2>
 
             <p>
-              Work on APIs,
-              authentication and databases.
+
+              APIs, authentication,
+              databases and servers.
+
             </p>
 
             <span>
-              Internship Duration:
-              2 Months / 6 Months
+              🗓 Duration: 2 / 6 Months
             </span>
 
           </div>
 
           <div className="explore-card">
 
-            <h3>
-              AI & Automation Internship
-            </h3>
+            <div className="explore-icon purple">
+
+              <FaRobot />
+
+            </div>
+
+            <h2>
+              AI & Automation
+            </h2>
 
             <p>
-              Python, AI tools,
-              automation projects and bots.
+
+              AI tools, automation bots,
+              Python and smart systems.
+
             </p>
 
             <span>
-              Internship Duration:
-              3 Months
+              🗓 Duration: 3 Months
             </span>
 
           </div>
@@ -166,73 +274,88 @@ function ExploreExams() {
 
       </div>
 
-      {/* CERTIFICATION SECTION */}
+      {/* CERTIFICATES */}
 
       <div className="explore-section">
 
-        <h2>
-          📜 Certifications
-        </h2>
+        <div className="section-title">
+
+          <h1>
+            📜 Certifications
+          </h1>
+
+          <p>
+            Industry-ready verified certificates.
+          </p>
+
+        </div>
 
         <div className="explore-grid">
 
           <div className="explore-card">
 
-            <h3>
+            <div className="explore-icon blue">
+
+              <FaCertificate />
+
+            </div>
+
+            <h2>
               Internship Certificate
-            </h3>
+            </h2>
 
             <p>
-              Industry-ready verified
-              internship certificate.
+
+              Verified certificate
+              after internship completion.
+
             </p>
 
           </div>
 
           <div className="explore-card">
 
-            <h3>
-              Project Completion Certificate
-            </h3>
+            <div className="explore-icon orange">
+
+              🏆
+
+            </div>
+
+            <h2>
+              Project Certificate
+            </h2>
 
             <p>
-              Certificate for real-world
-              projects completed successfully.
+
+              Real-world project
+              completion verification.
+
             </p>
 
           </div>
 
           <div className="explore-card">
 
-            <h3>
-              Exam Completion Certificate
-            </h3>
+            <div className="explore-icon purple">
+
+              🚀
+
+            </div>
+
+            <h2>
+              Exam Certificate
+            </h2>
 
             <p>
-              Get verified certificate after
-              passing technical exams.
+
+              Technical assessment
+              completion certificate.
+
             </p>
 
           </div>
 
         </div>
-
-      </div>
-
-      {/* BUTTON */}
-
-      <div className="explore-btn-section">
-
-        <button
-          className="start-explore-btn"
-          onClick={() =>
-            navigate("/login")
-          }
-        >
-
-          Start Your Journey
-
-        </button>
 
       </div>
 

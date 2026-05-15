@@ -2,68 +2,150 @@ import React from "react";
 
 import { useNavigate } from "react-router-dom";
 
-import "../styles/cybernet.css";
+import {
+  FaUsers,
+  FaClipboardList,
+  FaAward,
+  FaRobot,
+  FaChartLine,
+  FaBell,
+  FaFileAlt,
+  FaCog,
+  FaRocket,
+  FaSignOutAlt,
+  FaUserCheck
+} from "react-icons/fa";
+
+import "../styles/adminDashboard.css";
 
 function AdminDashboard() {
 
   const navigate = useNavigate();
 
+  const logoutAdmin = () => {
+
+    alert("Admin Logged Out");
+
+    navigate("/admin");
+
+  };
+
   return (
 
     <div className="admin-dashboard">
 
-      {/* SIDEBAR */}
+      {/* ================= SIDEBAR ================= */}
 
       <div className="admin-sidebar">
 
         <div>
 
-          <h1 className="admin-logo">
-            CyberNet
-          </h1>
+          {/* LOGO */}
+
+          <div className="admin-logo-box">
+
+            <div className="admin-logo-icon">
+              ⚡
+            </div>
+
+            <div>
+
+              <h1 className="admin-logo">
+                CyberNet
+              </h1>
+
+              <p className="admin-sub-logo">
+                AI Admin Panel
+              </p>
+
+            </div>
+
+          </div>
+
+          {/* MENU */}
 
           <ul className="admin-menu">
 
-            <li>
-              <a
-                href="#"
-                className="active-admin-link"
-              >
-                📊 Dashboard
-              </a>
+            <li
+              className="active-admin-link"
+              onClick={() =>
+                navigate("/admin/dashboard")
+              }
+            >
+
+              <FaRocket />
+              <span>Dashboard</span>
+
+            </li>
+
+            <li
+              onClick={() =>
+                navigate("/leaderboard")
+              }
+            >
+
+              <FaUsers />
+              <span>Students</span>
+
+            </li>
+
+            <li
+              onClick={() =>
+                navigate("/admin/create-exam")
+              }
+            >
+
+              <FaClipboardList />
+              <span>Exams</span>
+
+            </li>
+
+            {/* UPDATED */}
+
+            <li
+              onClick={() =>
+                navigate("/admin/certificates")
+              }
+            >
+
+              <FaUserCheck />
+              <span>Student Requests</span>
+
             </li>
 
             <li>
-              <a href="#">
-                👨‍🎓 Students
-              </a>
-            </li>
 
-            <li>
-              <a href="#">
-                📝 Exams
-              </a>
-            </li>
+              <FaCog />
+              <span>Settings</span>
 
-            <li>
-              <a href="#">
-                📜 Certificates
-              </a>
-            </li>
-
-            <li>
-              <a href="#">
-                ⚙ Settings
-              </a>
             </li>
 
           </ul>
 
         </div>
 
+        {/* AI PRO CARD */}
+
+        <div className="admin-upgrade-card">
+
+          <h3>
+            Upgrade To AI Pro 🚀
+          </h3>
+
+          <p>
+            Unlock smart automation,
+            AI reports and analytics.
+          </p>
+
+          <button>
+            Upgrade Now
+          </button>
+
+        </div>
+
       </div>
 
-      {/* MAIN */}
+      {/* ================= MAIN ================= */}
 
       <div className="admin-main">
 
@@ -78,8 +160,8 @@ function AdminDashboard() {
             </h1>
 
             <p>
-              Manage students,
-              exams and certificates.
+              Manage exams, students,
+              certificates and AI automation.
             </p>
 
           </div>
@@ -107,71 +189,288 @@ function AdminDashboard() {
 
         </div>
 
-        {/* STATS */}
+        {/* ================= STATS ================= */}
 
         <div className="admin-stats">
 
-          <div className="admin-stat-card">
+          {/* STUDENTS */}
 
-            <h3>
-              Total Students
-            </h3>
+          <div
+            className="admin-stat-card blue-card"
+            onClick={() =>
+              navigate("/leaderboard")
+            }
+          >
 
-            <h1>
-              120
-            </h1>
+            <div className="stat-icon">
+              <FaUsers />
+            </div>
+
+            <div>
+
+              <h3>
+                Total Students
+              </h3>
+
+              <h1>
+                120
+              </h1>
+
+              <p>
+                +12% this month
+              </p>
+
+            </div>
 
           </div>
 
-          <div className="admin-stat-card">
+          {/* EXAMS */}
 
-            <h3>
-              Total Exams
-            </h3>
+          <div
+            className="admin-stat-card purple-card"
+            onClick={() =>
+              navigate("/admin/create-exam")
+            }
+          >
 
-            <h1>
-              15
-            </h1>
+            <div className="stat-icon">
+              <FaClipboardList />
+            </div>
+
+            <div>
+
+              <h3>
+                Total Exams
+              </h3>
+
+              <h1>
+                15
+              </h1>
+
+              <p>
+                AI Generated Exams
+              </p>
+
+            </div>
 
           </div>
 
-          <div className="admin-stat-card">
+          {/* CERTIFICATE REQUESTS */}
 
-            <h3>
-              Certificates
-            </h3>
+          <div
+            className="admin-stat-card green-card"
+            onClick={() =>
+              navigate("/admin/certificates")
+            }
+          >
 
-            <h1>
-              98
-            </h1>
+            <div className="stat-icon">
+              <FaAward />
+            </div>
+
+            <div>
+
+              <h3>
+                Certificate Requests
+              </h3>
+
+              <h1>
+                98
+              </h1>
+
+              <p>
+                Pending Verification
+              </p>
+
+            </div>
+
+          </div>
+
+          {/* INTERNS */}
+
+          <div
+            className="admin-stat-card orange-card"
+            onClick={() =>
+              navigate("/leaderboard")
+            }
+          >
+
+            <div className="stat-icon">
+              <FaChartLine />
+            </div>
+
+            <div>
+
+              <h3>
+                Active Interns
+              </h3>
+
+              <h1>
+                32
+              </h1>
+
+              <p>
+                +18% Growth
+              </p>
+
+            </div>
 
           </div>
 
         </div>
 
-        {/* ACTION */}
+        {/* ================= AI SECTION ================= */}
 
-        <div className="admin-action-card">
+        <div className="admin-ai-section">
+
+          {/* CREATE EXAM */}
+
+          <div className="admin-action-card">
+
+            <div className="floating-circle one"></div>
+            <div className="floating-circle two"></div>
+
+            <h2>
+              Create New Exam
+            </h2>
+
+            <p>
+              Generate MCQ exams,
+              coding rounds and AI
+              technical assessments.
+            </p>
+
+            <button
+              className="admin-btn"
+              onClick={() =>
+                navigate("/admin/create-exam")
+              }
+            >
+
+              Create Exam
+
+            </button>
+
+          </div>
+
+          {/* AI SYSTEM */}
+
+          <div className="admin-ai-card">
+
+            <div className="ai-badge">
+              🤖 AI Automation
+            </div>
+
+            <h2>
+              Smart AI System
+            </h2>
+
+            <p>
+              CyberNet AI automatically
+              analyzes students, verifies
+              certificate requests and
+              manages internships.
+            </p>
+
+            <div className="ai-features">
+
+              <div
+                className="ai-feature-card"
+                onClick={() =>
+                  navigate("/admin/create-exam")
+                }
+              >
+
+                <FaRobot />
+                AI Exam Generator
+
+              </div>
+
+              <div
+                className="ai-feature-card"
+                onClick={() =>
+                  navigate("/leaderboard")
+                }
+              >
+
+                <FaChartLine />
+                Performance Analytics
+
+              </div>
+
+              <div
+                className="ai-feature-card"
+                onClick={() =>
+                  navigate("/admin/certificates")
+                }
+              >
+
+                <FaFileAlt />
+                Certificate Requests
+
+              </div>
+
+              <div className="ai-feature-card">
+
+                <FaBell />
+                Auto Notifications
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* ================= RECENT ACTIVITY ================= */}
+
+        <div className="recent-activity">
 
           <h2>
-            Create New Exam
+            Recent Activity
           </h2>
 
-          <p>
-            Add MCQ exams,
-            coding rounds and
-            technical assessments
-            for students.
-          </p>
+          <div className="activity-list">
+
+            <div className="activity-item">
+              ✅ New React Exam Created
+            </div>
+
+            <div className="activity-item">
+              📜 New Certificate Request Submitted
+            </div>
+
+            <div className="activity-item">
+              🚀 12 Students Joined Internship
+            </div>
+
+            <div className="activity-item">
+              🤖 AI analyzed student reports
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* ================= FOOTER ================= */}
+
+        <div className="admin-footer">
 
           <button
-            className="admin-btn"
-            onClick={() =>
-              navigate("/admin/create-exam")
-            }
+            className="logout-btn"
+            onClick={logoutAdmin}
           >
-            Create Exam
+
+            <FaSignOutAlt />
+            Logout
+
           </button>
+
+          <p>
+            © 2026 CyberNet Technology.
+            All Rights Reserved.
+          </p>
 
         </div>
 

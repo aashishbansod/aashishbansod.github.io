@@ -1,0 +1,530 @@
+/* =========================
+   GOOGLE FONT
+========================= */
+
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap");
+
+/* =========================
+   GLOBAL
+========================= */
+
+*{
+  margin:0;
+  padding:0;
+  box-sizing:border-box;
+  font-family:"Poppins",sans-serif;
+}
+
+body{
+  background:#edf3ff;
+}
+
+/* =========================
+   PAGE
+========================= */
+
+.admin-certificates-page{
+  min-height:100vh;
+  padding:40px;
+  position:relative;
+  overflow:hidden;
+  background:
+  linear-gradient(
+    135deg,
+    #edf3ff,
+    #dfe9ff
+  );
+}
+
+/* =========================
+   AI BACKGROUND EFFECTS
+========================= */
+
+.admin-bg{
+  position:absolute;
+  border-radius:50%;
+  filter:blur(100px);
+  z-index:0;
+  animation:floatBg 8s infinite ease-in-out;
+}
+
+.admin-bg1{
+  width:400px;
+  height:400px;
+  background:#2563eb55;
+  top:-120px;
+  left:-120px;
+}
+
+.admin-bg2{
+  width:350px;
+  height:350px;
+  background:#7c3aed55;
+  bottom:-120px;
+  right:-120px;
+}
+
+@keyframes floatBg{
+
+  0%{
+    transform:translateY(0px);
+  }
+
+  50%{
+    transform:translateY(30px);
+  }
+
+  100%{
+    transform:translateY(0px);
+  }
+
+}
+
+/* =========================
+   HEADER
+========================= */
+
+.admin-certificates-header{
+  position:relative;
+  z-index:2;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:30px;
+  margin-bottom:40px;
+  flex-wrap:wrap;
+}
+
+.admin-ai-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  padding:10px 22px;
+  border-radius:40px;
+  background:white;
+  color:#2563eb;
+  font-weight:600;
+  box-shadow:0 10px 30px rgba(0,0,0,0.08);
+  margin-bottom:20px;
+  animation:pulseBadge 2s infinite;
+}
+
+@keyframes pulseBadge{
+
+  0%{
+    transform:scale(1);
+  }
+
+  50%{
+    transform:scale(1.05);
+  }
+
+  100%{
+    transform:scale(1);
+  }
+
+}
+
+.admin-certificates-header h1{
+  font-size:52px;
+  color:#0f172a;
+  font-weight:800;
+  line-height:1.1;
+  margin-bottom:14px;
+}
+
+.admin-certificates-header p{
+  font-size:18px;
+  color:#64748b;
+  max-width:700px;
+}
+
+/* =========================
+   SEARCH
+========================= */
+
+.certificate-search-box{
+  display:flex;
+  align-items:center;
+  gap:15px;
+  background:white;
+  padding:18px 25px;
+  border-radius:20px;
+  min-width:340px;
+  box-shadow:0 10px 30px rgba(0,0,0,0.08);
+  transition:0.3s;
+}
+
+.certificate-search-box:hover{
+  transform:translateY(-5px);
+}
+
+.certificate-search-box svg{
+  color:#2563eb;
+  font-size:20px;
+}
+
+.certificate-search-box input{
+  border:none;
+  outline:none;
+  width:100%;
+  font-size:16px;
+  background:none;
+}
+
+/* =========================
+   STATS
+========================= */
+
+.certificate-stats{
+  position:relative;
+  z-index:2;
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+  gap:25px;
+  margin-bottom:40px;
+}
+
+.certificate-stat-card{
+  position:relative;
+  overflow:hidden;
+  padding:35px;
+  border-radius:30px;
+  color:white;
+  display:flex;
+  align-items:center;
+  gap:25px;
+  transition:0.4s;
+  cursor:pointer;
+}
+
+.certificate-stat-card:hover{
+  transform:translateY(-10px) scale(1.02);
+}
+
+.certificate-stat-card::before{
+  content:"";
+  position:absolute;
+  width:180px;
+  height:180px;
+  border-radius:50%;
+  background:rgba(255,255,255,0.12);
+  right:-60px;
+  top:-60px;
+}
+
+.certificate-stat-card svg{
+  font-size:42px;
+}
+
+.certificate-stat-card h2{
+  font-size:36px;
+  font-weight:800;
+}
+
+.certificate-stat-card p{
+  font-size:15px;
+  opacity:0.9;
+}
+
+.blue{
+  background:linear-gradient(135deg,#2563eb,#60a5fa);
+}
+
+.green{
+  background:linear-gradient(135deg,#10b981,#34d399);
+}
+
+.orange{
+  background:linear-gradient(135deg,#f97316,#fb923c);
+}
+
+.purple{
+  background:linear-gradient(135deg,#7c3aed,#a855f7);
+}
+
+/* =========================
+   REQUESTS
+========================= */
+
+.requests-container{
+  position:relative;
+  z-index:2;
+  display:flex;
+  flex-direction:column;
+  gap:30px;
+}
+
+/* =========================
+   CARD
+========================= */
+
+.request-card{
+  background:rgba(255,255,255,0.82);
+  backdrop-filter:blur(16px);
+  border:1px solid rgba(255,255,255,0.4);
+  border-radius:35px;
+  padding:35px;
+  box-shadow:
+  0 20px 60px rgba(0,0,0,0.08);
+  transition:0.4s;
+  position:relative;
+  overflow:hidden;
+}
+
+.request-card:hover{
+  transform:translateY(-8px);
+  box-shadow:
+  0 25px 70px rgba(37,99,235,0.18);
+}
+
+/* =========================
+   TOP
+========================= */
+
+.request-top{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:20px;
+  margin-bottom:30px;
+}
+
+.student-info{
+  display:flex;
+  align-items:center;
+  gap:20px;
+}
+
+.student-avatar{
+  width:80px;
+  height:80px;
+  border-radius:50%;
+  background:
+  linear-gradient(
+    135deg,
+    #2563eb,
+    #60a5fa
+  );
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:white;
+  font-size:32px;
+  box-shadow:0 10px 30px rgba(37,99,235,0.3);
+}
+
+.student-info h2{
+  font-size:30px;
+  color:#0f172a;
+  font-weight:700;
+}
+
+.student-info p{
+  color:#64748b;
+  font-size:15px;
+}
+
+/* =========================
+   STATUS
+========================= */
+
+.status-badge{
+  padding:12px 25px;
+  border-radius:40px;
+  font-size:14px;
+  font-weight:700;
+  color:white;
+  animation:pulseStatus 2s infinite;
+}
+
+@keyframes pulseStatus{
+
+  0%{
+    transform:scale(1);
+  }
+
+  50%{
+    transform:scale(1.05);
+  }
+
+  100%{
+    transform:scale(1);
+  }
+
+}
+
+.pending{
+  background:linear-gradient(135deg,#f59e0b,#fbbf24);
+}
+
+.approved{
+  background:linear-gradient(135deg,#10b981,#34d399);
+}
+
+.rejected{
+  background:linear-gradient(135deg,#ef4444,#f87171);
+}
+
+/* =========================
+   DETAILS GRID
+========================= */
+
+.request-details{
+  display:grid;
+  grid-template-columns:
+  repeat(auto-fit,minmax(250px,1fr));
+  gap:25px;
+  margin-bottom:30px;
+}
+
+.request-details div{
+  background:#f8fbff;
+  padding:22px;
+  border-radius:22px;
+  transition:0.3s;
+}
+
+.request-details div:hover{
+  transform:translateY(-5px);
+  background:#eef5ff;
+}
+
+.request-details span{
+  display:block;
+  color:#64748b;
+  font-size:14px;
+  margin-bottom:8px;
+}
+
+.request-details h4{
+  color:#0f172a;
+  font-size:18px;
+  font-weight:700;
+}
+
+/* =========================
+   AI BOX
+========================= */
+
+.ai-verification-box{
+  background:
+  linear-gradient(
+    135deg,
+    #2563eb,
+    #60a5fa
+  );
+  color:white;
+  padding:22px;
+  border-radius:24px;
+  display:flex;
+  align-items:center;
+  gap:15px;
+  font-size:17px;
+  font-weight:600;
+  margin-bottom:30px;
+  animation:aiGlow 3s infinite;
+}
+
+@keyframes aiGlow{
+
+  0%{
+    box-shadow:0 0 0px rgba(37,99,235,0.3);
+  }
+
+  50%{
+    box-shadow:0 0 35px rgba(37,99,235,0.5);
+  }
+
+  100%{
+    box-shadow:0 0 0px rgba(37,99,235,0.3);
+  }
+
+}
+
+.ai-verification-box svg{
+  font-size:24px;
+}
+
+/* =========================
+   BUTTONS
+========================= */
+
+.request-actions{
+  display:flex;
+  gap:20px;
+  flex-wrap:wrap;
+}
+
+.request-actions button{
+  border:none;
+  outline:none;
+  padding:16px 30px;
+  border-radius:18px;
+  font-size:16px;
+  font-weight:700;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  transition:0.35s;
+}
+
+.approve-btn{
+  background:
+  linear-gradient(
+    135deg,
+    #10b981,
+    #34d399
+  );
+  color:white;
+}
+
+.reject-btn{
+  background:
+  linear-gradient(
+    135deg,
+    #ef4444,
+    #f87171
+  );
+  color:white;
+}
+
+.request-actions button:hover{
+  transform:
+  translateY(-5px)
+  scale(1.05);
+}
+
+/* =========================
+   RESPONSIVE
+========================= */
+
+@media(max-width:768px){
+
+  .admin-certificates-page{
+    padding:20px;
+  }
+
+  .admin-certificates-header h1{
+    font-size:36px;
+  }
+
+  .certificate-search-box{
+    min-width:100%;
+  }
+
+  .request-card{
+    padding:25px;
+  }
+
+  .student-info h2{
+    font-size:24px;
+  }
+
+  .request-details{
+    grid-template-columns:1fr;
+  }
+
+}

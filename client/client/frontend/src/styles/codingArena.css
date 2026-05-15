@@ -1,0 +1,136 @@
+.arena-page{
+
+  width:100%;
+  min-height:100vh;
+
+  background:#f4f7fc;
+
+  padding:40px;
+
+}
+
+.arena-header{
+
+  margin-bottom:40px;
+
+}
+
+.arena-header h1{
+
+  font-size:42px;
+  color:#111827;
+
+  margin-bottom:10px;
+
+}
+
+.arena-header p{
+
+  font-size:18px;
+  color:#6b7280;
+
+}
+
+.task-grid{
+
+  display:grid;
+
+  grid-template-columns:
+  repeat(auto-fit,minmax(280px,1fr));
+
+  gap:25px;
+
+}
+
+.task-card{
+
+  background:white;
+
+  border-radius:24px;
+
+  padding:30px;
+
+  box-shadow:
+  0 10px 30px rgba(0,0,0,0.06);
+
+  transition:0.3s;
+
+}
+
+.task-card:hover{
+
+  transform:translateY(-5px);
+
+}
+
+.task-top{
+
+  margin-bottom:20px;
+
+}
+
+.difficulty{
+
+  background:#2563eb;
+
+  color:white;
+
+  padding:8px 16px;
+
+  border-radius:30px;
+
+  font-size:14px;
+
+  font-weight:600;
+
+}
+
+.task-card h2{
+
+  font-size:24px;
+
+  color:#111827;
+
+  margin-bottom:15px;
+
+}
+
+.task-card p{
+
+  color:#6b7280;
+
+  margin-bottom:10px;
+
+}
+
+.start-task-btn{
+
+  margin-top:20px;
+
+  width:100%;
+
+  padding:15px;
+
+  border:none;
+
+  border-radius:14px;
+
+  background:#2563eb;
+
+  color:white;
+
+  font-size:16px;
+
+  font-weight:600;
+
+  cursor:pointer;
+
+  transition:0.3s;
+
+}
+
+.start-task-btn:hover{
+
+  background:#1d4ed8;
+
+}

@@ -1,50 +1,63 @@
-import express from "express";
-import mongoose from "mongoose";
-import cors from "cors";
-import dotenv from "dotenv";
-
-import authRoutes from "./routes/authRoutes.js";
-
-dotenv.config();
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+require("dotenv").config();
 
 const app = express();
 
-
-// MIDDLEWARE
+/* MIDDLEWARE */
 
 app.use(cors());
-
 app.use(express.json());
 
+/* ROUTES */
 
-// DATABASE CONNECTION
-
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.log(err));
-
-
-// ROUTES
+const authRoutes = require("./routes/authRoutes");
+const examRoutes = require("./routes/examRoutes");
+const leaderboardRoutes = require("./routes/leaderboardRoutes");
+const resultRoutes = require("./routes/resultRoutes");
+const certificateRoutes = require("./routes/certificateRoutes");
 
 app.use("/api/auth", authRoutes);
 
+app.use("/api/exams", examRoutes);
 
-// TEST ROUTE
+app.use("/api/leaderboard", leaderboardRoutes);
 
-app.get("/", (req, res) => {
+app.use("/api/results", resultRoutes);
 
-  res.send("CyberNet Backend Running 🚀");
+app.use("/api/certificates", certificateRoutes);
+
+/* DATABASE */
+
+mongoose.connect(process.env.MONGO_URI)
+
+.then(() => {
+
+  console.log("MongoDB Connected");
+
+})
+
+.catch((error) => {
+
+  console.log(error);
 
 });
 
+/* HOME */
 
-// SERVER
+app.get("/", (req, res) => {
+
+  res.send("CyberNet Backend Running");
+
+});
+
+/* SERVER */
 
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
 
-  console.log(`Server Running on ${PORT}`);
+  console.log(`Server Running On ${PORT}`);
 
 });

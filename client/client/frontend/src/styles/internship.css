@@ -1,0 +1,162 @@
+.plans-page{
+
+  width:100%;
+  min-height:100vh;
+
+  background:#f4f7fc;
+
+  padding:50px;
+
+}
+
+.plans-header{
+
+  text-align:center;
+
+  margin-bottom:50px;
+
+}
+
+.plans-header h1{
+
+  font-size:52px;
+
+  color:#111827;
+
+  margin-bottom:15px;
+
+}
+
+.plans-header p{
+
+  font-size:18px;
+
+  color:#6b7280;
+
+}
+
+/* GRID */
+
+.plans-grid{
+
+  display:grid;
+
+  grid-template-columns:
+  repeat(auto-fit,minmax(300px,1fr));
+
+  gap:30px;
+
+}
+
+/* CARD */
+
+.plan-card{
+
+  background:white;
+
+  padding:35px;
+
+  border-radius:28px;
+
+  box-shadow:
+  0 10px 30px rgba(0,0,0,0.06);
+
+  transition:0.3s;
+
+}
+
+.plan-card:hover{
+
+  transform:translateY(-6px);
+
+}
+
+.plan-card h2{
+
+  font-size:30px;
+
+  color:#111827;
+
+  margin-bottom:20px;
+
+}
+
+.plan-card h1{
+
+  font-size:48px;
+
+  color:#2563eb;
+
+  margin-bottom:15px;
+
+}
+
+.plan-card span{
+
+  display:inline-block;
+
+  background:#eff6ff;
+
+  color:#2563eb;
+
+  padding:10px 18px;
+
+  border-radius:14px;
+
+  font-weight:600;
+
+  margin-bottom:25px;
+
+}
+
+.plan-card ul{
+
+  list-style:none;
+
+  padding:0;
+
+  margin-bottom:30px;
+
+}
+
+.plan-card li{
+
+  margin-bottom:14px;
+
+  color:#4b5563;
+
+  font-size:16px;
+
+}
+
+/* BUTTON */
+
+.buy-btn{
+
+  width:100%;
+
+  padding:16px;
+
+  border:none;
+
+  border-radius:16px;
+
+  background:#2563eb;
+
+  color:white;
+
+  font-size:17px;
+
+  font-weight:700;
+
+  cursor:pointer;
+
+  transition:0.3s;
+
+}
+
+.buy-btn:hover{
+
+  background:#1d4ed8;
+
+}

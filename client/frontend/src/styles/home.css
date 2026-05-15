@@ -1,0 +1,630 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap');
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+body{
+    font-family:'Poppins',sans-serif;
+    background:#f5f9ff;
+    overflow-x:hidden;
+}
+
+/* ================= MAIN ================= */
+
+.cyber-home{
+    width:100%;
+    min-height:100vh;
+    background:#f5f9ff;
+    position:relative;
+    overflow:hidden;
+}
+
+/* ================= AI BACKGROUND ================= */
+
+.ai-bg-circle{
+    position:absolute;
+    border-radius:50%;
+    background:linear-gradient(135deg,#2563eb,#60a5fa);
+    opacity:0.08;
+    filter:blur(10px);
+    animation:floatAnimation 8s ease-in-out infinite;
+}
+
+.ai-circle1{
+    width:350px;
+    height:350px;
+    top:-120px;
+    left:-100px;
+}
+
+.ai-circle2{
+    width:300px;
+    height:300px;
+    right:-80px;
+    top:200px;
+}
+
+.ai-circle3{
+    width:200px;
+    height:200px;
+    bottom:50px;
+    left:45%;
+}
+
+@keyframes floatAnimation{
+
+    0%{
+        transform:translateY(0px);
+    }
+
+    50%{
+        transform:translateY(-25px);
+    }
+
+    100%{
+        transform:translateY(0px);
+    }
+
+}
+
+/* ================= NAVBAR ================= */
+
+.cyber-navbar{
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:30px 90px;
+    position:relative;
+    z-index:10;
+}
+
+.cyber-logo{
+    display:flex;
+    align-items:center;
+    gap:18px;
+}
+
+.logo-img{
+    width:75px;
+    object-fit:contain;
+}
+
+.cyber-logo h1{
+    font-size:54px;
+    font-weight:800;
+    color:#0f172a;
+    line-height:1;
+}
+
+.cyber-logo h1 span{
+    color:#2563eb;
+}
+
+.cyber-logo p{
+    letter-spacing:6px;
+    font-size:13px;
+    color:#64748b;
+    margin-top:8px;
+}
+
+.nav-buttons{
+    display:flex;
+    align-items:center;
+    gap:20px;
+}
+
+.student-btn,
+.admin-btn{
+    padding:16px 34px;
+    border-radius:16px;
+    border:none;
+    font-size:16px;
+    font-weight:700;
+    cursor:pointer;
+    transition:0.4s;
+}
+
+.student-btn{
+    background:linear-gradient(135deg,#2563eb,#3b82f6);
+    color:white;
+    box-shadow:0 15px 35px rgba(37,99,235,0.25);
+}
+
+.student-btn:hover{
+    transform:translateY(-5px);
+}
+
+.admin-btn{
+    background:white;
+    color:#2563eb;
+    border:2px solid #2563eb;
+}
+
+.admin-btn:hover{
+    background:#2563eb;
+    color:white;
+}
+
+/* ================= HERO ================= */
+
+.hero-section{
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:70px 90px;
+    gap:60px;
+}
+
+/* LEFT */
+
+.hero-left{
+    flex:1;
+}
+
+.ai-badge{
+    display:inline-block;
+    padding:14px 28px;
+    background:white;
+    border-radius:50px;
+    color:#2563eb;
+    font-weight:600;
+    margin-bottom:30px;
+    box-shadow:0 10px 30px rgba(37,99,235,0.1);
+}
+
+.hero-left h1{
+    font-size:92px;
+    line-height:1.05;
+    font-weight:900;
+    color:#0f172a;
+    margin-bottom:30px;
+}
+
+.hero-left h1 span{
+    color:#2563eb;
+}
+
+.hero-left p{
+    font-size:24px;
+    line-height:1.9;
+    color:#475569;
+    max-width:850px;
+    margin-bottom:40px;
+}
+
+/* TAGS */
+
+.ai-tags{
+    display:flex;
+    gap:20px;
+    flex-wrap:wrap;
+    margin-bottom:45px;
+}
+
+.tag{
+    padding:16px 28px;
+    background:white;
+    border-radius:18px;
+    font-weight:600;
+    color:#0f172a;
+    box-shadow:0 10px 25px rgba(0,0,0,0.05);
+    transition:0.4s;
+}
+
+.tag:hover{
+    transform:translateY(-6px);
+    box-shadow:0 15px 30px rgba(37,99,235,0.15);
+}
+
+/* BUTTONS */
+
+.hero-actions{
+    display:flex;
+    gap:25px;
+    flex-wrap:wrap;
+}
+
+.register-btn,
+.explore-btn{
+    padding:18px 42px;
+    border-radius:18px;
+    font-size:18px;
+    font-weight:700;
+    cursor:pointer;
+    transition:0.4s;
+}
+
+.register-btn{
+    border:none;
+    background:linear-gradient(135deg,#2563eb,#3b82f6);
+    color:white;
+    box-shadow:0 18px 40px rgba(37,99,235,0.25);
+}
+
+.register-btn:hover{
+    transform:translateY(-5px);
+}
+
+.explore-btn{
+    background:white;
+    border:2px solid #dbeafe;
+    color:#0f172a;
+}
+
+.explore-btn:hover{
+    border-color:#2563eb;
+    color:#2563eb;
+}
+
+/* RIGHT */
+
+.hero-right{
+    width:430px;
+    display:flex;
+    flex-direction:column;
+    gap:28px;
+}
+
+.ai-card{
+    display:flex;
+    align-items:center;
+    gap:22px;
+    background:white;
+    padding:32px;
+    border-radius:30px;
+    box-shadow:0 18px 45px rgba(0,0,0,0.06);
+    transition:0.4s;
+}
+
+.ai-card:hover{
+    transform:translateY(-8px);
+}
+
+.card-icon{
+    width:90px;
+    height:90px;
+    border-radius:25px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:38px;
+    color:white;
+}
+
+.blue-card{
+    background:linear-gradient(135deg,#2563eb,#3b82f6);
+}
+
+.green-card{
+    background:linear-gradient(135deg,#10b981,#34d399);
+}
+
+.orange-card{
+    background:linear-gradient(135deg,#f97316,#fb923c);
+}
+
+.ai-card h2{
+    font-size:34px;
+    color:#0f172a;
+    margin-bottom:8px;
+}
+
+.ai-card p{
+    font-size:18px;
+    color:#64748b;
+    line-height:1.6;
+}
+
+/* ================= AUTOMATION ================= */
+
+.automation-section{
+    width:100%;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:120px 90px;
+    gap:80px;
+}
+
+.automation-left{
+    flex:1;
+}
+
+.section-badge{
+    display:inline-block;
+    padding:14px 28px;
+    background:#dbeafe;
+    color:#2563eb;
+    border-radius:50px;
+    font-weight:700;
+    margin-bottom:30px;
+}
+
+.automation-left h1{
+    font-size:68px;
+    color:#0f172a;
+    margin-bottom:25px;
+}
+
+.automation-left p{
+    font-size:22px;
+    line-height:1.8;
+    color:#475569;
+    margin-bottom:45px;
+}
+
+.automation-features{
+    display:flex;
+    flex-direction:column;
+    gap:28px;
+}
+
+.feature-item{
+    display:flex;
+    gap:22px;
+    align-items:flex-start;
+    background:white;
+    padding:28px;
+    border-radius:24px;
+    box-shadow:0 10px 35px rgba(0,0,0,0.05);
+}
+
+.feature-icon{
+    font-size:34px;
+    color:#2563eb;
+    margin-top:8px;
+}
+
+.feature-item h3{
+    font-size:28px;
+    margin-bottom:8px;
+    color:#0f172a;
+}
+
+.feature-item p{
+    font-size:18px;
+    margin:0;
+}
+
+/* ORBIT */
+
+.automation-right{
+    width:500px;
+    height:500px;
+    position:relative;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.ai-core{
+    width:170px;
+    height:170px;
+    background:linear-gradient(135deg,#2563eb,#3b82f6);
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:white;
+    font-size:48px;
+    font-weight:800;
+    box-shadow:0 25px 50px rgba(37,99,235,0.3);
+}
+
+.orbit{
+    position:absolute;
+    width:90px;
+    height:90px;
+    background:white;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:38px;
+    box-shadow:0 15px 35px rgba(0,0,0,0.08);
+}
+
+.orbit1{
+    top:0;
+    animation:orbit1 8s linear infinite;
+}
+
+.orbit2{
+    right:0;
+    animation:orbit2 8s linear infinite;
+}
+
+.orbit3{
+    bottom:0;
+    animation:orbit3 8s linear infinite;
+}
+
+.orbit4{
+    left:0;
+    animation:orbit4 8s linear infinite;
+}
+
+@keyframes orbit1{
+    50%{
+        transform:translateY(-20px);
+    }
+}
+
+@keyframes orbit2{
+    50%{
+        transform:translateX(20px);
+    }
+}
+
+@keyframes orbit3{
+    50%{
+        transform:translateY(20px);
+    }
+}
+
+@keyframes orbit4{
+    50%{
+        transform:translateX(-20px);
+    }
+}
+
+/* ================= STATS ================= */
+
+.stats-section{
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:30px;
+    padding:0 90px 120px;
+}
+
+.stat-card{
+    background:white;
+    padding:55px;
+    border-radius:30px;
+    text-align:center;
+    box-shadow:0 15px 40px rgba(0,0,0,0.05);
+    transition:0.4s;
+}
+
+.stat-card:hover{
+    transform:translateY(-10px);
+}
+
+.stat-card h1{
+    font-size:72px;
+    color:#2563eb;
+    margin-bottom:15px;
+}
+
+.stat-card p{
+    font-size:22px;
+    color:#475569;
+}
+
+/* ================= FOOTER ================= */
+
+.cyber-footer{
+    background:#ffffff;
+    padding:80px 90px 30px;
+    border-top:1px solid #dbeafe;
+}
+
+.footer-grid{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:50px;
+}
+
+.footer-box h2{
+    font-size:48px;
+    margin-bottom:20px;
+    color:#0f172a;
+}
+
+.footer-box h2 span{
+    color:#2563eb;
+}
+
+.footer-box h3{
+    font-size:28px;
+    margin-bottom:20px;
+    color:#0f172a;
+}
+
+.footer-box p{
+    font-size:18px;
+    line-height:1.8;
+    color:#64748b;
+    margin-bottom:12px;
+}
+
+.social-link{
+    display:flex;
+    align-items:center;
+    gap:12px;
+}
+
+.footer-icon{
+    color:#2563eb;
+}
+
+.footer-bottom{
+    margin-top:60px;
+    padding-top:25px;
+    border-top:1px solid #e2e8f0;
+    text-align:center;
+    font-size:17px;
+    color:#64748b;
+}
+
+/* ================= RESPONSIVE ================= */
+
+@media(max-width:1200px){
+
+    .hero-section,
+    .automation-section{
+        flex-direction:column;
+    }
+
+    .hero-right{
+        width:100%;
+    }
+
+    .stats-section{
+        grid-template-columns:repeat(2,1fr);
+    }
+
+    .footer-grid{
+        grid-template-columns:repeat(2,1fr);
+    }
+
+}
+
+@media(max-width:768px){
+
+    .cyber-navbar,
+    .hero-section,
+    .automation-section,
+    .stats-section,
+    .cyber-footer{
+        padding-left:25px;
+        padding-right:25px;
+    }
+
+    .cyber-navbar{
+        flex-direction:column;
+        gap:30px;
+    }
+
+    .hero-left h1{
+        font-size:58px;
+    }
+
+    .hero-left p{
+        font-size:18px;
+    }
+
+    .automation-left h1{
+        font-size:48px;
+    }
+
+    .stats-section{
+        grid-template-columns:1fr;
+    }
+
+    .footer-grid{
+        grid-template-columns:1fr;
+    }
+
+    .automation-right{
+        width:100%;
+        height:400px;
+    }
+
+}

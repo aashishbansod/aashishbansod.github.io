@@ -1,6 +1,6 @@
 import React from "react";
 
-import "../styles/admin.css";
+import "../styles/createExam.css";
 
 function CreateExam() {
 

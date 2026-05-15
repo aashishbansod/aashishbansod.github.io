@@ -1,0 +1,464 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+body{
+    font-family:'Poppins',sans-serif;
+    background:#f5f9ff;
+}
+
+/* ========================= */
+/* PAGE */
+/* ========================= */
+
+.register-page{
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:60px 8%;
+    background:
+    linear-gradient(
+        135deg,
+        #f7fbff,
+        #edf5ff
+    );
+    overflow:hidden;
+    position:relative;
+}
+
+/* ========================= */
+/* BACKGROUND */
+/* ========================= */
+
+.register-page::before{
+    content:"";
+    position:absolute;
+    width:600px;
+    height:600px;
+    background:
+    linear-gradient(
+        135deg,
+        #2563eb,
+        #38bdf8
+    );
+    border-radius:50%;
+    top:-250px;
+    left:-250px;
+    opacity:0.10;
+    filter:blur(50px);
+}
+
+.register-page::after{
+    content:"";
+    position:absolute;
+    width:500px;
+    height:500px;
+    background:#60a5fa;
+    border-radius:50%;
+    bottom:-250px;
+    right:-180px;
+    opacity:0.10;
+    filter:blur(50px);
+}
+
+/* ========================= */
+/* LEFT */
+/* ========================= */
+
+.register-left{
+    width:50%;
+    position:relative;
+    z-index:2;
+}
+
+.register-badge{
+    width:max-content;
+    padding:12px 24px;
+    border-radius:50px;
+    background:#ffffff;
+    border:1px solid #dbeafe;
+    color:#2563eb;
+    font-size:15px;
+    font-weight:600;
+    margin-bottom:28px;
+    box-shadow:
+    0 10px 25px
+    rgba(37,99,235,0.08);
+}
+
+.register-content h1{
+    font-size:78px;
+    line-height:88px;
+    font-weight:800;
+    color:#0f172a;
+    margin-bottom:20px;
+}
+
+.register-content span{
+    color:#2563eb;
+    display:block;
+}
+
+.register-content p{
+    font-size:22px;
+    line-height:40px;
+    color:#475569;
+    max-width:700px;
+}
+
+/* ========================= */
+/* FEATURE BOX */
+/* ========================= */
+
+.register-feature-box{
+    margin-top:55px;
+    background:#ffffff;
+    padding:38px;
+    border-radius:32px;
+    border:1px solid #dbeafe;
+    box-shadow:
+    0 20px 50px
+    rgba(37,99,235,0.08);
+    width:85%;
+    position:relative;
+    overflow:hidden;
+}
+
+.register-feature-box::before{
+    content:"";
+    position:absolute;
+    width:180px;
+    height:180px;
+    background:#eff6ff;
+    border-radius:50%;
+    top:-80px;
+    right:-70px;
+}
+
+.register-feature-box h2{
+    font-size:38px;
+    font-weight:800;
+    color:#0f172a;
+    margin-bottom:30px;
+    position:relative;
+    z-index:2;
+}
+
+.register-feature-box ul{
+    list-style:none;
+    display:flex;
+    flex-direction:column;
+    gap:20px;
+    position:relative;
+    z-index:2;
+}
+
+.register-feature-box li{
+    font-size:19px;
+    color:#334155;
+    font-weight:500;
+    display:flex;
+    align-items:center;
+    gap:12px;
+}
+
+/* ========================= */
+/* RIGHT */
+/* ========================= */
+
+.register-right{
+    width:40%;
+    display:flex;
+    justify-content:center;
+    position:relative;
+    z-index:2;
+}
+
+/* ========================= */
+/* REGISTER BOX */
+/* ========================= */
+
+.register-box{
+    width:100%;
+    max-width:520px;
+    background:#ffffff;
+    padding:50px;
+    border-radius:35px;
+    border:1px solid #dbeafe;
+    box-shadow:
+    0 25px 60px
+    rgba(37,99,235,0.12);
+    position:relative;
+    overflow:hidden;
+}
+
+.register-box::before{
+    content:"";
+    position:absolute;
+    width:220px;
+    height:220px;
+    background:#eff6ff;
+    border-radius:50%;
+    top:-120px;
+    right:-100px;
+}
+
+/* ========================= */
+/* TOP */
+/* ========================= */
+
+.register-top{
+    margin-bottom:35px;
+    position:relative;
+    z-index:2;
+}
+
+.register-ai{
+    width:max-content;
+    padding:10px 18px;
+    border-radius:50px;
+    background:#eff6ff;
+    color:#2563eb;
+    font-size:14px;
+    font-weight:700;
+    margin-bottom:20px;
+}
+
+.register-top h1{
+    font-size:52px;
+    font-weight:800;
+    color:#0f172a;
+    margin-bottom:12px;
+}
+
+.register-top p{
+    font-size:18px;
+    color:#64748b;
+    line-height:30px;
+}
+
+/* ========================= */
+/* GRID */
+/* ========================= */
+
+.register-grid{
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+    position:relative;
+    z-index:2;
+}
+
+/* ========================= */
+/* INPUT */
+/* ========================= */
+
+.register-grid input{
+    width:100%;
+    height:64px;
+    border:none;
+    outline:none;
+    background:#f8fbff;
+    border:2px solid #dbeafe;
+    border-radius:18px;
+    padding:0 22px;
+    font-size:16px;
+    transition:0.3s;
+    color:#0f172a;
+}
+
+.register-grid input:focus{
+    border-color:#2563eb;
+    background:#ffffff;
+    box-shadow:
+    0 0 0 5px
+    rgba(37,99,235,0.08);
+}
+
+/* ========================= */
+/* TERMS */
+/* ========================= */
+
+.register-terms{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    margin-top:22px;
+    margin-bottom:28px;
+    padding:14px 16px;
+    border-radius:18px;
+    background:#f8fbff;
+    border:1px solid #dbeafe;
+}
+
+/* HIDE DEFAULT */
+
+.register-terms input{
+    appearance:none;
+    -webkit-appearance:none;
+    min-width:26px;
+    width:26px;
+    height:26px;
+    border-radius:50%;
+    border:2px solid #3b82f6;
+    background:white;
+    cursor:pointer;
+    position:relative;
+    transition:0.3s ease;
+    box-shadow:
+    0 4px 10px rgba(37,99,235,0.08);
+}
+
+/* CHECKED */
+
+.register-terms input:checked{
+    background:
+    linear-gradient(
+        135deg,
+        #2563eb,
+        #3b82f6
+    );
+    border-color:#2563eb;
+    box-shadow:
+    0 0 18px
+    rgba(37,99,235,0.35);
+}
+
+/* TICK */
+
+.register-terms input:checked::after{
+    content:"✔";
+    position:absolute;
+    color:white;
+    font-size:13px;
+    font-weight:700;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-52%);
+}
+
+/* TEXT */
+
+.register-terms span{
+    font-size:15px;
+    color:#475569;
+    line-height:24px;
+    font-weight:500;
+}
+
+/* ========================= */
+/* BUTTON */
+/* ========================= */
+
+.register-submit-btn{
+    width:100%;
+    height:65px;
+    border:none;
+    border-radius:20px;
+    background:
+    linear-gradient(
+        135deg,
+        #2563eb,
+        #3b82f6
+    );
+    color:white;
+    font-size:19px;
+    font-weight:700;
+    cursor:pointer;
+    transition:0.35s;
+    box-shadow:
+    0 18px 35px
+    rgba(37,99,235,0.25);
+}
+
+.register-submit-btn:hover{
+    transform:translateY(-4px);
+    box-shadow:
+    0 25px 45px
+    rgba(37,99,235,0.35);
+}
+
+/* ========================= */
+/* LOGIN LINK */
+/* ========================= */
+
+.register-login-link{
+    margin-top:28px;
+    text-align:center;
+    font-size:16px;
+    color:#475569;
+}
+
+.register-login-link span{
+    color:#2563eb;
+    font-weight:700;
+    margin-left:6px;
+}
+
+/* ========================= */
+/* MOBILE */
+/* ========================= */
+
+@media(max-width:1000px){
+
+    .register-page{
+        flex-direction:column;
+        gap:50px;
+        padding:50px 25px;
+    }
+
+    .register-left{
+        width:100%;
+        text-align:center;
+    }
+
+    .register-right{
+        width:100%;
+    }
+
+    .register-feature-box{
+        width:100%;
+    }
+
+    .register-badge{
+        margin:auto auto 25px;
+    }
+
+    .register-content h1{
+        font-size:58px;
+        line-height:68px;
+    }
+
+}
+
+@media(max-width:700px){
+
+    .register-content h1{
+        font-size:42px;
+        line-height:52px;
+    }
+
+    .register-content p{
+        font-size:17px;
+        line-height:30px;
+    }
+
+    .register-box{
+        padding:35px 25px;
+        border-radius:28px;
+    }
+
+    .register-top h1{
+        font-size:38px;
+    }
+
+    .register-feature-box{
+        padding:28px;
+    }
+
+}

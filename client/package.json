@@ -12,7 +12,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@react-oauth/google": "^0.13.5",
-    "axios": "^1.16.1",
+    "axios": "^1.18.0",
     "express-session": "^1.19.0",
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.17.0",
@@ -21,10 +21,15 @@
     "passport-google-oauth20": "^2.0.0",
     "passport-linkedin-oauth2": "^2.0.0",
     "react": "^19.2.6",
+    "react-calendar": "^6.0.1",
+    "react-circular-progressbar": "^2.2.0",
+    "react-countup": "^6.5.3",
     "react-dom": "^19.2.6",
     "react-hot-toast": "^2.6.0",
     "react-icons": "^5.6.0",
-    "react-router-dom": "^7.16.0"
+    "react-router-dom": "^7.16.0",
+    "react-type-animation": "^3.2.0",
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

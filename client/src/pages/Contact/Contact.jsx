@@ -196,7 +196,7 @@ const Contact = () => {
               </h3>
 
               <p className="mt-3 text-slate-600">
-                +91 99999 99999
+                +91 8010612993
               </p>
 
             </div>
@@ -239,7 +239,7 @@ const Contact = () => {
               </h3>
 
               <p className="mt-3 text-slate-600">
-                support@cybernet.in
+                cybernet.tech.india@gmail.com
               </p>
 
             </div>
@@ -325,7 +325,7 @@ const Contact = () => {
               </h3>
 
               <p className="mt-3 text-slate-600">
-                Maharashtra, India
+                Amravati, Maharashtra, India
               </p>
 
             </div>
@@ -741,7 +741,7 @@ const Contact = () => {
             >
 
               <a
-                href="https://wa.me/919999999999"
+                href="https://wa.me/918010612993"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="
@@ -764,7 +764,7 @@ const Contact = () => {
               </a>
 
               <a
-                href="mailto:support@cybernet.in"
+                href="mailto:cybernet.tech.india@gmail.com"
                 className="
                 px-8
                 py-4

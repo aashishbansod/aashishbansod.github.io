@@ -1,8 +1,8 @@
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useState } from "react";
 import axios from "axios";
 import { toast } from "react-hot-toast";
-
+import { motion } from "framer-motion";
 import {
   FaUserGraduate,
   FaBrain,
@@ -15,790 +15,651 @@ import {
   FaShieldAlt,
   FaCertificate,
   FaChartLine,
+  FaArrowRight,
+  FaCheckCircle,
+  FaSpinner,
+  FaUserPlus,
+  FaEnvelope,
+  FaPhoneAlt,
+  FaBuilding,
+  FaBook,
+  FaLayerGroup,
+  FaLock,
+  FaIdCard,
 } from "react-icons/fa";
+
+const AUTH_API =
+  import.meta.env.VITE_AUTH_API_URL ||
+  "http://localhost:5000/api/auth";
+
+function getToken() {
+  return (
+    localStorage.getItem("token") ||
+    sessionStorage.getItem("token") ||
+    localStorage.getItem("authToken") ||
+    sessionStorage.getItem("authToken") ||
+    localStorage.getItem("cybernet_token") ||
+    sessionStorage.getItem("cybernet_token") ||
+    ""
+  );
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const base64Url = token.split(".")[1];
+    if (!base64Url) return null;
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(base64));
+  } catch {
+    return null;
+  }
+}
+
+function storeAuthData({ token, user, rememberMe }) {
+  const primaryStorage = rememberMe ? localStorage : sessionStorage;
+  const secondaryStorage = rememberMe ? sessionStorage : localStorage;
+
+  primaryStorage.setItem("token", token);
+  primaryStorage.setItem("authToken", token);
+  primaryStorage.setItem("cybernet_token", token);
+
+  secondaryStorage.removeItem("token");
+  secondaryStorage.removeItem("authToken");
+  secondaryStorage.removeItem("cybernet_token");
+
+  if (user) {
+    primaryStorage.setItem("user", JSON.stringify(user));
+    primaryStorage.setItem("userRole", user.role || "student");
+
+    secondaryStorage.removeItem("user");
+    secondaryStorage.removeItem("userRole");
+  }
+}
 
 function Register() {
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(false);
-
-  const [showPassword, setShowPassword] =
-    useState(false);
-
-  const [showConfirmPassword,
-    setShowConfirmPassword] =
-    useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
     email: "",
     mobile: "",
-
-    // Required Backend Fields
-    collegeName: "Student",
-    course: "Student",
-
+    collegeName: "",
+    course: "",
     currentYear: "",
     internshipDomain: "",
-
     password: "",
     confirmPassword: "",
+    rememberMe: true,
+    agreeTerms: false,
   });
 
+  const internshipDomains = useMemo(
+    () => [
+      "Full Stack Development",
+      "Frontend Development",
+      "Backend Development",
+      "Java Development",
+      "Python Development",
+      "Artificial Intelligence",
+      "Machine Learning",
+      "Cyber Security",
+      "Cloud Computing",
+      "Data Science",
+      "UI/UX Design",
+      "Digital Marketing",
+    ],
+    []
+  );
+
+  const stats = useMemo(
+    () => [
+      { value: "1200+", label: "Students", icon: FaUserGraduate },
+      { value: "25+", label: "Internship Tracks", icon: FaBriefcase },
+      { value: "150+", label: "Projects", icon: FaLaptopCode },
+      { value: "24/7", label: "Support", icon: FaChartLine },
+    ],
+    []
+  );
+
+  useEffect(() => {
+    const token = getToken();
+    if (token) {
+      const payload = decodeJwtPayload(token);
+      const role = payload?.role || "student";
+
+      navigate(
+        String(role).toLowerCase() === "admin"
+          ? "/admin/dashboard"
+          : "/student/dashboard",
+        { replace: true }
+      );
+    }
+  }, [navigate]);
+
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value,
-    });
+    const { name, value, checked, type } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : value,
+    }));
+  };
+
+  const validateForm = () => {
+    const {
+      firstName,
+      lastName,
+      email,
+      mobile,
+      collegeName,
+      course,
+      currentYear,
+      internshipDomain,
+      password,
+      confirmPassword,
+      agreeTerms,
+    } = formData;
+
+    if (
+      !firstName.trim() ||
+      !lastName.trim() ||
+      !email.trim() ||
+      !mobile.trim() ||
+      !collegeName.trim() ||
+      !course.trim() ||
+      !currentYear.trim() ||
+      !internshipDomain.trim() ||
+      !password ||
+      !confirmPassword
+    ) {
+      toast.error("Please fill all required fields");
+      return false;
+    }
+
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return false;
+    }
+
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match");
+      return false;
+    }
+
+    if (!agreeTerms) {
+      toast.error("Please accept the terms and conditions");
+      return false;
+    }
+
+    return true;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (
-      formData.password !==
-      formData.confirmPassword
-    ) {
-      toast.error("Passwords do not match");
-      return;
-    }
+    if (!validateForm()) return;
 
     try {
       setLoading(true);
 
-      const response = await axios.post(
-        "http://localhost:5000/api/auth/register",
-        {
-          firstName: formData.firstName,
-          lastName: formData.lastName,
-          email: formData.email,
-          mobile: formData.mobile,
+      const response = await axios.post(`${AUTH_API}/register`, {
+        firstName: formData.firstName.trim(),
+        lastName: formData.lastName.trim(),
+        email: formData.email.trim(),
+        mobile: formData.mobile.trim(),
+        collegeName: formData.collegeName.trim(),
+        course: formData.course.trim(),
+        currentYear: formData.currentYear.trim(),
+        internshipDomain: formData.internshipDomain.trim(),
+        password: formData.password,
+        role: "student",
+      });
 
-          // Fixed Values
-          collegeName: "Student",
-          course: "Student",
-
-          currentYear:
-            formData.currentYear,
-
-          internshipDomain:
-            formData.internshipDomain,
-
-          password:
-            formData.password,
-        }
-      );
-
-      if (response.data.success) {
-        toast.success(
-          "Registration Successful 🎉"
-        );
-
-        navigate("/login");
+      if (!response.data?.success) {
+        toast.error(response.data?.message || "Registration failed");
+        return;
       }
 
+      const token = response.data.token || "";
+      const user = response.data.student || response.data.user || null;
+
+      if (token) {
+        storeAuthData({
+          token,
+          user,
+          rememberMe: formData.rememberMe,
+        });
+
+        toast.success("Registration successful 🚀");
+
+        const payload = decodeJwtPayload(token);
+        const role = payload?.role || user?.role || "student";
+
+        navigate(
+          String(role).toLowerCase() === "admin"
+            ? "/admin/dashboard"
+            : "/student/dashboard",
+          { replace: true }
+        );
+        return;
+      }
+
+      toast.success("Registration successful. Please login.");
+      navigate("/login?role=student", { replace: true });
     } catch (error) {
-
-      toast.error(
-        error.response?.data?.message ||
-        "Registration Failed"
-      );
-
+      const message =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        "Registration failed. Please try again.";
+      toast.error(message);
     } finally {
-
       setLoading(false);
-
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col lg:flex-row">
-
-      {/* LEFT PANEL START */}
-
-      <div
-        className="
-        hidden
-        lg:flex
-        lg:w-1/2
-        min-h-screen
-        bg-gradient-to-br
-        from-slate-950
-        via-blue-950
-        to-cyan-900
-        text-white
-        relative
-        "
-      >
-              <div className="absolute inset-0">
-
-          <div className="absolute top-10 left-10 w-[450px] h-[450px] bg-cyan-500/20 rounded-full blur-[150px]" />
-
-          <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-blue-500/20 rounded-full blur-[180px]" />
-
-        </div>
-
-        <div className="relative z-10 px-16 py-14 flex flex-col w-full">
-
-          <div className="flex items-center gap-5 mb-16">
-
-            <div
-              className="
-              w-20
-              h-20
-              rounded-3xl
-              bg-gradient-to-r
-              from-blue-500
-              via-cyan-400
-              to-purple-500
-              flex
-              items-center
-              justify-center
-              text-3xl
-              font-black
-              shadow-2xl
-              "
-            >
-              CN
-            </div>
-
-            <div>
-
-              <h1 className="text-5xl font-black">
-                CyberNet
-              </h1>
-
-              <p className="text-cyan-300 font-semibold">
-                Technology Systems
-              </p>
-
-            </div>
-
+    <div className="min-h-screen overflow-hidden bg-slate-100">
+      <div className="grid min-h-screen lg:h-screen lg:grid-cols-[1.05fr_0.95fr]">
+        <div className="relative hidden overflow-hidden bg-gradient-to-br from-slate-950 via-blue-950 to-cyan-900 px-6 py-12 text-white lg:flex lg:flex-col lg:justify-between lg:px-16">
+          <div className="absolute inset-0 overflow-hidden">
+            <div className="absolute left-10 top-10 h-[450px] w-[450px] rounded-full bg-cyan-500/20 blur-[140px]" />
+            <div className="absolute bottom-0 right-0 h-[500px] w-[500px] rounded-full bg-blue-500/20 blur-[180px]" />
+            <div className="absolute left-1/2 top-1/4 h-64 w-64 -translate-x-1/2 rounded-full border border-white/10 bg-white/5 backdrop-blur-xl" />
           </div>
 
-          <h2
-            className="
-            text-6xl
-            font-black
-            leading-tight
-            mb-8
-            "
-          >
-            Launch Your
-            <br />
-            Tech Career
-            <br />
-            With CyberNet
-          </h2>
-
-          <p
-            className="
-            text-xl
-            text-slate-300
-            leading-10
-            mb-12
-            "
-          >
-            Join CyberNet Technology Systems
-            and start your professional
-            internship journey with real-world
-            projects, industry mentorship,
-            verified certificates and career
-            opportunities.
-          </p>
-
-          <div className="space-y-5 mb-12">
-
-            <div className="flex items-center gap-4">
-              <FaRocket className="text-cyan-400 text-xl" />
-              <span>Industry Based Internships</span>
+          <div className="relative z-10">
+            <div className="mb-12 flex items-center gap-5">
+              <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-white/10 text-2xl backdrop-blur-xl">
+                <FaRocket />
+              </div>
+              <div>
+                <h2 className="text-2xl font-black">CyberNet</h2>
+                <p className="text-sm text-cyan-300">Technology Systems</p>
+              </div>
             </div>
 
-            <div className="flex items-center gap-4">
-              <FaBrain className="text-cyan-400 text-xl" />
-              <span>AI Powered Assessments</span>
-            </div>
+            <span className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-5 py-2 font-medium text-cyan-300">
+              <FaRocket />
+              Internship Registration Portal
+            </span>
 
-            <div className="flex items-center gap-4">
-              <FaCertificate className="text-cyan-400 text-xl" />
-              <span>Verified Certificates</span>
-            </div>
+            <h2 className="max-w-2xl text-5xl font-black leading-tight lg:text-6xl">
+              Launch Your
+              <br />
+              <span className="text-cyan-400">Tech Career</span>
+              <br />
+              With CyberNet
+            </h2>
 
-            <div className="flex items-center gap-4">
-              <FaShieldAlt className="text-cyan-400 text-xl" />
-              <span>Secure Student Dashboard</span>
-            </div>
+            <p className="mt-8 max-w-xl text-lg leading-9 text-slate-300 lg:text-xl">
+              Join industry-ready internship programs, AI-powered learning, real projects,
+              mentorship and verified certificates through CyberNet Technology Systems.
+            </p>
 
+            <div className="mt-12 space-y-5">
+              <div className="flex items-center gap-4">
+                <FaCheckCircle className="text-xl text-cyan-400" />
+                <span>Industry Based Internships</span>
+              </div>
+              <div className="flex items-center gap-4">
+                <FaCheckCircle className="text-xl text-cyan-400" />
+                <span>AI Powered Assessment System</span>
+              </div>
+              <div className="flex items-center gap-4">
+                <FaCheckCircle className="text-xl text-cyan-400" />
+                <span>Verified Digital Certificates</span>
+              </div>
+              <div className="flex items-center gap-4">
+                <FaCheckCircle className="text-xl text-cyan-400" />
+                <span>Student Dashboard Access</span>
+              </div>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-6">
-
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6">
-              <FaUserGraduate className="text-cyan-400 text-4xl mb-4" />
-
-              <h3 className="text-5xl font-black">
-                1200+
-              </h3>
-
-              <p className="text-slate-300 mt-2">
-                Students Registered
-              </p>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6">
-              <FaBriefcase className="text-cyan-400 text-4xl mb-4" />
-
-              <h3 className="text-5xl font-black">
-                25+
-              </h3>
-
-              <p className="text-slate-300 mt-2">
-                Internship Tracks
-              </p>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6">
-              <FaLaptopCode className="text-cyan-400 text-4xl mb-4" />
-
-              <h3 className="text-5xl font-black">
-                150+
-              </h3>
-
-              <p className="text-slate-300 mt-2">
-                Projects Completed
-              </p>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6">
-              <FaChartLine className="text-cyan-400 text-4xl mb-4" />
-
-              <h3 className="text-5xl font-black">
-                24/7
-              </h3>
-
-              <p className="text-slate-300 mt-2">
-                Support Available
-              </p>
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-      {/* RIGHT PANEL */}
-
-      <div
-        className="
-        w-full
-        lg:w-1/2
-        flex
-        justify-center
-        px-6
-        py-10
-        "
-      >
-
-        <div className="w-full max-w-2xl">
-
-          <div
-            className="
-            bg-white
-            rounded-[40px]
-            shadow-2xl
-            border
-            border-slate-200
-            p-8
-            lg:p-12
-            "
-          >
-
-            <div className="text-center mb-10">
-
+          <div className="relative z-10 mt-12 grid grid-cols-2 gap-5">
+            {stats.map((item) => (
               <div
-                className="
-                inline-flex
-                items-center
-                justify-center
-                w-20
-                h-20
-                rounded-3xl
-                bg-gradient-to-r
-                from-blue-600
-                to-cyan-500
-                text-white
-                text-3xl
-                shadow-xl
-                mb-5
-                "
+                key={item.label}
+                className="rounded-3xl border border-white/20 bg-white/10 p-6 backdrop-blur-xl"
               >
+                <item.icon className="mb-4 text-4xl text-cyan-400" />
+                <h3 className="text-4xl font-black">{item.value}</h3>
+                <p className="mt-2 text-slate-300">{item.label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-start justify-center overflow-y-auto px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+            className="w-full max-w-2xl rounded-[40px] border border-slate-200 bg-white p-6 shadow-2xl sm:p-8 lg:p-10"
+          >
+            <div className="mb-8 text-center">
+              <div className="mx-auto mb-5 inline-flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-r from-blue-600 to-cyan-500 text-3xl text-white shadow-xl">
                 <FaUserShield />
               </div>
 
-              <h1 className="text-5xl font-black text-slate-900">
+              <h1 className="text-4xl font-black text-slate-900 sm:text-5xl">
                 Create Account
               </h1>
 
-              <p className="text-slate-500 mt-3 text-lg">
+              <p className="mt-3 text-base text-slate-500 sm:text-lg">
                 Register for CyberNet Internship Portal
               </p>
-
             </div>
 
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-5"
-            >
-                            {/* NAME */}
+            <div className="mb-6 flex items-center gap-3">
+              <div className="h-px flex-1 bg-slate-200" />
+              <span className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+                Student registration only
+              </span>
+              <div className="h-px flex-1 bg-slate-200" />
+            </div>
 
-              <div className="grid md:grid-cols-2 gap-4">
-
-                <input
-                  type="text"
-                  name="firstName"
-                  value={formData.firstName}
-                  onChange={handleChange}
-                  placeholder="First Name"
-                  required
-                  className="
-                  h-14
-                  px-5
-                  rounded-2xl
-                  border
-                  border-slate-300
-                  outline-none
-                  focus:border-blue-500
-                  "
-                />
-
-                <input
-                  type="text"
-                  name="lastName"
-                  value={formData.lastName}
-                  onChange={handleChange}
-                  placeholder="Last Name"
-                  required
-                  className="
-                  h-14
-                  px-5
-                  rounded-2xl
-                  border
-                  border-slate-300
-                  outline-none
-                  focus:border-blue-500
-                  "
-                />
-
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    First Name
+                  </label>
+                  <input
+                    type="text"
+                    name="firstName"
+                    value={formData.firstName}
+                    onChange={handleChange}
+                    placeholder="First Name"
+                    autoComplete="given-name"
+                    required
+                    className="h-14 w-full rounded-2xl border border-slate-300 px-5 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Last Name
+                  </label>
+                  <input
+                    type="text"
+                    name="lastName"
+                    value={formData.lastName}
+                    onChange={handleChange}
+                    placeholder="Last Name"
+                    autoComplete="family-name"
+                    required
+                    className="h-14 w-full rounded-2xl border border-slate-300 px-5 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                </div>
               </div>
 
-              {/* EMAIL */}
-
-              <input
-                type="email"
-                name="email"
-                value={formData.email}
-                onChange={handleChange}
-                placeholder="Email Address"
-                required
-                className="
-                w-full
-                h-14
-                px-5
-                rounded-2xl
-                border
-                border-slate-300
-                outline-none
-                focus:border-blue-500
-                "
-              />
-
-              {/* MOBILE */}
-
-              <input
-                type="text"
-                name="mobile"
-                value={formData.mobile}
-                onChange={handleChange}
-                placeholder="Mobile Number"
-                required
-                className="
-                w-full
-                h-14
-                px-5
-                rounded-2xl
-                border
-                border-slate-300
-                outline-none
-                focus:border-blue-500
-                "
-              />
-
-              {/* STUDENT TYPE + YEAR */}
-
-              <div className="grid md:grid-cols-2 gap-4">
-
-                <input
-                  type="text"
-                  value={formData.course}
-                  onChange={handleChange}
-                  placeholder="College Name"
-                  className="
-                  h-14
-                  px-5
-                  rounded-2xl
-                  border
-                  border-slate-300
-                  bg-slate-100
-                  text-slate-700
-                  font-medium
-                  "
-                />
-
-                <select
-                  name="currentYear"
-                  value={formData.currentYear}
-                  onChange={handleChange}
-                  required
-                  className="
-                  h-14
-                  px-5
-                  rounded-2xl
-                  border
-                  border-slate-300
-                  outline-none
-                  focus:border-blue-500
-                  bg-white
-                  "
-                >
-                  <option value="">
-                    Select Current Year
-                  </option>
-
-                  <option value="1st Year">
-                    1st Year
-                  </option>
-
-                  <option value="2nd Year">
-                    2nd Year
-                  </option>
-
-                  <option value="3rd Year">
-                    3rd Year
-                  </option>
-
-                  <option value="Final Year">
-                    Final Year
-                  </option>
-
-                  <option value="Graduate">
-                    Graduate
-                  </option>
-
-                </select>
-
+              <div>
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  Email Address
+                </label>
+                <div className="relative">
+                  <FaEnvelope className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="email"
+                    name="email"
+                    value={formData.email}
+                    onChange={handleChange}
+                    placeholder="Enter your email"
+                    autoComplete="email"
+                    required
+                    className="h-14 w-full rounded-2xl border border-slate-300 px-5 pl-12 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                </div>
               </div>
 
-              {/* INTERNSHIP DOMAIN */}
-
-              <select
-                name="internshipDomain"
-                value={formData.internshipDomain}
-                onChange={handleChange}
-                required
-                className="
-                w-full
-                h-14
-                px-5
-                rounded-2xl
-                border
-                border-slate-300
-                outline-none
-                focus:border-blue-500
-                bg-white
-                "
-              >
-                <option value="">
-                  Select Internship Domain
-                </option>
-
-                <option value="Full Stack Development">
-                  Full Stack Development
-                </option>
-
-                <option value="Frontend Development">
-                  Frontend Development
-                </option>
-
-                <option value="Backend Development">
-                  Backend Development
-                </option>
-
-                <option value="Python Development">
-                  Python Development
-                </option>
-
-                <option value="Java Development">
-                  Java Development
-                </option>
-
-                <option value="Artificial Intelligence">
-                  Artificial Intelligence
-                </option>
-
-                <option value="Machine Learning">
-                  Machine Learning
-                </option>
-
-                <option value="Cyber Security">
-                  Cyber Security
-                </option>
-
-                <option value="Cloud Computing">
-                  Cloud Computing
-                </option>
-
-                <option value="Data Science">
-                  Data Science
-                </option>
-
-              </select>
-
-              {/* PASSWORD */}
-
-              <div className="relative">
-
-                <input
-                  type={showPassword ? "text" : "password"}
-                  name="password"
-                  value={formData.password}
-                  onChange={handleChange}
-                  placeholder="Create Password"
-                  required
-                  className="
-                  w-full
-                  h-14
-                  px-5
-                  pr-14
-                  rounded-2xl
-                  border
-                  border-slate-300
-                  outline-none
-                  focus:border-blue-500
-                  "
-                />
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setShowPassword(!showPassword)
-                  }
-                  className="
-                  absolute
-                  right-5
-                  top-1/2
-                  -translate-y-1/2
-                  text-slate-500
-                  "
-                >
-                  {showPassword ? (
-                    <FaEyeSlash />
-                  ) : (
-                    <FaEye />
-                  )}
-                </button>
-
+              <div>
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  Mobile Number
+                </label>
+                <div className="relative">
+                  <FaPhoneAlt className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="tel"
+                    name="mobile"
+                    value={formData.mobile}
+                    onChange={handleChange}
+                    placeholder="Enter your mobile number"
+                    autoComplete="tel"
+                    required
+                    className="h-14 w-full rounded-2xl border border-slate-300 px-5 pl-12 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                </div>
               </div>
 
-              {/* CONFIRM PASSWORD */}
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    College Name
+                  </label>
+                  <div className="relative">
+                    <FaBuilding className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      name="collegeName"
+                      value={formData.collegeName}
+                      onChange={handleChange}
+                      placeholder="College Name"
+                      required
+                      className="h-14 w-full rounded-2xl border border-slate-300 px-5 pl-12 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    />
+                  </div>
+                </div>
 
-              <div className="relative">
-
-                <input
-                  type={
-                    showConfirmPassword
-                      ? "text"
-                      : "password"
-                  }
-                  name="confirmPassword"
-                  value={formData.confirmPassword}
-                  onChange={handleChange}
-                  placeholder="Confirm Password"
-                  required
-                  className="
-                  w-full
-                  h-14
-                  px-5
-                  pr-14
-                  rounded-2xl
-                  border
-                  border-slate-300
-                  outline-none
-                  focus:border-blue-500
-                  "
-                />
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setShowConfirmPassword(
-                      !showConfirmPassword
-                    )
-                  }
-                  className="
-                  absolute
-                  right-5
-                  top-1/2
-                  -translate-y-1/2
-                  text-slate-500
-                  "
-                >
-                  {showConfirmPassword ? (
-                    <FaEyeSlash />
-                  ) : (
-                    <FaEye />
-                  )}
-                </button>
-
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Course
+                  </label>
+                  <div className="relative">
+                    <FaBook className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      name="course"
+                      value={formData.course}
+                      onChange={handleChange}
+                      placeholder="Course"
+                      required
+                      className="h-14 w-full rounded-2xl border border-slate-300 px-5 pl-12 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    />
+                  </div>
+                </div>
               </div>
-                            {/* TERMS */}
 
-              <label className="flex items-start gap-3">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Current Year
+                  </label>
+                  <div className="relative">
+                    <FaLayerGroup className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <select
+                      name="currentYear"
+                      value={formData.currentYear}
+                      onChange={handleChange}
+                      required
+                      className="h-14 w-full rounded-2xl border border-slate-300 bg-white px-5 pl-12 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    >
+                      <option value="">Select Current Year</option>
+                      <option value="1st Year">1st Year</option>
+                      <option value="2nd Year">2nd Year</option>
+                      <option value="3rd Year">3rd Year</option>
+                      <option value="Final Year">Final Year</option>
+                      <option value="Graduate">Graduate</option>
+                    </select>
+                  </div>
+                </div>
 
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Internship Domain
+                  </label>
+                  <div className="relative">
+                    <FaBriefcase className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <select
+                      name="internshipDomain"
+                      value={formData.internshipDomain}
+                      onChange={handleChange}
+                      required
+                      className="h-14 w-full rounded-2xl border border-slate-300 bg-white px-5 pl-12 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    >
+                      <option value="">Select Internship Domain</option>
+                      {internshipDomains.map((domain) => (
+                        <option key={domain} value={domain}>
+                          {domain}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Create Password
+                  </label>
+                  <div className="relative">
+                    <FaLock className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      name="password"
+                      value={formData.password}
+                      onChange={handleChange}
+                      placeholder="Create Password"
+                      autoComplete="new-password"
+                      required
+                      className="h-14 w-full rounded-2xl border border-slate-300 px-5 pl-12 pr-14 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 transition hover:text-blue-600"
+                    >
+                      {showPassword ? <FaEyeSlash /> : <FaEye />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Confirm Password
+                  </label>
+                  <div className="relative">
+                    <FaLock className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type={showConfirmPassword ? "text" : "password"}
+                      name="confirmPassword"
+                      value={formData.confirmPassword}
+                      onChange={handleChange}
+                      placeholder="Confirm Password"
+                      autoComplete="new-password"
+                      required
+                      className="h-14 w-full rounded-2xl border border-slate-300 px-5 pl-12 pr-14 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((prev) => !prev)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 transition hover:text-blue-600"
+                    >
+                      {showConfirmPassword ? <FaEyeSlash /> : <FaEye />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 rounded-2xl bg-slate-50 p-4">
                 <input
                   type="checkbox"
-                  required
-                  className="mt-1"
+                  name="agreeTerms"
+                  checked={formData.agreeTerms}
+                  onChange={handleChange}
+                  className="mt-1 h-4 w-4 accent-blue-600"
                 />
+                <label className="text-sm text-slate-600">
+                  I agree to CyberNet Technology Systems Terms & Conditions and Privacy
+                  Policy.
+                </label>
+              </div>
 
-                <span className="text-slate-600 text-sm leading-6">
-                  I agree to CyberNet Technology
-                  Systems Terms & Conditions and
-                  Privacy Policy.
-                </span>
-
+              <label className="flex items-center gap-3 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  name="rememberMe"
+                  checked={formData.rememberMe}
+                  onChange={handleChange}
+                  className="h-4 w-4 accent-blue-600"
+                />
+                Remember me on this device
               </label>
-
-              {/* SUBMIT BUTTON */}
 
               <button
                 type="submit"
                 disabled={loading}
-                className="
-                w-full
-                h-14
-                rounded-2xl
-                text-white
-                font-bold
-                text-lg
-                bg-gradient-to-r
-                from-blue-600
-                via-cyan-500
-                to-blue-600
-                shadow-xl
-                hover:shadow-2xl
-                hover:scale-[1.02]
-                transition-all
-                duration-300
-                disabled:opacity-70
-                disabled:hover:scale-100
-                flex
-                items-center
-                justify-center
-                gap-3
-                "
+                className="inline-flex h-14 w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-blue-600 via-cyan-500 to-blue-600 font-bold text-white shadow-xl transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-70"
               >
-                <FaRocket />
-
-                {loading
-                  ? "Creating Account..."
-                  : "Create Account"}
+                {loading ? (
+                  <>
+                    <FaSpinner className="animate-spin" />
+                    Creating Account...
+                  </>
+                ) : (
+                  <>
+                    <FaUserPlus />
+                    Create Account
+                    <FaArrowRight />
+                  </>
+                )}
               </button>
-
             </form>
 
-            {/* BENEFITS */}
-
-            <div
-              className="
-              mt-8
-              p-6
-              rounded-3xl
-              bg-blue-50
-              border
-              border-blue-100
-              "
-            >
-
-              <h3 className="font-bold text-slate-900 text-lg text-center mb-5">
-                Benefits After Registration
-              </h3>
-
-              <div className="grid md:grid-cols-2 gap-4">
-
-                <div className="flex items-center gap-3">
-                  <FaCertificate className="text-blue-600" />
-                  <span className="text-slate-700">
-                    Verified Internship Certificate
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <FaBrain className="text-blue-600" />
-                  <span className="text-slate-700">
-                    AI Based Assessment System
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <FaLaptopCode className="text-blue-600" />
-                  <span className="text-slate-700">
-                    Real Industry Projects
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <FaBriefcase className="text-blue-600" />
-                  <span className="text-slate-700">
-                    Internship Opportunities
-                  </span>
-                </div>
-
-              </div>
-
-            </div>
-
-            {/* LOGIN LINK */}
-
-            <div className="text-center mt-8">
-
+            <div className="mt-8 text-center">
               <p className="text-slate-500">
-
-                Already Registered?
-
+                Already have an account?
                 <Link
-                  to="/login"
-                  className="
-                  ml-2
-                  text-blue-600
-                  font-bold
-                  hover:text-blue-800
-                  "
+                  to="/login?role=student"
+                  className="ml-2 font-bold text-blue-600 transition hover:text-blue-800"
                 >
                   Sign In
                 </Link>
-
               </p>
-
             </div>
 
-          </div>
+            <div className="mt-10 grid grid-cols-3 gap-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center transition hover:bg-blue-50">
+                <FaLaptopCode className="mx-auto mb-2 text-2xl text-blue-600" />
+                <p className="text-xs font-semibold">Coding</p>
+              </div>
 
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center transition hover:bg-cyan-50">
+                <FaCertificate className="mx-auto mb-2 text-2xl text-cyan-600" />
+                <p className="text-xs font-semibold">Certificates</p>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center transition hover:bg-green-50">
+                <FaUserGraduate className="mx-auto mb-2 text-2xl text-green-600" />
+                <p className="text-xs font-semibold">Internships</p>
+              </div>
+            </div>
+
+            <div className="mt-8 border-t border-slate-200 pt-6 text-center">
+              <p className="text-xs text-slate-400">
+                © 2026 CyberNet Technology Systems
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Secure Internship & Learning Platform
+              </p>
+            </div>
+          </motion.div>
         </div>
-
       </div>
-
     </div>
   );
 }

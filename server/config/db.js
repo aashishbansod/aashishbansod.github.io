@@ -1,64 +1,192 @@
+"use strict";
+
+require("dotenv").config();
+
 const mongoose = require("mongoose");
 
-const connectDB = async () => {
+let isConnected = false;
+let listenersAttached = false;
+
+/*
+|--------------------------------------------------------------------------
+| Helpers
+|--------------------------------------------------------------------------
+*/
+
+function validateMongoUri(uri) {
+  if (!uri || typeof uri !== "string") {
+    throw new Error("MONGO_URI environment variable not found");
+  }
+
+  const trimmed = uri.trim();
+
+  if (!trimmed) {
+    throw new Error("MONGO_URI environment variable is empty");
+  }
+
+  if (
+    trimmed.includes("<username>") ||
+    trimmed.includes("<password>") ||
+    trimmed.includes("<cluster>") ||
+    trimmed.includes("<dbname>")
+  ) {
+    throw new Error(
+      "MONGO_URI still contains placeholder values. Paste your real MongoDB Atlas connection string."
+    );
+  }
+
+  return trimmed;
+}
+
+function setupMongoEvents() {
+  if (listenersAttached) return;
+  listenersAttached = true;
+
+  mongoose.connection.on("connected", () => {
+    isConnected = true;
+    console.log("✅ MongoDB Connection Established");
+  });
+
+  mongoose.connection.on("error", (err) => {
+    isConnected = false;
+    console.error("❌ MongoDB Error:", err.message);
+  });
+
+  mongoose.connection.on("disconnected", () => {
+    isConnected = false;
+    console.warn("⚠️ MongoDB Disconnected");
+  });
+
+  mongoose.connection.on("reconnected", () => {
+    isConnected = true;
+    console.log("🔄 MongoDB Reconnected");
+  });
+
+  mongoose.connection.on("close", () => {
+    isConnected = false;
+    console.log("🛑 MongoDB Connection Closed");
+  });
+}
+
+/*
+|--------------------------------------------------------------------------
+| CONNECT DATABASE
+|--------------------------------------------------------------------------
+*/
+
+async function connectDB() {
   try {
-    if (!process.env.MONGO_URI) {
-      console.error("❌ MONGO_URI not found in .env");
-      process.exit(1);
+    if (isConnected && mongoose.connection.readyState === 1) {
+      console.log("✅ MongoDB Already Connected");
+      return mongoose.connection;
     }
 
-    const conn = await mongoose.connect(
-      process.env.MONGO_URI,
-      {
-        serverSelectionTimeoutMS: 10000,
-      }
-    );
+    const mongoUri = validateMongoUri(process.env.MONGO_URI);
 
-    console.log(
-      `✅ MongoDB Connected: ${conn.connection.host}`
-    );
+    mongoose.set("strictQuery", true);
 
-    mongoose.connection.on(
-      "connected",
-      () => {
-        console.log(
-          "📦 MongoDB Connection Established"
-        );
-      }
-    );
+    const conn = await mongoose.connect(mongoUri, {
+      maxPoolSize: 20,
+      minPoolSize: 5,
+      serverSelectionTimeoutMS: 15000,
+      socketTimeoutMS: 45000,
+      family: 4,
+      autoIndex: !process.env.NODE_ENV || process.env.NODE_ENV !== "production",
+    });
 
-    mongoose.connection.on(
-      "error",
-      (err) => {
-        console.error(
-          "❌ MongoDB Error:",
-          err.message
-        );
-      }
-    );
+    isConnected = true;
+    setupMongoEvents();
 
-    mongoose.connection.on(
-      "disconnected",
-      () => {
-        console.warn(
-          "⚠️ MongoDB Disconnected"
-        );
-      }
-    );
+    console.log("\n==================================");
+    console.log("✅ MongoDB Connected Successfully");
+    console.log(`📦 Database : ${conn.connection.name}`);
+    console.log(`🌐 Host     : ${conn.connection.host}`);
+    console.log("==================================\n");
 
+    return conn;
   } catch (error) {
+    isConnected = false;
 
-    console.error(
-      "❌ Database Connection Failed"
-    );
+    console.error("\n❌ MongoDB Connection Failed");
+    console.error("Message:", error.message);
+    console.error("Name:", error.name);
 
-    console.error(
-      "Reason:",
-      error.message
-    );
+    throw error;
+  }
+}
 
+/*
+|--------------------------------------------------------------------------
+| CONNECTION STATUS
+|--------------------------------------------------------------------------
+*/
+
+function getConnectionStatus() {
+  return {
+    connected: isConnected,
+    readyState: mongoose.connection.readyState,
+    database: mongoose.connection.name || "Not Connected",
+    host: mongoose.connection.host || "Not Connected",
+  };
+}
+
+/*
+|--------------------------------------------------------------------------
+| GRACEFUL SHUTDOWN
+|--------------------------------------------------------------------------
+*/
+
+let shuttingDown = false;
+
+async function closeDatabaseConnection(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  try {
+    console.log(`\n🛑 ${signal} received. Closing MongoDB connection...`);
+
+    await mongoose.connection.close(false);
+
+    console.log("✅ MongoDB Connection Closed Successfully");
+    process.exit(0);
+  } catch (error) {
+    console.error("❌ Error closing MongoDB connection");
+    console.error(error);
     process.exit(1);
   }
-};
+}
+
+/*
+|--------------------------------------------------------------------------
+| PROCESS HANDLERS
+|--------------------------------------------------------------------------
+*/
+
+process.on("SIGINT", () => {
+  closeDatabaseConnection("SIGINT");
+});
+
+process.on("SIGTERM", () => {
+  closeDatabaseConnection("SIGTERM");
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ UNHANDLED REJECTION");
+  console.error(reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("❌ UNCAUGHT EXCEPTION");
+  console.error(error);
+  process.exit(1);
+});
+
+/*
+|--------------------------------------------------------------------------
+| EXPORTS
+|--------------------------------------------------------------------------
+*/
 
 module.exports = connectDB;
+module.exports.getConnectionStatus = getConnectionStatus;
+module.exports.closeDatabaseConnection = closeDatabaseConnection;

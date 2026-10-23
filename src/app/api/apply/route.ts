@@ -4,8 +4,6 @@ import crypto from "node:crypto";
 
 import nodemailer from "nodemailer";
 
-
-
 import connectDB from "@/lib/mongodb";
 
 import Application from "@/models/Application";
@@ -14,15 +12,11 @@ import EmailVerification from "@/models/EmailVerification";
 
 import Internship from "@/models/Internship";
 
-
-
 export const runtime = "nodejs";
 
 export const dynamic = "force-dynamic";
 
 export const revalidate = 0;
-
-
 
 const OTP_LENGTH = readIntegerEnv("OTP_LENGTH", 6, 4, 8);
 
@@ -54,1000 +48,898 @@ const MAX_BRANCH_LENGTH = 120;
 
 const MAX_TRACK_LENGTH = 150;
 
-
-
 const NO_CACHE_HEADERS = {
 
-  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
 
-  Pragma: "no-cache",
+  Pragma: "no-cache",
 
-  Expires: "0",
+  Expires: "0",
 
-  "X-Content-Type-Options": "nosniff",
+  "X-Content-Type-Options": "nosniff",
 
-  "X-Frame-Options": "DENY",
+  "X-Frame-Options": "DENY",
 
-  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
 
 };
-
-
 
 type ApplyRequestBody = {
 
-  fullName?: unknown;
+  fullName?: unknown;
 
-  email?: unknown;
+  email?: unknown;
 
-  phone?: unknown;
+  phone?: unknown;
 
-  collegeUniversity?: unknown;
+  collegeUniversity?: unknown;
 
-  course?: unknown;
+  course?: unknown;
 
-  branchStream?: unknown;
+  branchStream?: unknown;
 
-  graduationYear?: unknown;
+  graduationYear?: unknown;
 
-  internshipTrack?: unknown;
+  internshipTrack?: unknown;
 
-  skills?: unknown;
+  skills?: unknown;
 
-  consentTerms?: unknown;
+  consentTerms?: unknown;
 
-  consentPrivacy?: unknown;
+  consentPrivacy?: unknown;
 
-  consentDeclaration?: unknown;
+  consentDeclaration?: unknown;
 
-  // Legacy plan and price fields are intentionally ignored.*
+  // Legacy plan and price fields are intentionally ignored.
 
-  internshipId?: unknown;
+  internshipId?: unknown;
 
-  planCode?: unknown;
+  planCode?: unknown;
 
-  duration?: unknown;
+  duration?: unknown;
 
-  selectedDuration?: unknown;
+  selectedDuration?: unknown;
 
-  price?: unknown;
+  price?: unknown;
 
-  priceInPaise?: unknown;
+  priceInPaise?: unknown;
 
 };
-
-
 
 type PendingApplicationPayload = {
 
-  fullName: string;
+  fullName: string;
 
-  email: string;
+  email: string;
 
-  phone: string;
+  phone: string;
 
-  collegeUniversity: string;
+  collegeUniversity: string;
 
-  course: string;
+  course: string;
 
-  branchStream: string;
+  branchStream: string;
 
-  graduationYear: string;
+  graduationYear: string;
 
-  internshipTrack: string;
+  internshipTrack: string;
 
-  skills: string[];
+  skills: string[];
 
-  consentTerms: true;
+  consentTerms: true;
 
-  consentPrivacy: true;
+  consentPrivacy: true;
 
-  consentDeclaration: true;
+  consentDeclaration: true;
 
 };
-
-
 
 type PublicInternship = {
 
-  id: string;
+  id: string;
 
-  title: string;
+  title: string;
 
-  domain: string;
+  domain: string;
 
-  assessmentDomain: string;
+  assessmentDomain: string;
 
-  assessmentRequired: boolean;
+  assessmentRequired: boolean;
 
 };
 
-
-
 function readIntegerEnv(name: string, fallback: number, min: number, max: number): number {
 
-  const raw = process.env[name];
+  const raw = process.env[name];
 
-  if (raw === undefined || raw.trim() === "") return fallback;
+  if (raw === undefined || raw.trim() === "") return fallback;
 
-  const value = Number(raw);
+  const value = Number(raw);
 
-  if (!Number.isInteger(value) || value < min || value > max) {
+  if (!Number.isInteger(value) || value < min || value > max) {
 
-    throw new Error(`${name} must be an integer between ${min} and ${max}.`);
+    throw new Error(`${name} must be an integer between ${min} and ${max}.`);
 
-  }
+  }
 
-  return value;
+  return value;
 
 }
-
-
 
 function jsonResponse(
 
-  body: Record<string, unknown>,
+  body: Record<string, unknown>,
 
-  status = 200,
+  status = 200,
 
-  extraHeaders?: HeadersInit,
+  extraHeaders?: HeadersInit,
 
 ): NextResponse {
 
-  return NextResponse.json(body, {
+  return NextResponse.json(body, {
 
-    status,
+    status,
 
-    headers: { ...NO_CACHE_HEADERS, ...extraHeaders },
+    headers: { ...NO_CACHE_HEADERS, ...extraHeaders },
 
-  });
+  });
 
 }
-
-
 
 function fail(message: string, code: string, status: number, extra: Record<string, unknown> = {}) {
 
-  return jsonResponse({ success: false, message, error: message, code, ...extra }, status);
+  return jsonResponse({ success: false, message, error: message, code, ...extra }, status);
 
 }
-
-
 
 function cleanString(value: unknown): string {
 
-  return typeof value === "string" ? value.trim() : "";
+  return typeof value === "string" ? value.trim() : "";
 
 }
-
-
 
 function normalizeText(value: unknown): string {
 
-  return cleanString(value).replace(/\s+/g, " ");
+  return cleanString(value).replace(/\s+/g, " ");
 
 }
-
-
 
 function normalizeEmail(value: unknown): string {
 
-  return normalizeText(value).toLowerCase();
+  return normalizeText(value).toLowerCase();
 
 }
-
-
 
 function normalizePhone(value: unknown): string {
 
-  const raw = cleanString(value);
+  const raw = cleanString(value);
 
-  const digits = raw.replace(/\D/g, "");
+  const digits = raw.replace(/\D/g, "");
 
-  return raw.startsWith("+") ? `+${digits}` : digits;
+  return raw.startsWith("+") ? `+${digits}` : digits;
 
 }
-
-
 
 function escapeHtml(value: string): string {
 
-  return value
+  return value
 
-    .replaceAll("&", "&amp;")
+    .replaceAll("&", "&amp;")
 
-    .replaceAll("<", "&lt;")
+    .replaceAll("<", "&lt;")
 
-    .replaceAll(">", "&gt;")
+    .replaceAll(">", "&gt;")
 
-    .replaceAll('"', "&quot;")
+    .replaceAll('"', "&quot;")
 
-    .replaceAll("'", "&#039;");
+    .replaceAll("'", "&#039;");
 
 }
-
-
 
 function validEmail(email: string): boolean {
 
-  return email.length <= MAX_EMAIL_LENGTH && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  return email.length <= MAX_EMAIL_LENGTH && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 }
-
-
 
 function validName(name: string): boolean {
 
-  return name.length >= 2 && name.length <= MAX_NAME_LENGTH && /^[\p{L}][\p{L}\p{M}.'’ -]*$/u.test(name);
+  return name.length >= 2 && name.length <= MAX_NAME_LENGTH && /^[\p{L}][\p{L}\p{M}.'’ -]*$/u.test(name);
 
 }
-
-
 
 function parseYear(value: unknown): number | null {
 
-  if (typeof value !== "string" && typeof value !== "number") return null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
 
-  const year = Number(value);
+  const year = Number(value);
 
-  return Number.isInteger(year) ? year : null;
+  return Number.isInteger(year) ? year : null;
 
 }
-
-
 
 function normalizeSkills(value: unknown): string[] {
 
-  if (!Array.isArray(value)) return [];
+  if (!Array.isArray(value)) return [];
 
-  const unique = new Set<string>();
+  const unique = new Set<string>();
 
-  for (const item of value) {
+  for (const item of value) {
 
-    if (typeof item !== "string") continue;
+    if (typeof item !== "string") continue;
 
-    const skill = normalizeText(item);
+    const skill = normalizeText(item);
 
-    if (skill && skill.length <= MAX_SKILL_LENGTH) unique.add(skill);
+    if (skill && skill.length <= MAX_SKILL_LENGTH) unique.add(skill);
 
-  }
+  }
 
-  return [...unique];
+  return [...unique];
 
 }
-
-
 
 async function readJsonBody(request: Request): Promise<ApplyRequestBody | NextResponse> {
 
-  const contentType = request.headers.get("content-type") ?? "";
+  const contentType = request.headers.get("content-type") ?? "";
 
-  if (!contentType.toLowerCase().includes("application/json")) {
+  if (!contentType.toLowerCase().includes("application/json")) {
 
-    return fail("Content-Type must be application/json.", "UNSUPPORTED_CONTENT_TYPE", 415);
+    return fail("Content-Type must be application/json.", "UNSUPPORTED_CONTENT_TYPE", 415);
 
-  }
+  }
 
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
 
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_SIZE_BYTES) {
 
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
+    return fail("Request body is too large.", "REQUEST_TOO_LARGE", 413);
 
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_SIZE_BYTES) {
+  }
 
-    return fail("Request body is too large.", "REQUEST_TOO_LARGE", 413);
+  try {
 
-  }
+    const raw = await request.text();
 
+    if (Buffer.byteLength(raw, "utf8") > MAX_BODY_SIZE_BYTES) {
 
+      return fail("Request body is too large.", "REQUEST_TOO_LARGE", 413);
 
-  try {
+    }
 
-    const raw = await request.text();
+    const parsed: unknown = JSON.parse(raw);
 
-    if (Buffer.byteLength(raw, "utf8") > MAX_BODY_SIZE_BYTES) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 
-      return fail("Request body is too large.", "REQUEST_TOO_LARGE", 413);
+      return fail("Request body must be a JSON object.", "INVALID_REQUEST_BODY", 400);
 
-    }
+    }
 
-    const parsed: unknown = JSON.parse(raw);
+    return parsed as ApplyRequestBody;
 
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  } catch {
 
-      return fail("Request body must be a JSON object.", "INVALID_REQUEST_BODY", 400);
+    return fail("Invalid JSON request body.", "INVALID_JSON", 400);
 
-    }
-
-    return parsed as ApplyRequestBody;
-
-  } catch {
-
-    return fail("Invalid JSON request body.", "INVALID_JSON", 400);
-
-  }
+  }
 
 }
-
-
 
 function isNextResponse(value: ApplyRequestBody | NextResponse): value is NextResponse {
 
-  return value instanceof NextResponse;
+  return value instanceof NextResponse;
 
 }
-
-
 
 function generateOtp(): string {
 
-  return crypto.randomInt(0, 10 ** OTP_LENGTH).toString().padStart(OTP_LENGTH, "0");
+  return crypto.randomInt(0, 10 ** OTP_LENGTH).toString().padStart(OTP_LENGTH, "0");
 
 }
-
-
 
 function hashOtp(otp: string): string {
 
-  return crypto.createHash("sha256").update(otp, "utf8").digest("hex");
+  return crypto.createHash("sha256").update(otp, "utf8").digest("hex");
 
 }
-
-
 
 function safeErrorMetadata(error: unknown): Record<string, unknown> {
 
-  if (!error || typeof error !== "object") return { message: "Unknown error" };
+  if (!error || typeof error !== "object") return { message: "Unknown error" };
 
-  const e = error as { code?: unknown; command?: unknown; responseCode?: unknown; message?: unknown };
+  const e = error as { code?: unknown; command?: unknown; responseCode?: unknown; message?: unknown };
 
-  return {
+  return {
 
-    code: typeof e.code === "string" ? e.code : undefined,
+    code: typeof e.code === "string" ? e.code : undefined,
 
-    command: typeof e.command === "string" ? e.command : undefined,
+    command: typeof e.command === "string" ? e.command : undefined,
 
-    responseCode: typeof e.responseCode === "number" ? e.responseCode : undefined,
+    responseCode: typeof e.responseCode === "number" ? e.responseCode : undefined,
 
-    message: typeof e.message === "string" ? e.message.slice(0, 300) : undefined,
+    message: typeof e.message === "string" ? e.message.slice(0, 300) : undefined,
 
-  };
+  };
 
 }
-
-
 
 function createTransporter() {
 
-  const host = cleanString(process.env.SMTP_HOST);
+  const host = cleanString(process.env.SMTP_HOST);
 
-  const user = cleanString(process.env.SMTP_USER);
+  const user = cleanString(process.env.SMTP_USER);
 
-  const pass = process.env.SMTP_PASS ?? "";
+  const pass = process.env.SMTP_PASS ?? "";
 
-  const port = Number(process.env.SMTP_PORT ?? 465);
+  const port = Number(process.env.SMTP_PORT ?? 465);
 
+  if (!host || !user || !pass.trim()) {
 
+    throw new Error("SMTP_HOST, SMTP_USER, and SMTP_PASS must be configured in the production environment.");
 
-  if (!host || !user || !pass.trim()) {
+  }
 
-    throw new Error("SMTP_HOST, SMTP_USER, and SMTP_PASS must be configured in the production environment.");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
 
-  }
+    throw new Error("SMTP_PORT must be a valid port number.");
 
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  }
 
-    throw new Error("SMTP_PORT must be a valid port number.");
+  return nodemailer.createTransport({
 
-  }
+    host,
 
+    port,
 
+    secure: port === 465,
 
-  return nodemailer.createTransport({
+    auth: { user, pass },
 
-    host,
+    connectionTimeout: 12_000,
 
-    port,
+    greetingTimeout: 12_000,
 
-    secure: port === 465,
+    socketTimeout: 20_000,
 
-    auth: { user, pass },
+    tls: { minVersion: "TLSv1.2" },
 
-    connectionTimeout: 12_000,
-
-    greetingTimeout: 12_000,
-
-    socketTimeout: 20_000,
-
-    tls: { minVersion: "TLSv1.2" },
-
-  });
+  });
 
 }
-
-
 
 async function sendOtpEmail(
 
-  email: string,
+  email: string,
 
-  fullName: string,
+  fullName: string,
 
-  otp: string,
+  otp: string,
 
-  internship: PublicInternship,
+  internship: PublicInternship,
 
 ): Promise<void> {
 
-  const transporter = createTransporter();
+  const transporter = createTransporter();
 
-  const smtpUser = cleanString(process.env.SMTP_USER);
+  const smtpUser = cleanString(process.env.SMTP_USER);
 
-  const from = cleanString(process.env.EMAIL_FROM) || `CyberNet Careers <${smtpUser}>`;
+  const from = cleanString(process.env.EMAIL_FROM) || `CyberNet Careers <${smtpUser}>`;
 
-  const safeName = escapeHtml(fullName);
+  const safeName = escapeHtml(fullName);
 
-  const safeOtp = escapeHtml(otp);
+  const safeOtp = escapeHtml(otp);
 
-  const safeTitle = escapeHtml(internship.title);
+  const safeTitle = escapeHtml(internship.title);
 
-  const safeDomain = escapeHtml(internship.domain);
+  const safeDomain = escapeHtml(internship.domain);
 
-  const expiry = `${OTP_EXPIRE_MINUTES} minutes`;
+  const expiry = `${OTP_EXPIRE_MINUTES} minutes`;
 
+  try {
 
+    await transporter.sendMail({
 
-  try {
+      from,
 
-    await transporter.sendMail({
+      to: email,
 
-      from,
+      subject: "CyberNet Careers | Email Verification OTP",
 
-      to: email,
+      text: [
 
-      subject: "CyberNet Careers | Email Verification OTP",
+        `Hello ${fullName},`,
 
-      text: [
+        "",
 
-        `Hello ${fullName},`,
+        "Your CyberNet Careers email verification code is:",
 
-        "",
+        "",
 
-        "Your CyberNet Careers email verification code is:",
+        otp,
 
-        "",
+        "",
 
-        otp,
+        `Internship domain: ${internship.domain}`,
 
-        "",
+        `Program: ${internship.title}`,
 
-        `Internship domain: ${internship.domain}`,
+        `This OTP expires in ${expiry}.`,
 
-        `Program: ${internship.title}`,
+        "Never share this OTP with anyone.",
 
-        `This OTP expires in ${expiry}.`,
+        "Your application is registered only after successful email verification.",
 
-        "Never share this OTP with anyone.",
+        "No payment is required at the application stage.",
 
-        "Your application is registered only after successful email verification.",
+        "CyberNet Careers",
 
-        "No payment is required at the application stage.",
+      ].join("\n"),
 
-        "CyberNet Careers",
+      html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CyberNet Careers Email Verification</title></head><body style="margin:0;padding:24px 12px;background:#f4f8ff;font-family:Arial,Helvetica,sans-serif;color:#0f172a"><main style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #dbe7ff;border-radius:16px;overflow:hidden"><header style="padding:24px;text-align:center;background:#2563eb;color:#fff;font-size:22px;font-weight:800">CyberNet Careers</header><section style="padding:28px 24px"><h1 style="margin:0;text-align:center;font-size:25px">Verify Your Email</h1><p style="color:#475569;line-height:1.6">Hello ${safeName}, use this verification code to continue your application.</p><div style="margin:24px 0;padding:24px;text-align:center;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px"><div style="font-size:11px;letter-spacing:2px;color:#64748b;font-weight:700">VERIFICATION CODE</div><div style="margin-top:12px;color:#2563eb;font-size:34px;font-weight:800;letter-spacing:8px">${safeOtp}</div></div><p style="color:#475569">This OTP expires in <strong>${expiry}</strong>.</p><p style="padding:14px;background:#f8fafc;border-radius:10px;color:#334155;line-height:1.6"><strong>Internship domain:</strong><br>${safeDomain}<br><br><strong>Program:</strong><br>${safeTitle}</p><p style="color:#9a3412;background:#fff7ed;padding:12px;border-radius:8px">Never share this OTP. No payment is required at the application stage.</p></section><footer style="padding:18px;text-align:center;background:#f8fafc;color:#64748b;font-size:12px">Automated email — please do not reply.</footer></main></body></html>`,
 
-      ].join("\n"),
+    });
 
-      html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CyberNet Careers Email Verification</title></head><body style="margin:0;padding:24px 12px;background:#f4f8ff;font-family:Arial,Helvetica,sans-serif;color:#0f172a"><main style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #dbe7ff;border-radius:16px;overflow:hidden"><header style="padding:24px;text-align:center;background:#2563eb;color:#fff;font-size:22px;font-weight:800">CyberNet Careers</header><section style="padding:28px 24px"><h1 style="margin:0;text-align:center;font-size:25px">Verify Your Email</h1><p style="color:#475569;line-height:1.6">Hello ${safeName}, use this verification code to continue your application.</p><div style="margin:24px 0;padding:24px;text-align:center;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px"><div style="font-size:11px;letter-spacing:2px;color:#64748b;font-weight:700">VERIFICATION CODE</div><div style="margin-top:12px;color:#2563eb;font-size:34px;font-weight:800;letter-spacing:8px">${safeOtp}</div></div><p style="color:#475569">This OTP expires in <strong>${expiry}</strong>.</p><p style="padding:14px;background:#f8fafc;border-radius:10px;color:#334155;line-height:1.6"><strong>Internship domain:</strong><br>${safeDomain}<br><br><strong>Program:</strong><br>${safeTitle}</p><p style="color:#9a3412;background:#fff7ed;padding:12px;border-radius:8px">Never share this OTP. No payment is required at the application stage.</p></section><footer style="padding:18px;text-align:center;background:#f8fafc;color:#64748b;font-size:12px">Automated email — please do not reply.</footer></main></body></html>`,
+  } finally {
 
-    });
+    transporter.close();
 
-  } finally {
-
-    transporter.close();
-
-  }
+  }
 
 }
-
-
 
 function duplicateKey(error: unknown): boolean {
 
-  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === 11000);
+  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === 11000);
 
 }
-
-
 
 async function findAvailableInternship(track: string): Promise<PublicInternship | null> {
 
-  // Exact, case-insensitive match. Do not accept a plan or price from the browser.*
+  // Exact, case-insensitive match. Do not accept a plan or price from the browser.
 
-  const escaped = track.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = track.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  const exactTrack = new RegExp(`^${escaped}$`, "i");
+  const exactTrack = new RegExp(`^${escaped}$`, "i");
 
-  const internship = await Internship.findOne(
+  const internship = await Internship.findOne(
 
-    {
+    {
 
-      $or: [{ domain: exactTrack }, { assessmentDomain: exactTrack }],
+      $or: [{ domain: exactTrack }, { assessmentDomain: exactTrack }],
 
-      status: "active",
+      status: "active",
 
-      isPublic: true,
+      isPublic: true,
 
-      isSelectable: true,
+      isSelectable: true,
 
-      applicationRequired: true,
+      applicationRequired: true,
 
-    },
+    },
 
-    { _id: 1, title: 1, name: 1, domain: 1, assessmentDomain: 1, assessmentRequired: 1 },
+    { _id: 1, title: 1, name: 1, domain: 1, assessmentDomain: 1, assessmentRequired: 1 },
 
-  )
+  )
 
-    .sort({ sortOrder: 1, createdAt: -1, _id: -1 })
+    .sort({ sortOrder: 1, createdAt: -1, _id: -1 })
 
-    .lean()
+    .lean()
 
-    .exec();
+    .exec();
 
+  if (!internship) return null;
 
+  const record = internship as unknown as {
 
-  if (!internship) return null;
+    _id: unknown;
 
-  const record = internship as unknown as {
+    title?: unknown;
 
-    _id: unknown;
+    name?: unknown;
 
-    title?: unknown;
+    domain?: unknown;
 
-    name?: unknown;
+    assessmentDomain?: unknown;
 
-    domain?: unknown;
+    assessmentRequired?: unknown;
 
-    assessmentDomain?: unknown;
+  };
 
-    assessmentRequired?: unknown;
+  const domain = normalizeText(record.domain) || track;
 
-  };
+  return {
 
-  const domain = normalizeText(record.domain) || track;
+    id: String(record._id),
 
-  return {
+    title: normalizeText(record.title) || normalizeText(record.name) || "Internship Program",
 
-    id: String(record._id),
+    domain,
 
-    title: normalizeText(record.title) || normalizeText(record.name) || "Internship Program",
+    assessmentDomain: normalizeText(record.assessmentDomain) || domain,
 
-    domain,
+    assessmentRequired: record.assessmentRequired !== false,
 
-    assessmentDomain: normalizeText(record.assessmentDomain) || domain,
-
-    assessmentRequired: record.assessmentRequired !== false,
-
-  };
+  };
 
 }
-
-
 
 export async function POST(request: Request): Promise<NextResponse> {
 
-  const requestId = crypto.randomUUID();
+  const requestId = crypto.randomUUID();
 
+  try {
 
+    if (request.signal.aborted) {
 
-  try {
+      return fail("Request was cancelled. Please try again.", "REQUEST_ABORTED", 400);
 
-    if (request.signal.aborted) {
+    }
 
-      return fail("Request was cancelled. Please try again.", "REQUEST_ABORTED", 400);
+    const parsed = await readJsonBody(request);
 
-    }
+    if (isNextResponse(parsed)) return parsed;
 
+    const body = parsed;
 
+    const fullName = normalizeText(body.fullName);
 
-    const parsed = await readJsonBody(request);
+    const email = normalizeEmail(body.email);
 
-    if (isNextResponse(parsed)) return parsed;
+    const phone = normalizePhone(body.phone);
 
-    const body = parsed;
+    const collegeUniversity = normalizeText(body.collegeUniversity);
 
+    const course = normalizeText(body.course);
 
+    const branchStream = normalizeText(body.branchStream);
 
-    const fullName = normalizeText(body.fullName);
+    const internshipTrack = normalizeText(body.internshipTrack);
 
-    const email = normalizeEmail(body.email);
+    const graduationYear = parseYear(body.graduationYear);
 
-    const phone = normalizePhone(body.phone);
+    const skills = normalizeSkills(body.skills);
 
-    const collegeUniversity = normalizeText(body.collegeUniversity);
+    if (!validName(fullName)) return fail("Enter a valid full name.", "INVALID_NAME", 400);
 
-    const course = normalizeText(body.course);
+    if (!validEmail(email)) return fail("Enter a valid email address.", "INVALID_EMAIL", 400);
 
-    const branchStream = normalizeText(body.branchStream);
+    if (phone.length > MAX_PHONE_LENGTH || !/^\+[1-9]\d{6,14}$/.test(phone)) {
 
-    const internshipTrack = normalizeText(body.internshipTrack);
+      return fail("Enter a valid international phone number with country code.", "INVALID_PHONE", 400);
 
-    const graduationYear = parseYear(body.graduationYear);
+    }
 
-    const skills = normalizeSkills(body.skills);
+    if (!collegeUniversity || collegeUniversity.length > MAX_COLLEGE_LENGTH) {
 
+      return fail("Enter a valid College / University name.", "INVALID_COLLEGE", 400);
 
+    }
 
-    if (!validName(fullName)) return fail("Enter a valid full name.", "INVALID_NAME", 400);
+    if (!course || course.length > MAX_COURSE_LENGTH) return fail("Select a valid course.", "INVALID_COURSE", 400);
 
-    if (!validEmail(email)) return fail("Enter a valid email address.", "INVALID_EMAIL", 400);
+    if (!branchStream || branchStream.length > MAX_BRANCH_LENGTH) return fail("Select a valid branch / stream.", "INVALID_BRANCH", 400);
 
-    if (phone.length > MAX_PHONE_LENGTH || !/^\+[1-9]\d{6,14}$/.test(phone)) {
+    if (graduationYear === null || graduationYear < 2020 || graduationYear > 2050) {
 
-      return fail("Enter a valid international phone number with country code.", "INVALID_PHONE", 400);
+      return fail("Graduation year must be between 2020 and 2050.", "INVALID_GRADUATION_YEAR", 400);
 
-    }
+    }
 
-    if (!collegeUniversity || collegeUniversity.length > MAX_COLLEGE_LENGTH) {
+    if (!internshipTrack || internshipTrack.length > MAX_TRACK_LENGTH) {
 
-      return fail("Enter a valid College / University name.", "INVALID_COLLEGE", 400);
+      return fail("Select a valid internship domain.", "INVALID_INTERNSHIP_TRACK", 400);
 
-    }
+    }
 
-    if (!course || course.length > MAX_COURSE_LENGTH) return fail("Select a valid course.", "INVALID_COURSE", 400);
+    if (skills.length === 0) return fail("Select at least one relevant skill.", "SKILLS_REQUIRED", 400);
 
-    if (!branchStream || branchStream.length > MAX_BRANCH_LENGTH) return fail("Select a valid branch / stream.", "INVALID_BRANCH", 400);
+    if (skills.length > MAX_SKILLS) return fail(`You can select a maximum of ${MAX_SKILLS} skills.`, "SKILLS_TOO_MANY", 400);
 
-    if (graduationYear === null || graduationYear < 2020 || graduationYear > 2050) {
+    if (body.skills instanceof Array && body.skills.some((skill) => typeof skill === "string" && skill.trim().length > MAX_SKILL_LENGTH)) {
 
-      return fail("Graduation year must be between 2020 and 2050.", "INVALID_GRADUATION_YEAR", 400);
+      return fail("One or more skills are too long.", "INVALID_SKILL", 400);
 
-    }
+    }
 
-    if (!internshipTrack || internshipTrack.length > MAX_TRACK_LENGTH) {
+    if (body.consentTerms !== true || body.consentPrivacy !== true || body.consentDeclaration !== true) {
 
-      return fail("Select a valid internship domain.", "INVALID_INTERNSHIP_TRACK", 400);
+      return fail("Please accept all required confirmations before submitting.", "CONSENT_REQUIRED", 400);
 
-    }
+    }
 
-    if (skills.length === 0) return fail("Select at least one relevant skill.", "SKILLS_REQUIRED", 400);
+    try {
 
-    if (skills.length > MAX_SKILLS) return fail(`You can select a maximum of ${MAX_SKILLS} skills.`, "SKILLS_TOO_MANY", 400);
+      await connectDB();
 
-    if (body.skills instanceof Array && body.skills.some((skill) => typeof skill === "string" && skill.trim().length > MAX_SKILL_LENGTH)) {
+    } catch (error) {
 
-      return fail("One or more skills are too long.", "INVALID_SKILL", 400);
+      console.error("[APPLY] MongoDB connection failed", { requestId, error: safeErrorMetadata(error) });
 
-    }
+      return fail("The application service is temporarily unavailable. Please try again later.", "DATABASE_UNAVAILABLE", 503, { requestId });
 
-    if (body.consentTerms !== true || body.consentPrivacy !== true || body.consentDeclaration !== true) {
+    }
 
-      return fail("Please accept all required confirmations before submitting.", "CONSENT_REQUIRED", 400);
+    const existingApplication = await Application.findOne({ email }, { _id: 1, applicationId: 1, status: 1, emailVerified: 1 }).lean().exec();
 
-    }
+    if (existingApplication) {
 
+      return fail("An application already exists for this email address.", "APPLICATION_ALREADY_EXISTS", 409, {
 
+        applicationId: existingApplication.applicationId ? String(existingApplication.applicationId) : "",
 
-    try {
+        status: existingApplication.status ? String(existingApplication.status) : "",
 
-      await connectDB();
+        emailVerified: existingApplication.emailVerified === true,
 
-    } catch (error) {
+      });
 
-      console.error("[APPLY] MongoDB connection failed", { requestId, error: safeErrorMetadata(error) });
+    }
 
-      return fail("The application service is temporarily unavailable. Please try again later.", "DATABASE_UNAVAILABLE", 503, { requestId });
+    let internship: PublicInternship | null;
 
-    }
+    try {
 
+      internship = await findAvailableInternship(internshipTrack);
 
+    } catch (error) {
 
-    const existingApplication = await Application.findOne({ email }, { _id: 1, applicationId: 1, status: 1, emailVerified: 1 }).lean().exec();
+      console.error("[APPLY] Internship lookup failed", { requestId, error: safeErrorMetadata(error) });
 
-    if (existingApplication) {
+      return fail("Unable to verify internship availability right now. Please try again.", "INTERNSHIP_LOOKUP_FAILED", 503, { requestId });
 
-      return fail("An application already exists for this email address.", "APPLICATION_ALREADY_EXISTS", 409, {
+    }
 
-        applicationId: existingApplication.applicationId ? String(existingApplication.applicationId) : "",
+    if (!internship) {
 
-        status: existingApplication.status ? String(existingApplication.status) : "",
+      return fail("Applications are not currently available for the selected internship domain.", "INTERNSHIP_UNAVAILABLE", 409);
 
-        emailVerified: existingApplication.emailVerified === true,
+    }
 
-      });
+    const now = new Date();
 
-    }
+    let existingVerification;
 
+    try {
 
+      existingVerification = await EmailVerification.findOne({ email }).exec();
 
-    let internship: PublicInternship | null;
+    } catch (error) {
 
-    try {
+      console.error("[APPLY] Verification session lookup failed", { requestId, error: safeErrorMetadata(error) });
 
-      internship = await findAvailableInternship(internshipTrack);
+      return fail("Unable to start email verification right now. Please try again.", "OTP_SESSION_LOOKUP_FAILED", 503, { requestId });
 
-    } catch (error) {
+    }
 
-      console.error("[APPLY] Internship lookup failed", { requestId, error: safeErrorMetadata(error) });
+    if (existingVerification) {
 
-      return fail("Unable to verify internship availability right now. Please try again.", "INTERNSHIP_LOOKUP_FAILED", 503, { requestId });
+      const lastSentAt = existingVerification.lastSentAt instanceof Date
 
-    }
+        ? existingVerification.lastSentAt
 
-    if (!internship) {
+        : new Date(existingVerification.lastSentAt);
 
-      return fail("Applications are not currently available for the selected internship domain.", "INTERNSHIP_UNAVAILABLE", 409);
+      const elapsedSeconds = Math.floor((now.getTime() - lastSentAt.getTime()) / 1000);
 
-    }
+      if (Number.isFinite(elapsedSeconds) && elapsedSeconds < OTP_RESEND_COOLDOWN_SECONDS) {
 
+        const retryAfter = Math.max(1, OTP_RESEND_COOLDOWN_SECONDS - elapsedSeconds);
 
+        return fail(`Please wait ${retryAfter} seconds before requesting another OTP.`, "OTP_COOLDOWN", 429, { retryAfter, cooldown: retryAfter });
 
-    const now = new Date();
+      }
 
-    let existingVerification;
+      if (Number(existingVerification.resendCount ?? 0) >= OTP_MAX_RESENDS) {
 
-    try {
+        return fail("OTP resend limit reached. Please try again later.", "OTP_RESEND_LIMIT", 429);
 
-      existingVerification = await EmailVerification.findOne({ email }).exec();
+      }
 
-    } catch (error) {
+    }
 
-      console.error("[APPLY] Verification session lookup failed", { requestId, error: safeErrorMetadata(error) });
+    const pendingApplication: PendingApplicationPayload = {
 
-      return fail("Unable to start email verification right now. Please try again.", "OTP_SESSION_LOOKUP_FAILED", 503, { requestId });
+      fullName,
 
-    }
+      email,
 
+      phone,
 
+      collegeUniversity,
 
-    if (existingVerification) {
+      course,
 
-      const lastSentAt = existingVerification.lastSentAt instanceof Date
+      branchStream,
 
-        ? existingVerification.lastSentAt
+      graduationYear: String(graduationYear),
 
-        : new Date(existingVerification.lastSentAt);
+      internshipTrack,
 
-      const elapsedSeconds = Math.floor((now.getTime() - lastSentAt.getTime()) / 1000);
+      skills,
 
-      if (Number.isFinite(elapsedSeconds) && elapsedSeconds < OTP_RESEND_COOLDOWN_SECONDS) {
+      consentTerms: true,
 
-        const retryAfter = Math.max(1, OTP_RESEND_COOLDOWN_SECONDS - elapsedSeconds);
+      consentPrivacy: true,
 
-        return fail(`Please wait ${retryAfter} seconds before requesting another OTP.`, "OTP_COOLDOWN", 429, { retryAfter, cooldown: retryAfter });
+      consentDeclaration: true,
 
-      }
+    };
 
-      if (Number(existingVerification.resendCount ?? 0) >= OTP_MAX_RESENDS) {
+    const otp = generateOtp();
 
-        return fail("OTP resend limit reached. Please try again later.", "OTP_RESEND_LIMIT", 429);
+    const otpHash = hashOtp(otp);
 
-      }
+    const expiresAt = new Date(now.getTime() + OTP_EXPIRE_MINUTES * 60 * 1000);
 
-    }
+    // Send before replacing a previous OTP so SMTP failure does not invalidate it.
 
+    try {
 
+      await sendOtpEmail(email, fullName, otp, internship);
 
-    const pendingApplication: PendingApplicationPayload = {
+    } catch (error) {
 
-      fullName,
+      console.error("[APPLY] OTP email delivery failed", { requestId, error: safeErrorMetadata(error) });
 
-      email,
+      return fail(
 
-      phone,
+        "Unable to send verification email. Please try again later.",
 
-      collegeUniversity,
+        "OTP_EMAIL_FAILED",
 
-      course,
+        503,
 
-      branchStream,
+        { requestId },
 
-      graduationYear: String(graduationYear),
+      );
 
-      internshipTrack,
+    }
 
-      skills,
+    try {
 
-      consentTerms: true,
+      if (existingVerification) {
 
-      consentPrivacy: true,
+        existingVerification.set({
 
-      consentDeclaration: true,
+          otpHash,
 
-    };
+          attempts: 0,
 
+          maxAttempts: OTP_MAX_ATTEMPTS,
 
+          expiresAt,
 
-    const otp = generateOtp();
+          lastSentAt: now,
 
-    const otpHash = hashOtp(otp);
+          pendingApplication,
 
-    const expiresAt = new Date(now.getTime() + OTP_EXPIRE_MINUTES * 60 * 1000);
+          resendCount: Number(existingVerification.resendCount ?? 0) + 1,
 
+          verifiedAt: undefined,
 
+        });
 
-    // Send before replacing a previous OTP so SMTP failure does not invalidate it.*
+        await existingVerification.save();
 
-    try {
+      } else {
 
-      await sendOtpEmail(email, fullName, otp, internship);
+        await EmailVerification.create({
 
-    } catch (error) {
+          email,
 
-      console.error("[APPLY] OTP email delivery failed", { requestId, error: safeErrorMetadata(error) });
+          otpHash,
 
-      return fail(
+          attempts: 0,
 
-        "Unable to send verification email. Please try again later.",
+          maxAttempts: OTP_MAX_ATTEMPTS,
 
-        "OTP_EMAIL_FAILED",
+          expiresAt,
 
-        503,
+          lastSentAt: now,
 
-        { requestId },
+          resendCount: 0,
 
-      );
+          pendingApplication,
 
-    }
+        });
 
+      }
 
+    } catch (error) {
 
-    try {
+      console.error("[APPLY] OTP session save failed after email send", { requestId, error: safeErrorMetadata(error) });
 
-      if (existingVerification) {
+      // Do not expose the OTP or internal database error to the client.
 
-        existingVerification.set({
+      return fail("We sent the email but could not finish setting up verification. Please contact support before retrying.", "OTP_SESSION_SAVE_FAILED", 503, { requestId });
 
-          otpHash,
+    }
 
-          attempts: 0,
+    return jsonResponse({
 
-          maxAttempts: OTP_MAX_ATTEMPTS,
+      success: true,
 
-          expiresAt,
+      message: "A verification OTP has been sent to your email address.",
 
-          lastSentAt: now,
+      otpRequired: true,
 
-          pendingApplication,
+      requiresOtp: true,
 
-          resendCount: Number(existingVerification.resendCount ?? 0) + 1,
+      emailVerified: false,
 
-          verifiedAt: undefined,
+      applicationCreated: false,
 
-        });
+      email,
 
-        await existingVerification.save();
+      internship: {
 
-      } else {
+        id: internship.id,
 
-        await EmailVerification.create({
+        title: internship.title,
 
-          email,
+        domain: internship.domain,
 
-          otpHash,
+        assessmentDomain: internship.assessmentDomain,
 
-          attempts: 0,
+        assessmentRequired: internship.assessmentRequired,
 
-          maxAttempts: OTP_MAX_ATTEMPTS,
+      },
 
-          expiresAt,
+      planSelected: false,
 
-          lastSentAt: now,
+      paymentRequired: false,
 
-          resendCount: 0,
+      expiresInSeconds: OTP_EXPIRE_MINUTES * 60,
 
-          pendingApplication,
+      otpExpiresInMinutes: OTP_EXPIRE_MINUTES,
 
-        });
+      resendAvailableIn: OTP_RESEND_COOLDOWN_SECONDS,
 
-      }
+      cooldown: OTP_RESEND_COOLDOWN_SECONDS,
 
-    } catch (error) {
+    });
 
-      console.error("[APPLY] OTP session save failed after email send", { requestId, error: safeErrorMetadata(error) });
+  } catch (error) {
 
-      // Do not expose the OTP or internal database error to the client.*
+    if (duplicateKey(error)) {
 
-      return fail("We sent the email but could not finish setting up verification. Please contact support before retrying.", "OTP_SESSION_SAVE_FAILED", 503, { requestId });
+      return fail("An application or verification session already exists for this email address.", "APPLICATION_ALREADY_EXISTS", 409);
 
-    }
+    }
 
+    console.error("[POST /api/apply] Unexpected failure", { requestId, error: safeErrorMetadata(error) });
 
+    return fail("Unable to process your application right now. Please try again later.", "APPLICATION_PROCESSING_FAILED", 500, { requestId });
 
-    return jsonResponse({
-
-      success: true,
-
-      message: "A verification OTP has been sent to your email address.",
-
-      otpRequired: true,
-
-      requiresOtp: true,
-
-      emailVerified: false,
-
-      applicationCreated: false,
-
-      email,
-
-      internship: {
-
-        id: internship.id,
-
-        title: internship.title,
-
-        domain: internship.domain,
-
-        assessmentDomain: internship.assessmentDomain,
-
-        assessmentRequired: internship.assessmentRequired,
-
-      },
-
-      planSelected: false,
-
-      paymentRequired: false,
-
-      expiresInSeconds: OTP_EXPIRE_MINUTES * 60,
-
-      otpExpiresInMinutes: OTP_EXPIRE_MINUTES,
-
-      resendAvailableIn: OTP_RESEND_COOLDOWN_SECONDS,
-
-      cooldown: OTP_RESEND_COOLDOWN_SECONDS,
-
-    });
-
-  } catch (error) {
-
-    if (duplicateKey(error)) {
-
-      return fail("An application or verification session already exists for this email address.", "APPLICATION_ALREADY_EXISTS", 409);
-
-    }
-
-    console.error("[POST /api/apply] Unexpected failure", { requestId, error: safeErrorMetadata(error) });
-
-    return fail("Unable to process your application right now. Please try again later.", "APPLICATION_PROCESSING_FAILED", 500, { requestId });
-
-  }
+  }
 
 }
-
-
 
 export async function GET(): Promise<NextResponse> {
 
-  return fail("Use POST /api/apply to start an internship application.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
+  return fail("Use POST /api/apply to start an internship application.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
 
 }
-
-
 
 export async function PUT(): Promise<NextResponse> {
 
-  return fail("PUT is not supported for applications.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
+  return fail("PUT is not supported for applications.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
 
 }
-
-
 
 export async function PATCH(): Promise<NextResponse> {
 
-  return fail("PATCH is not supported for applications.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
+  return fail("PATCH is not supported for applications.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
 
 }
-
-
 
 export async function DELETE(): Promise<NextResponse> {
 
-  return fail("DELETE is not supported for applications.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
+  return fail("DELETE is not supported for applications.", "METHOD_NOT_ALLOWED", 405, { allow: "POST, OPTIONS" });
 
 }
 
-
-
 export async function OPTIONS(): Promise<NextResponse> {
 
-  return jsonResponse({ success: true, message: "API methods available.", methods: ["POST", "OPTIONS"] }, 200, { Allow: "POST, OPTIONS" });
+  return jsonResponse({ success: true, message: "API methods available.", methods: ["POST", "OPTIONS"] }, 200, { Allow: "POST, OPTIONS" });
 
 }

@@ -1926,7 +1926,14 @@ export async function POST(request: NextRequest) {
 
 
 
-    const codingQuestions = shuffle(codingPool).slice(0, C.CODING_COUNT).map((q, i) => sanitizeCoding(q, i + 1)).filter((q): q is AttemptQuestion => q !== null);
+const codingQuestions = shuffle(codingPool)
+  .slice(0, C.CODING_COUNT)
+  .map((q, i) =>
+    sanitizeCoding(q, C.MCQ_COUNT + i + 1),
+  )
+  .filter((q): q is AttemptQuestion => q !== null);
+
+    
 
 
 

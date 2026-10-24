@@ -275,8 +275,8 @@ export async function sendOTPEmail(
     </td></tr></table>
     <p style="margin:0 0 12px;font-size:12px;line-height:1.6;color:#52627a;text-align:center;">This code expires in <strong>${OTP_EXPIRE_MINUTES} minutes</strong>.</p>
     ${domainHtml}
-    <p style="margin:0;padding:11px 12px;background:#f3f7ff;border:1px solid #d7e4fb;border-radius:8px;color:#163b8c;font-size:11px;line-height:1.6;text-align:center;"><strong>Security:</strong> Never share this OTP. No payment is required at the application stage.</p>`;
-  const text = `Hello ${studentName},\n\nYour CyberNet Careers ${purposeLabel.toLowerCase()} code is: ${otp}${domainText}\n\nThis code expires in ${OTP_EXPIRE_MINUTES} minutes. Never share it with anyone.\nNo payment is required at the application stage.\n\nCyberNet Careers · CyberNet Technology`;
+    <p style="margin:0;padding:11px 12px;background:#f3f7ff;border:1px solid #d7e4fb;border-radius:8px;color:#163b8c;font-size:11px;line-height:1.6;text-align:center;"><strong>Security:</strong> Never share this OTP.</p>`;
+  const text = `Hello ${studentName},\n\nYour CyberNet Careers ${purposeLabel.toLowerCase()} code is: ${otp}${domainText}\n\nThis code expires in ${OTP_EXPIRE_MINUTES} minutes. Never share it with anyone.\n\nCyberNet Careers · CyberNet Technology`;
 
   await sendEmail({
     to: email,

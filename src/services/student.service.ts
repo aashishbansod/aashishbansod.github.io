@@ -105,6 +105,9 @@ const MAIN_CREDENTIAL_EXPIRY_DAYS = 30;
 
 const DASHBOARD_CREDENTIAL_EXPIRY_DAYS = 30;
 
+// The internship selection/payment window starts when the assessment is first passed.
+const INTERNSHIP_SELECTION_WINDOW_HOURS = 72;
+
 const DEFAULT_PASSING_SCORE = 60;
 
 const MAX_ID_ATTEMPTS = 30;
@@ -881,6 +884,63 @@ function createExpiryDate(
         1000,
   );
 }
+
+function createHoursExpiryDate(hours: number, from = new Date()): Date {
+  return new Date(from.getTime() + hours * 60 * 60 * 1000);
+}
+
+/**
+ * Establish a persistent 72-hour selection deadline exactly once.
+ * For older records, use the assessment result timestamp when available;
+ * if legacy timestamps are absent, start the window when first checked.
+ */
+function ensureInternshipSelectionDeadline(student: StudentDocument): Date {
+  const existingDeadline = dateOrNull(student.internshipSelectionDeadlineAt);
+  if (existingDeadline) {
+    return existingDeadline;
+  }
+
+  const startedAt =
+    dateOrNull(student.internshipSelectionWindowStartedAt) ||
+    dateOrNull(student.assessmentEvaluatedAt) ||
+    dateOrNull(student.resultDeclaredAt) ||
+    dateOrNull(student.assessmentSubmittedAt) ||
+    new Date();
+
+  const deadline = createHoursExpiryDate(
+    INTERNSHIP_SELECTION_WINDOW_HOURS,
+    startedAt,
+  );
+
+  student.internshipSelectionWindowStartedAt = startedAt;
+  student.internshipSelectionDeadlineAt = deadline;
+  student.internshipSelectionWindowExpired = false;
+  student.internshipSelectionExpiredAt = null;
+
+  return deadline;
+}
+
+/**
+ * Expire only unpaid initial selection journeys. Never deactivate a verified
+ * paid student's Operations review or final dashboard because of this window.
+ */
+function expireUnpaidSelectionJourney(student: StudentDocument, now = new Date()): void {
+  if (isStatus(student.paymentStatus, "paid")) {
+    return;
+  }
+
+  student.internshipSelectionWindowExpired = true;
+  student.internshipSelectionExpiredAt =
+    dateOrNull(student.internshipSelectionExpiredAt) || now;
+  student.journeyExpired = true;
+  student.journeyExpiresAt =
+    dateOrNull(student.journeyExpiresAt) || now;
+  student.loginEnabled = false;
+  student.internshipApplicationAllowed = false;
+  student.internshipStatus = "expired";
+  // Keep the student record and the Operations/admin visibility intact.
+}
+
 
 
 /* ============================================================
@@ -2445,6 +2505,19 @@ export async function submitAssessmentResult(
       passed;
 
     if (passed) {
+      // Do not reset the 72-hour window on duplicate result submissions.
+      if (!dateOrNull(student.internshipSelectionDeadlineAt)) {
+        const now = new Date();
+        student.internshipSelectionWindowStartedAt = now;
+        student.internshipSelectionDeadlineAt = createHoursExpiryDate(
+          INTERNSHIP_SELECTION_WINDOW_HOURS,
+          now,
+        );
+        student.internshipSelectionWindowExpired = false;
+        student.internshipSelectionExpiredAt = null;
+        student.journeyExpired = false;
+        student.journeyExpiresAt = null;
+      }
       student.internshipStatus =
         "available";
     } else {
@@ -2591,6 +2664,45 @@ export async function selectInternship(
       };
     }
 
+    if (isStatus(student.paymentStatus, "paid")) {
+      return {
+        success: false,
+        message: "A verified payment already exists for this student.",
+        code: "PAYMENT_ALREADY_VERIFIED",
+      };
+    }
+
+    if (
+      isStatus(student.internshipStatus, "payment-pending") &&
+      cleanString(student.razorpayOrderId)
+    ) {
+      return {
+        success: false,
+        message: "A payment order already exists for the selected internship. Do not change the plan while payment is pending.",
+        code: "PAYMENT_ORDER_ALREADY_CREATED",
+      };
+    }
+
+    const selectionDeadline = ensureInternshipSelectionDeadline(student);
+    const now = new Date();
+    if (
+      student.internshipSelectionWindowExpired === true ||
+      selectionDeadline.getTime() <= now.getTime()
+    ) {
+      expireUnpaidSelectionJourney(student, now);
+      await student.save();
+      try {
+        await syncStudentOperationsRecord(student.toObject());
+      } catch (syncError) {
+        console.error("[StudentService] Expired selection mirror sync failed:", syncError);
+      }
+      return {
+        success: false,
+        message: "The 72-hour internship selection window has expired. Contact the administrator for assistance.",
+        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
+      };
+    }
+
     const selectedPlan =
       INTERNSHIP_PLANS[
         plan
@@ -2609,6 +2721,7 @@ export async function selectInternship(
 
     student.internshipSelectionAt =
       new Date();
+    student.internshipSelectionWindowExpired = false;
 
     student.internshipStatus =
       "payment-pending";
@@ -2783,6 +2896,34 @@ export async function markPaymentPending(
           "Payment amount does not match the selected internship plan.",
         code:
           "PAYMENT_AMOUNT_MISMATCH",
+      };
+    }
+
+    const selectionDeadline = ensureInternshipSelectionDeadline(student);
+    const now = new Date();
+    if (
+      student.internshipSelectionWindowExpired === true ||
+      selectionDeadline.getTime() <= now.getTime()
+    ) {
+      expireUnpaidSelectionJourney(student, now);
+      await student.save();
+      try {
+        await syncStudentOperationsRecord(student.toObject());
+      } catch (syncError) {
+        console.error("[StudentService] Expired payment-order mirror sync failed:", syncError);
+      }
+      return {
+        success: false,
+        message: "The 72-hour selection/payment window has expired. A new payment order cannot be created.",
+        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
+      };
+    }
+
+    if (currency !== cleanString(student.paymentCurrency).toUpperCase()) {
+      return {
+        success: false,
+        message: "Payment currency does not match the selected plan.",
+        code: "PAYMENT_CURRENCY_MISMATCH",
       };
     }
 
@@ -2999,6 +3140,36 @@ export async function recordVerifiedPayment(
       };
     }
 
+    // A late/unpaid account cannot be revived by posting a payment callback.
+    // This function must still only be called by the trusted verified-payment route.
+    const selectionDeadline = ensureInternshipSelectionDeadline(student);
+    const now = new Date();
+    if (
+      student.internshipSelectionWindowExpired === true ||
+      selectionDeadline.getTime() <= now.getTime()
+    ) {
+      expireUnpaidSelectionJourney(student, now);
+      await student.save();
+      try {
+        await syncStudentOperationsRecord(student.toObject());
+      } catch (syncError) {
+        console.error("[StudentService] Expired payment verification mirror sync failed:", syncError);
+      }
+      return {
+        success: false,
+        message: "The 72-hour selection/payment window expired before payment was accepted. Contact support for payment reconciliation.",
+        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
+      };
+    }
+
+    if (!cleanString(student.razorpayOrderId) || student.razorpayOrderId !== orderId) {
+      return {
+        success: false,
+        message: "A matching server-created payment order is required.",
+        code: "PAYMENT_ORDER_MISMATCH",
+      };
+    }
+
     student.razorpayOrderId =
       orderId;
 
@@ -3014,6 +3185,8 @@ export async function recordVerifiedPayment(
 
     student.paymentStatus =
       "paid";
+    student.internshipSelectionWindowExpired = false;
+    student.journeyExpired = false;
 
     student.paymentCompletedAt =
       new Date();

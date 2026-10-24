@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from "next/server";
 
 import mongoose from "mongoose";
@@ -124,9 +123,13 @@ function respond(body: unknown, status = 200): NextResponse {
     status,
 
     headers: {
+
       ...NO_CACHE_HEADERS,
+
       "Content-Type": "application/json; charset=utf-8",
+
       "Cross-Origin-Resource-Policy": "same-origin",
+
     },
 
   });
@@ -240,7 +243,6 @@ function clampCounter(value: unknown): number {
 }
 
 function mergeCounter(stored: unknown, submitted: unknown): number {
-
 
   return Math.max(clampCounter(stored), clampCounter(submitted));
 
@@ -399,9 +401,13 @@ function parseAnswers(
       }
 
       const submittedQuestionId = str(item.questionId ?? item.id);
+
       if (!submittedQuestionId) {
+
         return { ok: false, message: "An answer is missing its question ID." };
+
       }
+
       addAnswer(submittedQuestionId, item);
 
     }
@@ -873,32 +879,57 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const contentLength = Number(request.headers.get("content-length") ?? 0);
 
     if (Number.isFinite(contentLength) && contentLength > CONFIG.maxBodyBytes) {
+
       return fail("Submission payload is too large.", "PAYLOAD_TOO_LARGE", 413);
+
     }
 
     // Browser cookie-authenticated POSTs must originate from this application origin.
+
     const origin = request.headers.get("origin");
+
     if (origin) {
+
       let parsedOrigin: URL;
+
       try {
+
         parsedOrigin = new URL(origin);
+
       } catch {
+
         return fail("Invalid request origin.", "INVALID_ORIGIN", 403);
+
       }
+
       if (parsedOrigin.origin !== request.nextUrl.origin) {
+
         return fail("Cross-origin assessment submission is not allowed.", "CROSS_ORIGIN_REQUEST", 403);
+
       }
+
     } else {
-      // Some same-origin clients omit Origin. Reject explicit cross-site requests.
+
+      // If Origin is absent, require recognized Fetch Metadata; do not trust
+
+      // missing or unknown context for a cookie-authenticated state change.
+
       const fetchSite = (request.headers.get("sec-fetch-site") || "").toLowerCase();
-      if (fetchSite === "cross-site") {
-        return fail("Cross-site assessment submission is not allowed.", "CROSS_ORIGIN_REQUEST", 403);
+
+      if (!["same-origin", "same-site", "none"].includes(fetchSite)) {
+
+        return fail("Request origin could not be verified.", "ORIGIN_REQUIRED", 403);
+
       }
+
     }
 
     const contentType = request.headers.get("content-type") || "";
+
     if (!contentType.toLowerCase().includes("application/json")) {
+
       return fail("Content-Type must be application/json.", "UNSUPPORTED_MEDIA_TYPE", 415);
+
     }
 
     const studentId = await authenticateStudent();
@@ -910,21 +941,33 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     let rawBody: string;
+
     try {
+
       rawBody = await request.text();
+
     } catch {
+
       return fail("Unable to read submission payload.", "INVALID_BODY", 400);
+
     }
 
     if (new TextEncoder().encode(rawBody).byteLength > CONFIG.maxBodyBytes) {
+
       return fail("Submission payload is too large.", "PAYLOAD_TOO_LARGE", 413);
+
     }
 
     let parsedBody: unknown;
+
     try {
+
       parsedBody = JSON.parse(rawBody);
+
     } catch {
+
       return fail("Request body must contain valid JSON.", "INVALID_JSON", 400);
+
     }
 
     if (!isObject(parsedBody)) {
@@ -937,7 +980,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const parsed = parseAnswers(body);
 
-    if (!parsed.ok) {
+    if (parsed.ok === false) {
 
       return fail(parsed.message, "INVALID_ANSWERS", 400);
 
@@ -1026,16 +1069,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     if (str(student.applicationStatus).toLowerCase() !== "approved") {
+
       return fail(
+
         "Your application must be approved before submitting the assessment.",
+
         "APPLICATION_NOT_APPROVED",
+
         403,
+
       );
+
     }
 
     const studentRecord = student as unknown as Record<string, unknown>;
+
     if (studentRecord.emailVerified === false || studentRecord.isEmailVerified === false) {
+
       return fail("Verify your email address before submitting the assessment.", "EMAIL_NOT_VERIFIED", 403);
+
     }
 
     let attempt = await AttemptModel.findOne({
@@ -1213,24 +1265,41 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const now = new Date();
+
     const submissionLate = now.getTime() > finalDeadline.getTime();
+
     const submissionGraceMs = 30_000;
+
     if (now.getTime() > finalDeadline.getTime() + submissionGraceMs) {
+
       return fail(
+
         "The assessment deadline has passed. This attempt can no longer be submitted.",
+
         "ASSESSMENT_DEADLINE_PASSED",
+
         409,
+
       );
+
     }
 
     const storedAssessmentId = str(attempt.assessmentId);
+
     const assessmentLookup: Record<string, unknown> = {
+
       status: "published",
+
       isActive: true,
+
       ...(mongoose.isValidObjectId(storedAssessmentId)
+
         ? { $or: [{ assessmentId: storedAssessmentId }, { _id: new mongoose.Types.ObjectId(storedAssessmentId) }] }
+
         : { assessmentId: storedAssessmentId }),
+
     };
+
     const assessment = await AssessmentModel.findOne(assessmentLookup as any)
 
       .select("_id assessmentId domain domainKey status isActive")
@@ -1294,24 +1363,43 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const questionAssessmentIds: unknown[] = [assessment._id];
+
     if (mongoose.isValidObjectId(String(assessment._id))) {
+
       questionAssessmentIds.push(String(assessment._id));
+
     }
+
     const mcqQuestionFilter: Record<string, unknown> = {
+
       questionId: { $in: mcqQuestions.map((question) => question.questionId) },
+
       assessmentId: { $in: questionAssessmentIds },
+
       section: "mcq",
+
       type: "mcq",
+
       status: "published",
+
       isActive: true,
+
     };
+
     if (str(assessment.domainKey)) {
+
       mcqQuestionFilter.$or = [
+
         { domainKey: assessment.domainKey },
+
         { domainKey: { $exists: false } },
+
         { domainKey: "" },
+
       ];
+
     }
+
     const mcqSourceDocuments = await QuestionModel.find(mcqQuestionFilter as any)
 
       .select(
@@ -1749,44 +1837,77 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .exec();
 
     if (!claimed) {
-      // Another tab/request may have won the atomic submission race.
-      // Re-read the persisted attempt and return its actual saved state.
+
+      // Another tab/request may have won the atomic submission race
+
+      // Re-read the persisted attempt and return its actual saved state
+
       const persistedAttempt = await AttemptModel.findOne({
+
         attemptId,
+
         studentId: new mongoose.Types.ObjectId(studentId),
+
       })
+
         .lean()
+
         .exec();
 
       if (
+
         persistedAttempt &&
+
         (isPendingEvaluationStatus(persistedAttempt.status) ||
+
           isFinalStatus(persistedAttempt.status))
+
       ) {
+
         const recoveredSync = await syncStudentResult(studentId, persistedAttempt);
+
         if (!recoveredSync) {
+
           console.error("[ASSESSMENT_SUBMIT_RACE_RECOVERY_SYNC_FAILED]", {
+
             studentId,
+
             attemptId,
+
             status: persistedAttempt.status,
+
           });
+
           return fail(
+
             "Your submission is saved, but account status synchronization needs administrator review.",
+
             "STUDENT_STATE_SYNC_FAILED",
+
             503,
+
           );
+
         }
 
         return isPendingEvaluationStatus(persistedAttempt.status)
+
           ? pendingResponse(persistedAttempt)
+
           : finalResponse(persistedAttempt);
+
       }
 
       return fail(
+
         "This assessment attempt is no longer active. Refresh the page to check its saved status.",
+
         "SUBMISSION_ALREADY_PROCESSED",
+
         409,
+
       );
+
     }
 
     const synced = await syncStudentResult(studentId, claimed);

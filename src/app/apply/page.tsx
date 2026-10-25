@@ -222,9 +222,31 @@ function normalizeEmail(
 function normalizePhone(
   value: string,
 ): string {
-  return value
-    .replace(/[^\d+]/g, "")
-    .slice(0, 16);
+  const trimmed = value.trim();
+  const hasPlus = trimmed.startsWith("+");
+  const digits = trimmed.replace(/\D/g, "");
+
+  // Accept common Indian input styles and normalize them to E.164:
+  // 9876543210, 09876543210, 919876543210, +91 9876543210.
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return `+91${digits.slice(1)}`;
+  }
+
+  if (digits.length === 12 && digits.startsWith("91")) {
+    return `+${digits}`;
+  }
+
+  // Preserve explicitly supplied international country codes.
+  if (hasPlus) {
+    return `+${digits}`.slice(0, 16);
+  }
+
+  // Do not guess a country code for other digit lengths.
+  return digits.slice(0, 15);
 }
 
 function digitsOnly(
@@ -690,9 +712,7 @@ export default function ApplyPage() {
         (previous) => ({
           ...previous,
           phone:
-            normalizePhone(
-              value,
-            ),
+            value.replace(/[^\d+]/g, "").slice(0, 16),
         }),
       );
     } else if (
@@ -852,12 +872,10 @@ export default function ApplyPage() {
         next.phone =
           "Mobile number is required.";
       } else if (
-        !/^\+[1-9]\d{6,14}$/.test(
-          phone,
-        )
+        !/^\+[1-9]\d{6,14}$/.test(phone)
       ) {
         next.phone =
-          "Enter a valid international mobile number, e.g. +919876543210.";
+          "Enter a valid mobile number. Indian 10-digit numbers are accepted automatically.";
       }
 
       if (
@@ -1938,7 +1956,7 @@ export default function ApplyPage() {
                     onChange={
                       handleChange
                     }
-                    placeholder="+91 9876543210"
+                    placeholder="9876543210 or +91 9876543210"
                     autoComplete="tel"
                     icon={
                       <Phone className="h-4 w-4" />
@@ -1950,7 +1968,7 @@ export default function ApplyPage() {
                   />
 
                   <p className="mt-2 text-xs text-slate-500">
-                    Include your country code.
+                    Indian 10-digit numbers are automatically saved with +91. International numbers should include their country code.
                   </p>
                 </div>
               </FormSection>

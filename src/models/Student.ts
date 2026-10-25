@@ -92,7 +92,7 @@ const StudentSchema = new Schema(
 
     unique: true,
 
-    match: [/^[^\s@]+@[^\s@]+\\.[^\s@]+$/, "Enter a valid email address."],
+    match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email address."],
 
   },
 
@@ -717,15 +717,25 @@ const StudentSchema = new Schema(
   },
 
   internshipSelectionAt: nullableDate,
+
   // Set once when the initial assessment is passed. This is independent of
+
   // the initial account credential expiry and is enforced by service/API code.
+
   internshipSelectionWindowStartedAt: nullableDate,
+
   internshipSelectionDeadlineAt: nullableDate,
+
   internshipSelectionExpiredAt: nullableDate,
+
   internshipSelectionWindowExpired: {
+
     type: Boolean,
+
     default: false,
+
     index: true,
+
   },
 
   internshipStatus: {
@@ -1417,10 +1427,15 @@ StudentSchema.index({ weeklyAssessmentStatus: 1 });
 StudentSchema.index({ saturdayAssessmentStatus: 1 });
 
 StudentSchema.index({ journeyExpiresAt: 1, journeyExpired: 1 });
+
 StudentSchema.index({
+
   internshipSelectionWindowExpired: 1,
+
   paymentStatus: 1,
+
   internshipSelectionDeadlineAt: 1,
+
 });
 
 StudentSchema.index({ certificateStatus: 1, internshipStatus: 1 });

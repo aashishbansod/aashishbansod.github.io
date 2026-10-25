@@ -1,1068 +1,654 @@
-
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type FormEvent,
-} from "react";
+
+
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+
 import { useRouter } from "next/navigation";
+
+import {
+
+  ArrowRight, BadgeCheck, BriefcaseBusiness, Check, ChevronDown, Clock3,
+
+  Code2, CreditCard, Database, Laptop, LoaderCircle, LockKeyhole, MapPin,
+
+  RefreshCw, Search, ShieldCheck, Sparkles, X,
+
+} from "lucide-react";
+
+
 
 type PlanCode = "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
 
-type StudentProfile = {
-  studentId?: string;
-  applicationId?: string;
-  fullName?: string;
-  email?: string;
-  dateOfBirth?: string | null;
-  applicationStatus?: string;
-  assessmentStatus?: string;
-  assessmentPassed?: boolean;
-  resultStatus?: string;
-  internshipApplicationAllowed?: boolean;
-  internshipStatus?: string;
-  internshipPlan?: string;
-  paymentStatus?: string;
+type Profile = {
+
+  studentId?: string; fullName?: string; email?: string; dateOfBirth?: string | null;
+
+  applicationStatus?: string; adminApprovalStatus?: string; assessmentStatus?: string;
+
+  assessmentPassed?: boolean; resultStatus?: string; internshipApplicationAllowed?: boolean;
+
+  assessmentDomain?: string; internshipDomain?: string; domain?: string;
+
+  selectedDomain?: string; selectedInternshipDomain?: string; internshipTrack?: string;
+
 };
 
 type RawPlan = {
-  _id?: string;
-  id?: string;
-  internshipId?: string;
-  planCode?: string;
-  duration?: string;
-  durationMonths?: number | string;
-  price?: number | string;
-  priceInPaise?: number | string;
-  currency?: string;
-  stipend?: string | number;
+
+  internshipId?: string; planCode?: string; duration?: string; durationMonths?: number | string;
+
+  price?: number | string; priceInPaise?: number | string; currency?: string; stipend?: string | number;
+
 };
 
-type RawInternship = {
-  _id?: string;
-  id?: string;
-  title?: string;
-  name?: string;
-  description?: string;
-  domain?: string;
-  assessmentDomain?: string;
-  mode?: string;
-  location?: string;
-  currency?: string;
-  skills?: unknown;
-  technologies?: unknown;
-  status?: string;
-  isActive?: boolean;
-  isPublic?: boolean;
-  isSelectable?: boolean;
-  plans?: RawPlan[];
-  planCode?: string;
-  duration?: string;
-  durationMonths?: number | string;
-  price?: number | string;
-  priceInPaise?: number | string;
-  stipend?: string | number;
+type RawProgram = {
+
+  _id?: string; id?: string; title?: string; name?: string; description?: string;
+
+  domain?: string; assessmentDomain?: string; mode?: string; location?: string;
+
+  currency?: string; skills?: unknown; technologies?: unknown; status?: string;
+
+  isActive?: boolean; isPublic?: boolean; isSelectable?: boolean; plans?: RawPlan[];
+
+  planCode?: string; duration?: string; durationMonths?: number | string;
+
+  price?: number | string; priceInPaise?: number | string; stipend?: string | number;
+
 };
 
-type Plan = {
-  internshipId: string;
-  planCode: PlanCode;
-  duration: string;
-  months: 1 | 3 | 6;
-  price: number;
-  currency: string;
-  stipend?: string | number;
+type Plan = { internshipId: string; planCode: PlanCode; duration: string; months: 1 | 3 | 6; price: number; currency: string; stipend?: string | number };
+
+type Program = { id: string; title: string; description: string; domain: string; mode: string; location: string; skills: string[]; technologies: string[]; plans: Plan[] };
+
+type Payload = { success?: boolean; message?: string; error?: string; data?: unknown; student?: unknown; profile?: unknown; internships?: unknown; items?: unknown; results?: unknown };
+
+
+
+const PLAN_ORDER: PlanCode[] = ["ONE_MONTH", "THREE_MONTHS", "SIX_MONTHS"];
+
+const PLAN_INFO: Record<PlanCode, { label: string; months: 1 | 3 | 6; price: number; tier: string }> = {
+
+  ONE_MONTH: { label: "1 Month", months: 1, price: 499, tier: "Starter" },
+
+  THREE_MONTHS: { label: "3 Months", months: 3, price: 999, tier: "Popular" },
+
+  SIX_MONTHS: { label: "6 Months", months: 6, price: 1699, tier: "Advanced" },
+
 };
 
-type Program = {
-  id: string;
-  title: string;
-  description: string;
-  domain: string;
-  mode: string;
-  location: string;
-  skills: string[];
-  technologies: string[];
-  plans: Plan[];
+
+
+const str = (v: unknown) => typeof v === "string" ? v.trim() : "";
+
+const status = (v: unknown) => str(v).toLowerCase().replace(/_/g, "-");
+
+const num = (v: unknown): number | null => {
+
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+
+  return null;
+
 };
 
-type ApiPayload = {
-  success?: boolean;
-  message?: string;
-  error?: string;
-  data?: unknown;
-  student?: unknown;
-  internships?: unknown;
-  items?: unknown;
-  results?: unknown;
-};
+const list = (v: unknown): string[] => Array.isArray(v)
 
-const PLAN_ORDER: PlanCode[] = [
-  "ONE_MONTH",
-  "THREE_MONTHS",
-  "SIX_MONTHS",
-];
+  ? [...new Set(v.map(str).filter(Boolean))]
 
-const PLAN_INFO: Record<PlanCode, { label: string; months: 1 | 3 | 6 }> = {
-  ONE_MONTH: { label: "1 Month", months: 1 },
-  THREE_MONTHS: { label: "3 Months", months: 3 },
-  SIX_MONTHS: { label: "6 Months", months: 6 },
-};
+  : typeof v === "string" ? [...new Set(v.split(",").map(s => s.trim()).filter(Boolean))] : [];
 
-const PLAN_PRICES: Record<PlanCode, number> = {
-  ONE_MONTH: 499,
-  THREE_MONTHS: 999,
-  SIX_MONTHS: 1699,
-};
 
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
+
+function getError(payload: unknown, fallback: string) {
+
+  if (!payload || typeof payload !== "object") return fallback;
+
+  const p = payload as Payload;
+
+  return str(p.message) || str(p.error) || fallback;
+
 }
 
-function statusValue(value: unknown): string {
-  return stringValue(value).toLowerCase().replace(/_/g, "-");
+function getProfile(payload: unknown): Profile | null {
+
+  if (!payload || typeof payload !== "object") return null;
+
+  const p = payload as Payload;
+
+  const d = p.data;
+
+  if (d && typeof d === "object") {
+
+    const x = d as Record<string, unknown>;
+
+    if (x.student && typeof x.student === "object") return x.student as Profile;
+
+    if (x.profile && typeof x.profile === "object") return x.profile as Profile;
+
+    return d as Profile;
+
+  }
+
+  if (p.student && typeof p.student === "object") return p.student as Profile;
+
+  if (p.profile && typeof p.profile === "object") return p.profile as Profile;
+
+  return payload as Profile;
+
 }
 
-function numericValue(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const result = Number(value);
-    if (Number.isFinite(result)) return result;
-  }
-  return null;
+function getPrograms(payload: unknown): RawProgram[] {
+
+  if (Array.isArray(payload)) return payload as RawProgram[];
+
+  if (!payload || typeof payload !== "object") return [];
+
+  const p = payload as Record<string, unknown>;
+
+  for (const candidate of [p.internships, p.items, p.results, p.data]) {
+
+    if (Array.isArray(candidate)) return candidate as RawProgram[];
+
+    if (candidate && typeof candidate === "object") {
+
+      const n = candidate as Record<string, unknown>;
+
+      for (const nested of [n.internships, n.items, n.results, n.data]) {
+
+        if (Array.isArray(nested)) return nested as RawProgram[];
+
+      }
+
+    }
+
+  }
+
+  return [];
+
 }
 
-function listValue(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map(stringValue).filter(Boolean))];
+function resolvePlan(v: unknown, months: unknown): PlanCode | null {
+
+  const c = str(v).toUpperCase().replace(/[\s-]+/g, "_");
+
+  if (["ONE_MONTH", "1_MONTH", "1M"].includes(c) || num(months) === 1) return "ONE_MONTH";
+
+  if (["THREE_MONTHS", "3_MONTHS", "3M"].includes(c) || num(months) === 3) return "THREE_MONTHS";
+
+  if (["SIX_MONTHS", "6_MONTHS", "6M"].includes(c) || num(months) === 6) return "SIX_MONTHS";
+
+  return null;
+
 }
 
-function extractProfile(payload: unknown): StudentProfile | null {
-  if (!payload || typeof payload !== "object") return null;
+function normalizeProgram(r: RawProgram): Program | null {
 
-  const root = payload as ApiPayload;
-  const data = root.data;
+  const s = status(r.status);
 
-  if (data && typeof data === "object") {
-    const nested = data as Record<string, unknown>;
-    if (nested.student && typeof nested.student === "object") {
-      return nested.student as StudentProfile;
-    }
-    return data as StudentProfile;
-  }
+  if (r.isActive === false || r.isPublic === false || r.isSelectable === false || (s && s !== "active")) return null;
 
-  if (root.student && typeof root.student === "object") {
-    return root.student as StudentProfile;
-  }
+  const id = str(r._id) || str(r.id);
 
-  return payload as StudentProfile;
+  if (!id) return null;
+
+  const currency = str(r.currency).toUpperCase() || "INR";
+
+  const source = Array.isArray(r.plans) && r.plans.length ? r.plans : [{
+
+    internshipId: id, planCode: r.planCode, duration: r.duration, durationMonths: r.durationMonths,
+
+    price: r.price, priceInPaise: r.priceInPaise, currency, stipend: r.stipend,
+
+  }];
+
+  const map = new Map<PlanCode, Plan>();
+
+  for (const p of source) {
+
+    const code = resolvePlan(p.planCode, p.durationMonths);
+
+    if (!code || map.has(code)) continue;
+
+    const config = PLAN_INFO[code];
+
+    const rawPrice = num(p.price);
+
+    const paise = num(p.priceInPaise);
+
+    const price = rawPrice !== null && rawPrice >= 0 ? rawPrice : paise !== null && paise >= 0 ? paise / 100 : config.price;
+
+    map.set(code, {
+
+      internshipId: str(p.internshipId) || id, planCode: code, duration: str(p.duration) || config.label,
+
+      months: config.months, price: Math.round(price), currency: str(p.currency).toUpperCase() || currency, stipend: p.stipend,
+
+    });
+
+  }
+
+  const plans = PLAN_ORDER.flatMap(code => map.has(code) ? [map.get(code)!] : []);
+
+  if (!plans.length) return null;
+
+  return {
+
+    id, title: str(r.title) || str(r.name) || "Internship Program",
+
+    description: str(r.description) || "Build practical skills through structured tasks and projects.",
+
+    domain: str(r.domain) || str(r.assessmentDomain) || "Technology",
+
+    mode: str(r.mode) || "Remote", location: str(r.location) || "Online",
+
+    skills: list(r.skills), technologies: list(r.technologies), plans,
+
+  };
+
 }
 
-function extractInternships(payload: unknown): RawInternship[] {
-  if (Array.isArray(payload)) return payload as RawInternship[];
-  if (!payload || typeof payload !== "object") return [];
+function approved(p: Profile) {
 
-  const root = payload as Record<string, unknown>;
-  const candidates = [root.internships, root.items, root.results, root.data];
+  return status(p.applicationStatus) === "approved" || status(p.adminApprovalStatus) === "approved";
 
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate as RawInternship[];
-
-    if (candidate && typeof candidate === "object") {
-      const nested = candidate as Record<string, unknown>;
-      for (const value of [
-        nested.internships,
-        nested.items,
-        nested.results,
-        nested.data,
-      ]) {
-        if (Array.isArray(value)) return value as RawInternship[];
-      }
-    }
-  }
-
-  return [];
 }
 
-function resolvePlanCode(value: unknown, monthsValue: unknown): PlanCode | null {
-  const code = stringValue(value).toUpperCase().replace(/[\s-]+/g, "_");
+function passed(p: Profile) {
 
-  if (["ONE_MONTH", "1_MONTH", "1M"].includes(code)) return "ONE_MONTH";
-  if (["THREE_MONTHS", "3_MONTHS", "3M"].includes(code)) return "THREE_MONTHS";
-  if (["SIX_MONTHS", "6_MONTHS", "6M"].includes(code)) return "SIX_MONTHS";
+  return p.assessmentPassed === true || (status(p.assessmentStatus) === "passed" && status(p.resultStatus) === "passed");
 
-  const months = numericValue(monthsValue);
-  if (months === 1) return "ONE_MONTH";
-  if (months === 3) return "THREE_MONTHS";
-  if (months === 6) return "SIX_MONTHS";
-
-  return null;
 }
 
-function normalizePlan(raw: RawPlan, parentId: string, currency: string): Plan | null {
-  const code = resolvePlanCode(raw.planCode, raw.durationMonths);
-  if (!code) return null;
+function money(n: number, currency = "INR") {
 
-  const months = PLAN_INFO[code].months;
-  const priceValue = numericValue(raw.price);
-  const paiseValue = numericValue(raw.priceInPaise);
+  try { return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 }).format(n); }
 
-  const price =
-    priceValue !== null && priceValue >= 0
-      ? priceValue
-      : paiseValue !== null && paiseValue >= 0
-        ? paiseValue / 100
-        : PLAN_PRICES[code];
+  catch { return `${currency} ${Math.round(n).toLocaleString("en-IN")}`; }
 
-  // This checkout flow is INR-only. The API remains authoritative for the final amount.
-  const planCurrency = stringValue(raw.currency).toUpperCase() || currency || "INR";
-  if (planCurrency !== "INR") return null;
-
-  const internshipId =
-    stringValue(raw.internshipId) ||
-    stringValue(raw._id) ||
-    stringValue(raw.id) ||
-    parentId;
-
-  if (!internshipId || !Number.isFinite(price) || price < 0) return null;
-
-  return {
-    internshipId,
-    planCode: code,
-    duration: stringValue(raw.duration) || PLAN_INFO[code].label,
-    months,
-    price: Math.round(price),
-    currency: planCurrency,
-    stipend: raw.stipend,
-  };
 }
 
-function normalizeProgram(raw: RawInternship): Program | null {
-  if (
-    raw.isActive === false ||
-    raw.isPublic === false ||
-    raw.isSelectable === false ||
-    (stringValue(raw.status) && statusValue(raw.status) !== "active")
-  ) {
-    return null;
-  }
+function modeName(m: string) {
 
-  const id = stringValue(raw._id) || stringValue(raw.id);
-  if (!id) return null;
+  const v = m.toLowerCase();
 
-  const currency = stringValue(raw.currency).toUpperCase() || "INR";
-  const rawPlans =
-    Array.isArray(raw.plans) && raw.plans.length
-      ? raw.plans
-      : [{
-          _id: raw._id,
-          id: raw.id,
-          internshipId: id,
-          planCode: raw.planCode,
-          duration: raw.duration,
-          durationMonths: raw.durationMonths,
-          price: raw.price,
-          priceInPaise: raw.priceInPaise,
-          currency,
-          stipend: raw.stipend,
-        }];
+  if (["online", "remote"].includes(v)) return "Remote";
 
-  const byCode = new Map<PlanCode, Plan>();
+  if (["onsite", "on-site", "offline"].includes(v)) return "On-site";
 
-  for (const rawPlan of rawPlans) {
-    const plan = normalizePlan(rawPlan, id, currency);
-    if (plan && !byCode.has(plan.planCode)) byCode.set(plan.planCode, plan);
-  }
+  if (v === "hybrid") return "Hybrid";
 
-  const plans = PLAN_ORDER.flatMap((code) => {
-    const plan = byCode.get(code);
-    return plan ? [plan] : [];
-  });
+  return m || "Remote";
 
-  if (!plans.length) return null;
-
-  return {
-    id,
-    title: stringValue(raw.title) || stringValue(raw.name) || "Internship Program",
-    description:
-      stringValue(raw.description) ||
-      "Build practical skills through structured internship tasks and projects.",
-    domain: stringValue(raw.domain) || stringValue(raw.assessmentDomain) || "Technology",
-    mode: stringValue(raw.mode) || "Remote",
-    location: stringValue(raw.location) || "Online",
-    skills: listValue(raw.skills),
-    technologies: listValue(raw.technologies),
-    plans,
-  };
 }
 
-function money(amount: number, currency = "INR"): string {
-  try {
-    return new Intl.NumberFormat("en-IN", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 0,
-    }).format(amount);
-  } catch {
-    return `${currency} ${Math.round(amount).toLocaleString("en-IN")}`;
-  }
+function modeKey(m: string) {
+
+  const v = modeName(m).toLowerCase();
+
+  return v === "remote" ? "REMOTE" : v === "on-site" ? "ONSITE" : v === "hybrid" ? "HYBRID" : "OTHER";
+
 }
 
-function errorMessage(payload: unknown, fallback: string): string {
-  if (!payload || typeof payload !== "object") return fallback;
-  const result = payload as ApiPayload;
-  return stringValue(result.message) || stringValue(result.error) || fallback;
+function localToday() {
+
+  const d = new Date();
+
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+
 }
 
-function assessmentPassed(profile: StudentProfile): boolean {
-  return (
-    profile.assessmentPassed === true ||
-    (
-      statusValue(profile.assessmentStatus) === "passed" &&
-      statusValue(profile.resultStatus) === "passed"
-    )
-  );
+function validDob(v: string) {
+
+  if (!v || v > localToday()) return false;
+
+  const d = new Date(`${v}T00:00:00.000Z`);
+
+  if (!Number.isFinite(d.getTime())) return false;
+
+  const now = new Date();
+
+  let age = now.getUTCFullYear() - d.getUTCFullYear();
+
+  if (now.getUTCMonth() < d.getUTCMonth() || (now.getUTCMonth() === d.getUTCMonth() && now.getUTCDate() < d.getUTCDate())) age--;
+
+  return age >= 13 && age <= 100;
+
 }
 
-function paymentOrOperationsReview(profile: StudentProfile): boolean {
-  const payment = statusValue(profile.paymentStatus);
-  const operations = statusValue(profile.internshipStatus);
+function iconFor(domain: string) {
 
-  // Never offer a fresh selection after a payment has been recorded as paid
-  // or the internship has entered the post-payment approval workflow.
-  return (
-    ["paid", "captured", "verified", "success", "successful"].includes(payment) ||
-    ["pending-review", "under-review", "operations-review", "active"].includes(operations)
-  );
+  const d = domain.toLowerCase();
+
+  if (d.includes("python") || d.includes("data") || d.includes("ai")) return Database;
+
+  if (d.includes("java") || d.includes("backend")) return Code2;
+
+  return Laptop;
+
 }
 
-function modeLabel(mode: string): string {
-  const value = mode.toLowerCase();
-  if (["remote", "online"].includes(value)) return "Remote";
-  if (["onsite", "on-site", "offline"].includes(value)) return "On-site";
-  if (value === "hybrid") return "Hybrid";
-  return mode || "Remote";
-}
 
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function dateYearsAgo(years: number): string {
-  const date = new Date();
-  date.setFullYear(date.getFullYear() - years);
-  return date.toISOString().slice(0, 10);
-}
 
 export default function StudentInternshipsPage() {
-  const router = useRouter();
 
-  const [profile, setProfile] = useState<StudentProfile | null>(null);
-  const [programs, setPrograms] = useState<Program[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
-  const [domain, setDomain] = useState("ALL");
-  const [mode, setMode] = useState("ALL");
+  const router = useRouter();
 
-  const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
-  const [dateOfBirth, setDateOfBirth] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState("");
+  const [profile, setProfile] = useState<Profile | null>(null);
 
-  const loadData = useCallback(async (refresh = false) => {
-    if (refresh) setRefreshing(true);
-    else setLoading(true);
+  const [programs, setPrograms] = useState<Program[]>([]);
 
-    setError("");
+  const [loading, setLoading] = useState(true);
 
-    try {
-      const [profileResponse, internshipResponse] = await Promise.all([
-        fetch("/api/student/profile", {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-        }),
-        fetch("/api/internships", {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-        }),
-      ]);
+  const [refreshing, setRefreshing] = useState(false);
 
-      const [profilePayload, internshipPayload] = await Promise.all([
-        profileResponse.json().catch(() => null),
-        internshipResponse.json().catch(() => null),
-      ]);
+  const [error, setError] = useState("");
 
-      if (profileResponse.status === 401 || internshipResponse.status === 401) {
-        router.replace("/login?next=/student/internships");
-        return;
-      }
+  const [search, setSearch] = useState("");
 
-      if (!profileResponse.ok) {
-        throw new Error(errorMessage(profilePayload, "Unable to load your student profile."));
-      }
+  const [domainFilter, setDomainFilter] = useState("ALL");
 
-      if (!internshipResponse.ok) {
-        throw new Error(errorMessage(internshipPayload, "Unable to load internship programs."));
-      }
+  const [modeFilter, setModeFilter] = useState("ALL");
 
-      const nextProfile = extractProfile(profilePayload);
-      if (!nextProfile) throw new Error("The student profile response was invalid.");
+  const [chosenProgram, setChosenProgram] = useState<Program | null>(null);
 
-      setProfile(nextProfile);
-      setPrograms(
-        extractInternships(internshipPayload)
-          .map(normalizeProgram)
-          .filter((item): item is Program => item !== null),
-      );
-    } catch (requestError) {
-      console.error("[student/internships] load error", requestError);
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to load internship information.",
-      );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [router]);
+  const [chosenPlan, setChosenPlan] = useState<Plan | null>(null);
 
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
+  const [dob, setDob] = useState("");
 
-  const domains = useMemo(
-    () => [...new Set(programs.map((item) => item.domain))].sort(),
-    [programs],
-  );
+  const [submitting, setSubmitting] = useState(false);
 
-  const filteredPrograms = useMemo(() => {
-    const query = search.trim().toLowerCase();
+  const [formError, setFormError] = useState("");
 
-    return programs.filter((program) => {
-      const searchable = [
-        program.title,
-        program.description,
-        program.domain,
-        ...program.skills,
-        ...program.technologies,
-      ].join(" ").toLowerCase();
 
-      return (
-        (!query || searchable.includes(query)) &&
-        (domain === "ALL" || program.domain === domain) &&
-        (mode === "ALL" ||
-          (mode === "ONSITE"
-            ? modeLabel(program.mode).toUpperCase() === "ON-SITE"
-            : modeLabel(program.mode).toUpperCase() === mode))
-      );
-    });
-  }, [programs, search, domain, mode]);
 
-  const alreadyPaidOrInReview = Boolean(profile && paymentOrOperationsReview(profile));
+  const loadData = useCallback(async (refresh = false) => {
 
-  const canSelect = Boolean(
-    profile &&
-    statusValue(profile.applicationStatus) === "approved" &&
-    assessmentPassed(profile) &&
-    profile.internshipApplicationAllowed !== false &&
-    !alreadyPaidOrInReview,
-  );
+    refresh ? setRefreshing(true) : setLoading(true);
 
-  function openProgram(program: Program) {
-    if (!canSelect) {
-      router.push("/student/assessment");
-      return;
-    }
+    setError("");
 
-    setSelectedProgram(program);
-    setSelectedPlan(null);
-    setDateOfBirth(
-      typeof profile?.dateOfBirth === "string"
-        ? profile.dateOfBirth.slice(0, 10)
-        : "",
-    );
-    setFormError("");
-  }
+    try {
 
-  function closeModal() {
-    if (submitting) return;
-    setSelectedProgram(null);
-    setSelectedPlan(null);
-    setFormError("");
-  }
+      const pr = await fetch("/api/student/profile", { credentials: "include", cache: "no-store", headers: { Accept: "application/json" } });
 
-  async function handleSelectionSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setFormError("");
+      const pp: unknown = await pr.json().catch(() => null);
 
-    if (!profile || !selectedProgram || !selectedPlan) {
-      setFormError("Select an internship and duration first.");
-      return;
-    }
+      if (pr.status === 401) { router.replace("/login?next=/student/internships"); return; }
 
-    if (alreadyPaidOrInReview) {
-      setFormError("Your payment or Student Operations review is already in progress. Please check your student progress page.");
-      return;
-    }
+      if (!pr.ok) throw new Error(getError(pp, "Unable to verify your student account."));
 
-    if (!canSelect) {
-      setFormError("Your application must be approved and your assessment must be passed before selecting an internship.");
-      return;
-    }
+      const next = getProfile(pp);
 
-    if (!dateOfBirth || dateOfBirth > todayISO()) {
-      setFormError("Enter a valid date of birth.");
-      return;
-    }
+      if (!next) throw new Error("Student profile response was invalid.");
 
-    const dob = new Date(`${dateOfBirth}T00:00:00.000Z`);
-    const now = new Date();
-    const validCalendarDate =
-      Number.isFinite(dob.getTime()) &&
-      dob.toISOString().slice(0, 10) === dateOfBirth;
-    let age = now.getUTCFullYear() - dob.getUTCFullYear();
+      setProfile(next);
 
-    const birthdayHasNotOccurred =
-      now.getUTCMonth() < dob.getUTCMonth() ||
-      (now.getUTCMonth() === dob.getUTCMonth() &&
-        now.getUTCDate() < dob.getUTCDate());
 
-    if (birthdayHasNotOccurred) age -= 1;
 
-    if (!validCalendarDate || age < 13 || age > 100) {
-      setFormError("Please enter a valid date of birth.");
-      return;
-    }
+      // Crucial gate: do not request/render the internship catalogue until eligibility is confirmed.*
 
-    setSubmitting(true);
+      if (!approved(next) || !passed(next) || next.internshipApplicationAllowed === false) {
 
-    try {
-      const response = await fetch("/api/student/internships/select", {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          internshipId: selectedProgram.id,
-          planCode: selectedPlan.planCode,
-          dateOfBirth,
-        }),
-      });
+        setPrograms([]);
 
-      const payload: unknown = await response.json().catch(() => null);
+        return;
 
-      if (response.status === 401) {
-        router.replace("/login?next=/student/internships");
-        return;
-      }
+      }
 
-      if (!response.ok || !payload || typeof payload !== "object" ||
-          (payload as ApiPayload).success === false) {
-        throw new Error(
-          errorMessage(payload, "Unable to save internship selection. Please try again."),
-        );
-      }
+      const ir = await fetch("/api/internships", { credentials: "include", cache: "no-store", headers: { Accept: "application/json" } });
 
-      // DOB is sent in the POST body, never placed in the URL.
-      // The server must validate eligibility and save the selection before returning success.
-      const params = new URLSearchParams({
-        internshipId: selectedProgram.id,
-        planCode: selectedPlan.planCode,
-      });
+      const ip: unknown = await ir.json().catch(() => null);
 
-      router.push(`/student/payment?${params.toString()}`);
-    } catch (requestError) {
-      console.error("[student/internships] selection error", requestError);
-      setFormError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to continue. Please try again.",
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
+      if (ir.status === 401) { router.replace("/login?next=/student/internships"); return; }
 
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-slate-50 px-5 py-10">
-        <div className="mx-auto max-w-6xl animate-pulse">
-          <div className="h-10 w-72 rounded-lg bg-slate-200" />
-          <div className="mt-4 h-5 max-w-xl rounded bg-slate-200" />
-          <div className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 6 }, (_, index) => (
-              <div key={index} className="h-80 rounded-3xl bg-white shadow-sm" />
-            ))}
-          </div>
-        </div>
-      </main>
-    );
-  }
+      if (!ir.ok) throw new Error(getError(ip, "Unable to load internship programs."));
 
-  if (error || !profile) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 py-10">
-        <section className="w-full max-w-xl rounded-3xl border border-red-200 bg-white p-8 text-center shadow-sm">
-          <div className="text-sm font-black uppercase tracking-widest text-red-600">
-            CyberNet Careers
-          </div>
-          <h1 className="mt-4 text-2xl font-black text-slate-950">
-            Unable to load your account
-          </h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
-            {error || "Your profile could not be verified."}
-          </p>
-          <button
-            type="button"
-            onClick={() => void loadData()}
-            className="mt-6 rounded-xl bg-blue-600 px-5 py-3 font-bold text-white hover:bg-blue-700"
-          >
-            Try Again
-          </button>
-        </section>
-      </main>
-    );
-  }
+      setPrograms(getPrograms(ip).map(normalizeProgram).filter((x): x is Program => x !== null));
 
-  if (alreadyPaidOrInReview && profile) {
-    const paymentStatus = statusValue(profile.paymentStatus);
-    const internshipStatus = statusValue(profile.internshipStatus);
-    const paymentVerified = ["paid", "captured", "verified", "success", "successful"].includes(paymentStatus);
+    } catch (e) {
 
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 py-10">
-        <section className="w-full max-w-2xl rounded-3xl border border-blue-100 bg-white p-8 shadow-xl sm:p-10">
-          <span className="rounded-full bg-blue-50 px-3 py-2 text-xs font-black uppercase tracking-widest text-blue-700">
-            CyberNet Careers
+      console.error("[student/internships] load error", e);
+
+      setError(e instanceof Error ? e.message : "Unable to load internship information.");
+
+    } finally { setLoading(false); setRefreshing(false); }
+
+  }, [router]);
+
+
+
+  useEffect(() => { void loadData(); }, [loadData]);
+
+
+
+  const canSelect = Boolean(profile && approved(profile) && passed(profile) && profile.internshipApplicationAllowed !== false);
+
+  // The student's assigned/selected domain is the source of truth.
+
+  // Never fall back to showing the full catalogue if it is missing.
+
+  const assignedDomain = str(profile?.selectedInternshipDomain) ||
+
+    str(profile?.internshipDomain) ||
+
+    str(profile?.assessmentDomain) ||
+
+    str(profile?.internshipTrack) ||
+
+    str(profile?.selectedDomain) ||
+
+    str(profile?.domain);
+
+
+
+  const normalizeDomain = (value: string) =>
+
+    value.toLowerCase().trim().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "");
+
+
+
+  const domainPrograms = useMemo(() => {
+
+    if (!assignedDomain) return [];
+
+    const assignedKey = normalizeDomain(assignedDomain);
+
+    return programs.filter((program) => normalizeDomain(program.domain) === assignedKey);
+
+  }, [programs, assignedDomain]);
+
+
+
+  const domains = useMemo(() => [...new Set(domainPrograms.map(p => p.domain))].sort((a, b) => a.localeCompare(b)), [domainPrograms]);
+
+
+
+  const filtered = useMemo(() => {
+
+    const q = search.trim().toLowerCase();
+
+    return domainPrograms.filter(p => {
+
+      const haystack = [p.title, p.description, p.domain, p.mode, p.location, ...p.skills, ...p.technologies].join(" ").toLowerCase();
+
+      return (!q || haystack.includes(q)) && (domainFilter === "ALL" || p.domain === domainFilter) && (modeFilter === "ALL" || modeKey(p.mode) === modeFilter);
+
+    });
+
+  }, [domainPrograms, search, domainFilter, modeFilter]);
+
+  const groups = useMemo(() => {
+
+    const m = new Map<string, Program[]>();
+
+    for (const p of filtered) m.set(p.domain, [...(m.get(p.domain) || []), p]);
+
+    return [...m.entries()].sort(([a], [b]) => {
+
+      const aa = Boolean(assignedDomain && a.toLowerCase() === assignedDomain.toLowerCase());
+
+      const bb = Boolean(assignedDomain && b.toLowerCase() === assignedDomain.toLowerCase());
+
+      return aa === bb ? a.localeCompare(b) : aa ? -1 : 1;
+
+    });
+
+  }, [filtered, assignedDomain]);
+
+
+
+  function openProgram(p: Program) {
+
+    if (!canSelect) { router.replace("/student/assessment"); return; }
+
+    setChosenProgram(p); setChosenPlan(p.plans.find(plan => plan.planCode === "THREE_MONTHS") || null);
+
+    setDob(typeof profile?.dateOfBirth === "string" ? profile.dateOfBirth.slice(0, 10) : "");
+
+    setFormError("");
+
+  }
+
+  function closeModal() {
+
+    if (submitting) return;
+
+    setChosenProgram(null); setChosenPlan(null); setFormError("");
+
+  }
+
+  async function submitSelection(e: FormEvent<HTMLFormElement>) {
+
+    e.preventDefault(); setFormError("");
+
+    if (!profile || !chosenProgram || !chosenPlan) { setFormError("Choose an internship and duration."); return; }
+
+    if (!canSelect) { setFormError("A passed assessment is required before internship selection."); return; }
+
+    if (!validDob(dob)) { setFormError("Enter a valid date of birth."); return; }
+
+    setSubmitting(true);
+
+    try {
+
+      const response = await fetch("/api/student/internships/select", {
+
+        method: "POST", credentials: "include", cache: "no-store",
+
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+
+        body: JSON.stringify({ internshipId: chosenProgram.id, planCode: chosenPlan.planCode, dateOfBirth: dob }),
+
+      });
+
+      const payload: unknown = await response.json().catch(() => null);
+
+      if (response.status === 401) { router.replace("/login?next=/student/internships"); return; }
+
+      if (!response.ok || !payload || typeof payload !== "object" || (payload as Payload).success === false) {
+
+        throw new Error(getError(payload, "Unable to save internship selection. Please try again."));
+
+      }
+
+      router.push(`/student/payment?${new URLSearchParams({ internshipId: chosenProgram.id, planCode: chosenPlan.planCode }).toString()}`);
+
+    } catch (e) {
+
+      console.error("[student/internships] selection error", e);
+
+      setFormError(e instanceof Error ? e.message : "Unable to continue. Please try again.");
+
+    } finally { setSubmitting(false); }
+
+  }
+
+
+
+  if (loading) return <main className="min-h-screen bg-slate-50 p-5 sm:p-10"><div className="mx-auto max-w-7xl animate-pulse"><div className="h-10 w-64 rounded-xl bg-slate-200" /><div className="mt-5 h-5 max-w-xl rounded bg-slate-200" /><div className="mt-8 grid gap-4 md:grid-cols-3">{[1,2,3].map(n => <div key={n} className="h-28 rounded-2xl bg-white" />)}</div><div className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-3">{[1,2,3,4,5,6].map(n => <div key={n} className="h-72 rounded-3xl bg-white" />)}</div></div></main>;
+
+
+
+  if (error || !profile) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-lg rounded-3xl border border-red-100 bg-white p-8 text-center shadow-xl"><ShieldCheck className="mx-auto text-red-600" size={32}/><h1 className="mt-4 text-2xl font-black">Unable to verify account</h1><p className="mt-3 text-sm leading-6 text-slate-600">{error || "Student profile could not be verified."}</p><button onClick={() => void loadData()} className="mt-6 rounded-xl bg-blue-600 px-5 py-3 font-bold text-white">Try again</button></section></main>;
+
+
+
+  if (!approved(profile)) return <LockedScreen title="Application approval required" message="Internship selection remains locked until the Main Admin approves your application." action="Check status" onAction={() => void loadData(true)} refreshing={refreshing}/>;
+
+
+
+  if (!assignedDomain) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-xl rounded-3xl border border-amber-200 bg-white p-8 text-center shadow-xl"><LockKeyhole className="mx-auto text-amber-600" size={32}/><h1 className="mt-4 text-2xl font-black">Internship domain not assigned</h1><p className="mt-3 text-sm leading-6 text-slate-600">Your student profile does not contain a selected internship or assessment domain yet. Please contact Student Operations to correct your profile. Other domains remain hidden.</p><button onClick={() => void loadData(true)} disabled={refreshing} className="mt-6 rounded-xl border px-5 py-3 text-sm font-bold disabled:opacity-60"><RefreshCw size={15} className={`mr-2 inline ${refreshing?"animate-spin":""}`}/>Refresh profile</button></section></main>;
+
+
+
+  if (!passed(profile) || profile.internshipApplicationAllowed === false) return <main className="grid min-h-screen place-items-center bg-gradient-to-b from-blue-50 via-slate-50 to-white p-4 sm:p-8"><section className="w-full max-w-2xl overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-2xl shadow-blue-950/10"><div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 p-8 text-white sm:p-10"><div className="flex items-center gap-3"><div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/10"><LockKeyhole size={25}/></div><div><p className="text-xs font-black uppercase tracking-[.2em] text-blue-200">Student pathway</p><p className="mt-1 text-sm font-bold">Internship selection locked</p></div></div><h1 className="mt-8 text-3xl font-black sm:text-4xl">Pass your assessment to unlock internships</h1><p className="mt-4 max-w-xl text-sm leading-7 text-blue-100">Active programs and paid plans stay hidden until your official result is recorded as Passed. A pending result does not unlock selection.</p></div><div className="grid gap-3 p-6 sm:grid-cols-3 sm:p-8">{[{title:"Complete",body:"Finish the technical assessment."},{title:"Result verified",body:"Wait until the official result says Passed."},{title:"Select program",body:"Choose a domain and duration after unlock."}].map((x,i)=><div key={x.title} className="rounded-2xl border border-slate-200 p-4"><BadgeCheck className="text-blue-600" size={21}/><p className="mt-3 text-sm font-extrabold">{i+1}. {x.title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{x.body}</p></div>)}</div><div className="flex flex-col gap-3 border-t bg-slate-50 p-6 sm:flex-row sm:justify-between sm:p-8"><button onClick={() => void loadData(true)} disabled={refreshing} className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-5 py-3 text-sm font-bold disabled:opacity-60"><RefreshCw size={16} className={refreshing ? "animate-spin" : ""}/> Refresh result</button><button onClick={() => router.push("/student/assessment")} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700">Go to assessment <ArrowRight size={17}/></button></div></section></main>;
+
+
+
+  return <main className="min-h-screen bg-slate-50 text-slate-950">
+
+    <header className="border-b border-slate-200 bg-white">
+      <div className="mx-auto max-w-6xl px-4 py-7 sm:px-6 lg:px-8 lg:py-9">
+        <div className="flex flex-col items-center text-center">
+          <span className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-[11px] font-black uppercase tracking-[.18em] text-blue-700">
+            <Sparkles size={14}/> CyberNet Careers · Internship Programs
           </span>
-          <h1 className="mt-6 text-3xl font-black text-slate-950">
-            {paymentVerified ? "Payment recorded" : "Internship review in progress"}
-          </h1>
-          <p className="mt-3 leading-7 text-slate-600">
-            {paymentVerified
-              ? "Your payment is recorded. Student Operations must review and approve your internship before dashboard access is enabled."
-              : "Your internship is already in the post-selection workflow. To avoid duplicate selections or payments, this page is temporarily locked."}
-          </p>
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl bg-slate-50 p-4">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Payment status</p>
-              <p className="mt-2 font-black text-slate-900">{profile.paymentStatus || "Not available"}</p>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-4">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Internship status</p>
-              <p className="mt-2 font-black text-slate-900">{profile.internshipStatus || "Not available"}</p>
-            </div>
-          </div>
-          <p className="mt-5 text-sm leading-6 text-slate-500">
-            Dashboard credentials are issued only after Student Operations approval. Do not make another payment for the same selection.
-          </p>
-          <button
-            type="button"
-            onClick={() => router.push("/student/progress")}
-            className="mt-7 rounded-xl bg-blue-600 px-6 py-3 font-bold text-white hover:bg-blue-700"
-          >
-            Check Student Progress
-          </button>
-          <button
-            type="button"
-            onClick={() => void loadData(true)}
-            disabled={refreshing}
-            className="ml-3 mt-7 rounded-xl border border-slate-200 px-6 py-3 font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-          >
-            {refreshing ? "Refreshing..." : "Refresh Status"}
-          </button>
-        </section>
-      </main>
-    );
-  }
-
-  if (!canSelect) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 py-10">
-        <section className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-8 shadow-xl sm:p-10">
-          <span className="rounded-full bg-blue-50 px-3 py-2 text-xs font-black uppercase tracking-widest text-blue-700">
-            CyberNet Careers
-          </span>
-          <h1 className="mt-6 text-3xl font-black text-slate-950">
-            Complete your assessment first
-          </h1>
-          <p className="mt-3 leading-7 text-slate-600">
-            Internship selection becomes available after your application is approved
-            and you pass the technical assessment.
-          </p>
-          <button
-            type="button"
-            onClick={() => router.push("/student/assessment")}
-            className="mt-7 rounded-xl bg-blue-600 px-6 py-3 font-bold text-white hover:bg-blue-700"
-          >
-            Go to Assessment
-          </button>
-        </section>
-      </main>
-    );
-  }
-
-  return (
-    <main className="min-h-screen bg-slate-50 text-slate-950">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-8 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <span className="rounded-full bg-blue-50 px-3 py-2 text-xs font-black uppercase tracking-widest text-blue-700">
-              CyberNet Careers
-            </span>
-            <h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">
-              Choose Your Internship
-            </h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-              Select a program and duration. Confirm your personal details before
-              proceeding to secure payment.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            disabled={refreshing}
-            onClick={() => void loadData(true)}
-            className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold hover:bg-slate-50 disabled:opacity-60"
-          >
-            {refreshing ? "Refreshing..." : "↻ Refresh Programs"}
+          <h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">Choose your internship plan</h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">Select a program from your assigned domain and choose the duration that fits your goals.</p>
+          <button onClick={() => void loadData(true)} disabled={refreshing} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold shadow-sm hover:border-blue-200 hover:text-blue-700 disabled:opacity-60">
+            <RefreshCw size={16} className={refreshing ? "animate-spin" : ""}/>{refreshing ? "Refreshing…" : "Refresh programs"}
           </button>
         </div>
-      </header>
-
-      <section className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
-        <div className="mb-7 grid gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">
-              Student
-            </p>
-            <p className="mt-2 truncate text-lg font-black">
-              {profile.fullName || "Student"}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              {profile.studentId || "Student ID pending"}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">
-              Assessment
-            </p>
-            <p className="mt-2 text-lg font-black text-emerald-600">Passed</p>
-            <p className="mt-1 text-xs text-slate-500">Internship selection unlocked</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">
-              Available plans
-            </p>
-            <p className="mt-2 text-lg font-black">₹499 / ₹999 / ₹1,699</p>
-            <p className="mt-1 text-xs text-slate-500">1, 3 and 6 months</p>
-          </div>
+        <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <Stat label="Student" value={profile.fullName || "Student"} detail={profile.studentId || "Student ID verified"}/>
+          <Stat label="Assessment" value="Passed" detail="Internship selection unlocked" success/>
+          <Stat label="Your domain" value={assignedDomain} detail={`${domainPrograms.length} matching active program${domainPrograms.length === 1 ? "" : "s"}`}/>
+          <Stat label="Plans" value="₹499 · ₹999 · ₹1,699" detail="1, 3 or 6 months when offered"/>
         </div>
+      </div>
+    </header>
 
-        <div className="mb-7 grid gap-3 lg:grid-cols-[1fr_240px_190px]">
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search internships, skills or technologies..."
-            className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
-          />
-          <select
-            value={domain}
-            onChange={(event) => setDomain(event.target.value)}
-            className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold outline-none focus:border-blue-500"
-          >
-            <option value="ALL">All Domains</option>
-            {domains.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-          <select
-            value={mode}
-            onChange={(event) => setMode(event.target.value)}
-            className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold outline-none focus:border-blue-500"
-          >
-            <option value="ALL">All Modes</option>
-            <option value="REMOTE">Remote</option>
-            <option value="ONSITE">On-site</option>
-            <option value="HYBRID">Hybrid</option>
-          </select>
-        </div>
 
-        {filteredPrograms.length === 0 ? (
-          <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
-            <h2 className="text-2xl font-black">No internships found</h2>
-            <p className="mt-2 text-sm text-slate-500">
-              Try a different search or clear the filters.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSearch("");
-                setDomain("ALL");
-                setMode("ALL");
-              }}
-              className="mt-5 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white"
-            >
-              Clear Filters
-            </button>
-          </div>
-        ) : (
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {filteredPrograms.map((program) => {
-              const cheapest = Math.min(...program.plans.map((plan) => plan.price));
 
-              return (
-                <article
-                  key={program.id}
-                  className="flex flex-col rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg"
-                >
-                  <div className="flex items-start gap-4">
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-500 text-lg font-black text-white">
-                      {program.title.slice(0, 2).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <h2 className="text-lg font-black">{program.title}</h2>
-                      <p className="mt-1 text-sm font-bold text-blue-600">{program.domain}</p>
-                    </div>
-                  </div>
+    <section className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6 lg:px-8 lg:py-9"><div className="mb-7 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 lg:grid-cols-[minmax(240px,1fr)_250px_190px]"><label className="relative"><span className="sr-only">Search programs</span><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><input value={search} onChange={e => setSearch(e.target.value)} type="search" placeholder="Search domains, skills or technologies…" className="h-12 w-full rounded-xl border bg-slate-50 pl-11 pr-4 text-sm outline-none focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10"/></label><label className="relative"><span className="sr-only">Domain filter</span><select value={domainFilter} onChange={e => setDomainFilter(e.target.value)} className="h-12 w-full appearance-none rounded-xl border bg-white px-4 pr-9 text-sm font-semibold outline-none focus:border-blue-500"><option value="ALL">All domains</option>{domains.map(d => <option key={d} value={d}>{d}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/></label><label className="relative"><span className="sr-only">Mode filter</span><select value={modeFilter} onChange={e => setModeFilter(e.target.value)} className="h-12 w-full appearance-none rounded-xl border bg-white px-4 pr-9 text-sm font-semibold outline-none focus:border-blue-500"><option value="ALL">All modes</option><option value="REMOTE">Remote</option><option value="ONSITE">On-site</option><option value="HYBRID">Hybrid</option><option value="OTHER">Other</option></select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/></label></div>
 
-                  <p className="mt-5 line-clamp-3 text-sm leading-6 text-slate-600">
-                    {program.description}
-                  </p>
 
-                  <div className="mt-5 grid grid-cols-2 gap-3">
-                    <div className="rounded-xl bg-slate-50 p-3">
-                      <p className="text-xs font-bold text-slate-400">MODE</p>
-                      <p className="mt-1 text-sm font-bold">{modeLabel(program.mode)}</p>
-                    </div>
-                    <div className="rounded-xl bg-slate-50 p-3">
-                      <p className="text-xs font-bold text-slate-400">LOCATION</p>
-                      <p className="mt-1 text-sm font-bold">{program.location}</p>
-                    </div>
-                  </div>
 
-                  {program.skills.length > 0 && (
-                    <div className="mt-5 flex flex-wrap gap-2">
-                      {program.skills.slice(0, 4).map((skill) => (
-                        <span key={skill} className="rounded-lg bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+    {domainPrograms.length === 0 ? <Empty title={`No active programs for ${assignedDomain}`} message="Only programs matching your assigned domain can be shown. Ask Student Operations to check domain mapping or program availability." onClick={() => void loadData(true)} /> : filtered.length === 0 ? <Empty title="No matching programs" message="Try another search or clear the filters." onClick={() => {setSearch("");setDomainFilter("ALL");setModeFilter("ALL");}}/> : <div className="space-y-10">{groups.map(([domain, items]) => { const Icon = iconFor(domain); const assigned = Boolean(assignedDomain && domain.toLowerCase() === assignedDomain.toLowerCase()); return <section key={domain}><div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-700/15"><Icon size={23}/></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-black tracking-tight sm:text-2xl">{domain}</h2>{assigned && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-emerald-700">Your assessment domain</span>}</div><p className="mt-1 text-sm text-slate-500">{items.length} available {items.length === 1 ? "program" : "programs"}</p></div></div><span className="inline-flex items-center gap-1.5 self-start rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 sm:self-auto"><ShieldCheck size={14} className="text-emerald-600"/> Active programs only</span></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{items.map(p => {const cheapest = Math.min(...p.plans.map(x => x.price)); const isPopular = p.plans.some(x => x.planCode === "THREE_MONTHS"); return <article key={p.id} className={`group relative flex min-w-0 flex-col overflow-hidden rounded-3xl border bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-950/10 ${isPopular ? "border-blue-500 ring-2 ring-blue-500/20 shadow-lg shadow-blue-600/10" : "border-slate-200 hover:border-blue-200"}`}><div className={`h-2 ${isPopular ? "bg-gradient-to-r from-blue-700 via-indigo-600 to-cyan-400" : "bg-gradient-to-r from-slate-300 via-slate-200 to-slate-300"}`}/>{isPopular && <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-700 px-3 py-2.5 text-center text-xs font-black uppercase tracking-[.12em] text-white shadow-sm"><Sparkles size={15} className="shrink-0"/> Most Popular Internship <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] tracking-normal">₹999 · 3 Months</span></div>}<div className="flex flex-1 flex-col p-5 sm:p-6"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><Icon size={22}/></div><div className="min-w-0"><h3 className="break-words text-lg font-black leading-snug">{p.title}</h3><p className="mt-1 text-xs font-bold text-blue-700">{p.domain}</p></div></div><p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">{p.description}</p><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><Laptop size={13} className="mr-1 inline"/> Mode</p><p className="mt-1 text-sm font-bold">{modeName(p.mode)}</p></div><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><MapPin size={13} className="mr-1 inline"/> Location</p><p className="mt-1 truncate text-sm font-bold">{p.location}</p></div></div>{(p.skills.length > 0 || p.technologies.length > 0) && <div className="mt-4"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Skills & technologies</p><div className="mt-2 flex flex-wrap gap-1.5">{[...p.skills,...p.technologies].filter((s,i,a)=>a.indexOf(s)===i).slice(0,5).map(s=><span key={s} className="rounded-lg border bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">{s}</span>)}</div></div>}<div className="mt-5 flex items-end justify-between gap-3 border-t border-slate-100 pt-4"><div><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Plans from</p><p className="mt-1 text-2xl font-black tracking-tight">{money(cheapest,p.plans[0]?.currency || "INR")}</p><p className="mt-1 text-xs text-slate-500">{p.plans.length} duration option{p.plans.length===1?"":"s"}</p>{isPopular && <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-extrabold text-blue-800"><Sparkles size={12}/> Best value · 3-month plan available</p>}</div><button onClick={()=>openProgram(p)} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-blue-600/15 hover:bg-blue-700">Select <ArrowRight size={16}/></button></div></div></article>})}</div></section>})}</div>}
 
-                  <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 p-4">
-                    <p className="text-xs font-black uppercase tracking-widest text-blue-600">
-                      Available plans
-                    </p>
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      {PLAN_ORDER.map((code) => {
-                        const plan = program.plans.find((item) => item.planCode === code);
-                        return (
-                          <div key={code} className="rounded-xl bg-white p-2 text-center">
-                            <p className="text-[10px] font-bold text-slate-500">
-                              {PLAN_INFO[code].label}
-                            </p>
-                            <p className="mt-1 text-sm font-black">
-                              {plan ? money(plan.price, plan.currency) : "N/A"}
-                            </p>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+    <div className="mt-10 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-950"><ShieldCheck className="mt-0.5 shrink-0 text-blue-700" size={19}/><p><strong>Secure selection:</strong> choosing a program does not activate your dashboard. Payment must be verified and Student Operations review completed before dashboard access.</p></div>
 
-                  <p className="mt-5 text-sm text-slate-500">
-                    Starting from <strong className="text-slate-950">{money(cheapest)}</strong>
-                  </p>
+    </section>
 
-                  <button
-                    type="button"
-                    onClick={() => openProgram(program)}
-                    className="mt-6 w-full rounded-xl bg-blue-600 px-5 py-3.5 text-sm font-black text-white hover:bg-blue-700"
-                  >
-                    View Plans & Continue →
-                  </button>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
 
-      {selectedProgram && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-3 backdrop-blur-sm sm:p-6"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="selection-dialog-title"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeModal();
-          }}
-        >
-          <section className="flex max-h-[95vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
-            <header className="border-b border-slate-200 p-5 sm:p-7">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-blue-600">
-                    Internship selection
-                  </p>
-                  <h2 id="selection-dialog-title" className="mt-2 text-2xl font-black">
-                    {selectedProgram.title}
-                  </h2>
-                  <p className="mt-1 text-sm font-bold text-blue-600">
-                    {selectedProgram.domain}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  disabled={submitting}
-                  aria-label="Close selection form"
-                  className="h-10 w-10 rounded-xl bg-slate-100 text-xl font-bold text-slate-600 disabled:opacity-50"
-                >
-                  ×
-                </button>
-              </div>
-              <p className="mt-4 text-sm leading-6 text-slate-600">
-                Choose a duration, confirm your details and continue to payment.
-              </p>
-            </header>
 
-            <form onSubmit={handleSelectionSubmit} className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-7">
-              <section>
-                <h3 className="text-lg font-black">1. Select duration</h3>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  {PLAN_ORDER.map((code) => {
-                    const plan = selectedProgram.plans.find((item) => item.planCode === code);
-                    if (!plan) {
-                      return (
-                        <div key={code} className="rounded-2xl border border-dashed border-slate-300 p-4 opacity-60">
-                          <p className="font-bold">{PLAN_INFO[code].label}</p>
-                          <p className="mt-2 text-xs text-slate-500">Unavailable</p>
-                        </div>
-                      );
-                    }
+    {chosenProgram && <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)closeModal();}}><section role="dialog" aria-modal="true" aria-labelledby="selection-title" className="max-h-[94vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl"><div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-white/95 p-5 backdrop-blur sm:p-6"><div><p className="text-[10px] font-black uppercase tracking-[.18em] text-blue-700">Confirm selection</p><h2 id="selection-title" className="mt-2 text-xl font-black sm:text-2xl">{chosenProgram.title}</h2><p className="mt-1 text-sm text-slate-500">{chosenProgram.domain}</p></div><button type="button" onClick={closeModal} disabled={submitting} aria-label="Close" className="grid h-10 w-10 place-items-center rounded-xl border text-slate-500 hover:bg-slate-50 disabled:opacity-50"><X size={18}/></button></div><form onSubmit={submitSelection} className="space-y-6 p-5 sm:p-6"><div><div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-extrabold">Choose duration</h3><span className="text-xs text-slate-500">Select one plan</span></div><div className="grid gap-3 sm:grid-cols-3">{chosenProgram.plans.map(plan=>{const cfg=PLAN_INFO[plan.planCode];const active=chosenPlan?.planCode===plan.planCode;return <button type="button" key={plan.planCode} onClick={()=>{setChosenPlan(plan);setFormError("");}} className={`relative rounded-2xl border p-4 pt-7 text-left transition focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200 ${plan.planCode === "THREE_MONTHS" ? (active ? "border-blue-600 bg-blue-50 ring-2 ring-blue-600/15 shadow-lg shadow-blue-600/10" : "border-blue-400 bg-blue-50/50 shadow-md shadow-blue-600/5") : (active ? "border-blue-600 bg-blue-50 ring-2 ring-blue-600/10" : "border-slate-200 hover:border-blue-200 hover:bg-slate-50")}`}>
+{plan.planCode === "THREE_MONTHS" && <span className="absolute inset-x-0 top-0 flex items-center justify-center rounded-t-[14px] bg-gradient-to-r from-blue-600 to-indigo-600 py-1 text-[10px] font-black uppercase tracking-wider text-white"><Sparkles size={11} className="mr-1"/> Most popular</span>}
+<p className={`text-xs font-bold ${plan.planCode === "THREE_MONTHS" ? "text-blue-700" : "text-slate-500"}`}>{cfg.tier}</p><p className="mt-2 text-sm font-extrabold">{plan.duration}</p><p className="mt-2 text-2xl font-black">{money(plan.price,plan.currency)}</p><p className="mt-2 flex items-center gap-1 text-xs font-semibold text-slate-500"><Clock3 size={13}/>{plan.months} month{plan.months===1?"":"s"}</p>{active&&<span className="absolute right-3 bottom-3 grid h-5 w-5 place-items-center rounded-full bg-blue-600 text-white"><Check size={12}/></span>}</button>})}</div></div><div><label htmlFor="student-dob" className="mb-2 block text-sm font-extrabold">Date of birth</label><input id="student-dob" type="date" required max={localToday()} value={dob} onChange={e=>setDob(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"/><p className="mt-2 text-xs leading-5 text-slate-500">Sent in the secure request body, not in the URL.</p></div>{formError&&<div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{formError}</div>}<div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><p className="flex items-center gap-2 font-extrabold"><CreditCard size={15}/> Payment is next</p><p className="mt-1">Dashboard access stays locked until payment verification and the required operations review are complete.</p></div><div className="flex flex-col-reverse gap-3 border-t pt-5 sm:flex-row sm:justify-end"><button type="button" onClick={closeModal} disabled={submitting} className="rounded-xl border px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={submitting||!chosenPlan||!validDob(dob)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting?<><LoaderCircle size={17} className="animate-spin"/> Saving selection…</>:<>Continue to payment <ArrowRight size={17}/></>}</button></div></form></section></div>}
 
-                    const active = selectedPlan?.planCode === code;
+  </main>;
 
-                    return (
-                      <button
-                        key={code}
-                        type="button"
-                        disabled={submitting}
-                        onClick={() => setSelectedPlan(plan)}
-                        className={`rounded-2xl border-2 p-4 text-left transition ${
-                          active
-                            ? "border-blue-600 bg-blue-50"
-                            : "border-slate-200 hover:border-blue-300"
-                        }`}
-                      >
-                        <p className="text-sm font-bold text-slate-500">{plan.duration}</p>
-                        <p className="mt-2 text-2xl font-black">{money(plan.price, plan.currency)}</p>
-                        <p className="mt-2 text-xs text-slate-500">One-time program price</p>
-                        <p className="mt-4 text-xs font-black">{active ? "✓ Selected" : "Select plan"}</p>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
+}
 
-              <section className="mt-8">
-                <h3 className="text-lg font-black">2. Confirm student details</h3>
-                <p className="mt-1 text-sm text-slate-500">
-                  Your name is taken from your verified student account.
-                </p>
 
-                <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                  <label className="block">
-                    <span className="text-sm font-bold text-slate-700">Student name</span>
-                    <input
-                      value={profile?.fullName || ""}
-                      readOnly
-                      className="mt-2 h-12 w-full rounded-xl border border-slate-200 bg-slate-100 px-4 text-sm font-semibold text-slate-600"
-                    />
-                  </label>
 
-                  <label className="block">
-                    <span className="text-sm font-bold text-slate-700">Student ID</span>
-                    <input
-                      value={profile?.studentId || "Assigned by server"}
-                      readOnly
-                      className="mt-2 h-12 w-full rounded-xl border border-slate-200 bg-slate-100 px-4 text-sm font-semibold text-slate-600"
-                    />
-                  </label>
+function Stat({label,value,detail,success=false}:{label:string;value:string;detail:string;success?:boolean}) {
 
-                  <label className="block sm:col-span-2">
-                    <span className="text-sm font-bold text-slate-700">Date of birth</span>
-                    <input
-                      type="date"
-                      required
-                      value={dateOfBirth}
-                      min={dateYearsAgo(100)}
-                      max={todayISO()}
-                      onChange={(event) => setDateOfBirth(event.target.value)}
-                      className="mt-2 h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
-                    />
-                    <span className="mt-2 block text-xs text-slate-500">
-                      This will be submitted securely to the server for validation.
-                    </span>
-                  </label>
-                </div>
-              </section>
+  return <div className={`rounded-2xl border p-4 ${success?"border-emerald-100 bg-emerald-50":"border-slate-200 bg-slate-50"}`}><p className={`text-[10px] font-black uppercase tracking-[.18em] ${success?"text-emerald-700":"text-slate-500"}`}>{label}</p><p className={`mt-2 truncate text-base font-extrabold ${success?"text-emerald-800":"text-slate-900"}`}>{success&&<Check size={16} className="mr-1 inline"/>}{value}</p><p className={`mt-1 text-xs ${success?"text-emerald-700":"text-slate-500"}`}>{detail}</p></div>;
 
-              {selectedPlan && (
-                <section className="mt-6 rounded-2xl border border-blue-200 bg-blue-50 p-5">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-blue-600">
-                        Selected plan
-                      </p>
-                      <p className="mt-1 font-black">{selectedPlan.duration}</p>
-                    </div>
-                    <p className="text-2xl font-black">
-                      {money(selectedPlan.price, selectedPlan.currency)}
-                    </p>
-                  </div>
-                </section>
-              )}
+}
 
-              {formError && (
-                <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">
-                  {formError}
-                </div>
-              )}
+function Empty({title,message,onClick}:{title:string;message:string;onClick:()=>void}) {
 
-              <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
-                  Prices shown here are indicative. The server validates the selected plan and final amount.
-                Payment is verified by the server. Completing payment does not automatically unlock your dashboard.
-                Student Operations approval and new dashboard credentials are required.
-              </div>
+  return <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><BriefcaseBusiness className="mx-auto text-slate-400" size={29}/><h2 className="mt-4 text-xl font-black">{title}</h2><p className="mt-2 text-sm text-slate-500">{message}</p><button onClick={onClick} className="mt-5 rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold hover:bg-slate-50">Clear filters / refresh</button></div>;
 
-              <button
-                type="submit"
-                disabled={submitting || !selectedPlan || !dateOfBirth}
-                className="mt-6 w-full rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 px-6 py-4 text-sm font-black text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {submitting ? "Saving selection..." : "Confirm Details & Continue to Payment →"}
-              </button>
-            </form>
-          </section>
-        </div>
-      )}
-    </main>
-  );
+}
+
+function LockedScreen({title,message,action,onAction,refreshing}:{title:string;message:string;action:string;onAction:()=>void;refreshing:boolean}) {
+
+  return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl"><LockKeyhole className="mx-auto text-amber-600" size={32}/><p className="mt-4 text-xs font-black uppercase tracking-[.2em] text-blue-700">CyberNet Careers</p><h1 className="mt-3 text-2xl font-black">{title}</h1><p className="mt-3 text-sm leading-6 text-slate-600">{message}</p><button onClick={onAction} disabled={refreshing} className="mt-6 rounded-xl border px-5 py-3 text-sm font-bold disabled:opacity-60"><RefreshCw size={15} className={`mr-2 inline ${refreshing?"animate-spin":""}`}/>{action}</button></section></main>;
+
 }

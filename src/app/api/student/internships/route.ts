@@ -1,5 +1,5 @@
-
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import mongoose from "mongoose";
 
 import connectDB from "@/lib/db";
@@ -23,9 +23,11 @@ export const revalidate = 0;
 const NO_CACHE_HEADERS = {
   "Cache-Control": "private, no-store, no-cache, max-age=0, must-revalidate",
   Pragma: "no-cache",
+  Expires: "0",
   Vary: "Cookie",
   "X-Content-Type-Options": "nosniff",
-};
+  "Referrer-Policy": "same-origin",
+} as const;
 
 type TokenPayload = {
   userId?: unknown;
@@ -33,6 +35,11 @@ type TokenPayload = {
   identifier?: unknown;
   role?: unknown;
   sessionType?: unknown;
+};
+
+type StudentIdentityRecord = {
+  studentId?: unknown;
+  dashboardStudentId?: unknown;
 };
 
 function cleanString(value: unknown, maxLength = 200): string {
@@ -44,7 +51,7 @@ function json(
   body: Record<string, unknown>,
   status = 200,
   requestId?: string,
-) {
+): NextResponse {
   return NextResponse.json(body, {
     status,
     headers: {
@@ -55,16 +62,12 @@ function json(
 }
 
 function getRequestId(request: NextRequest): string {
-  const incoming = cleanString(
-    request.headers.get("x-request-id"),
-    128,
-  );
+  const incoming = cleanString(request.headers.get("x-request-id"), 128);
 
-  if (/^[a-zA-Z0-9._:-]{8,128}$/.test(incoming)) {
-    return incoming;
-  }
+  // Accept a caller-provided ID only if it is a short, safe correlation value.
+  if (/^[a-zA-Z0-9._:-]{8,128}$/.test(incoming)) return incoming;
 
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 async function authenticateStudent(
@@ -78,26 +81,30 @@ async function authenticateStudent(
   for (const token of tokens) {
     try {
       const payload = await verifyAccessToken(token);
-
       if (!payload || typeof payload !== "object") continue;
 
       const claims = payload as TokenPayload;
       const userId = cleanString(
         claims.userId ?? claims.id ?? claims.identifier,
+        200,
       );
-      const role = cleanString(claims.role).toLowerCase();
-      const sessionType = cleanString(claims.sessionType).toLowerCase();
+      const role = cleanString(claims.role, 40).toLowerCase();
+      const sessionType = cleanString(claims.sessionType, 60)
+        .toLowerCase()
+        .replace(/[\s_]+/g, "-");
 
       if (!userId || role !== "student") continue;
 
-      // Main student login only. Reject admin and dashboard sessions.
+      // This endpoint is for the main student account, not dashboard or admin sessions.
       if (
         sessionType === "admin" ||
-        sessionType === "student-dashboard"
+        sessionType === "student-dashboard" ||
+        sessionType === "dashboard"
       ) {
         continue;
       }
 
+      // Permit only explicitly recognized student session types.
       if (
         sessionType &&
         sessionType !== "student" &&
@@ -108,7 +115,7 @@ async function authenticateStudent(
 
       return { userId };
     } catch {
-      // Try the next supported cookie; never log or expose the token.
+      // Try the next supported cookie. Never log or expose token contents.
     }
   }
 
@@ -116,41 +123,33 @@ async function authenticateStudent(
 }
 
 async function resolveStudentId(userId: string): Promise<string | null> {
-  let student:
-    | {
-        studentId?: unknown;
-        dashboardStudentId?: unknown;
-      }
-    | null = null;
+  let student: StudentIdentityRecord | null = null;
 
   if (mongoose.isValidObjectId(userId)) {
-    student = await StudentModel.findById(userId)
+    student = (await StudentModel.findById(userId)
       .select("studentId dashboardStudentId")
       .lean()
-      .exec();
+      .exec()) as StudentIdentityRecord | null;
   }
 
   if (!student) {
-    student = await StudentModel.findOne({
-      $or: [
-        { studentId: userId },
-        { dashboardStudentId: userId },
-      ],
+    student = (await StudentModel.findOne({
+      $or: [{ studentId: userId }, { dashboardStudentId: userId }],
     })
       .select("studentId dashboardStudentId")
       .lean()
-      .exec();
+      .exec()) as StudentIdentityRecord | null;
   }
 
   if (!student) return null;
 
-  // Internship selection is only for the main student account.
-  // A dashboard credential must never become a main student identity.
-  const studentId = cleanString(student.studentId, 100);
-  return studentId || null;
+  // Always resolve to the canonical main-student ID.
+  // A dashboard ID alone must never be used as a main-student identity.
+  const canonicalStudentId = cleanString(student.studentId, 100);
+  return canonicalStudentId || null;
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(request: NextRequest): Promise<NextResponse> {
   const requestId = getRequestId(request);
 
   try {
@@ -226,7 +225,7 @@ export async function GET(request: NextRequest) {
               status.studentOpsApprovalStatus === "approved",
             dashboardActive:
               status.dashboardStatus === "active" &&
-              status.dashboardLoginEnabled,
+              status.dashboardLoginEnabled === true,
           },
         },
       },
@@ -234,12 +233,11 @@ export async function GET(request: NextRequest) {
       requestId,
     );
   } catch (error) {
+    // Keep logs useful for operators without leaking tokens or private student data.
     console.error("[STUDENT INTERNSHIPS API]", {
       requestId,
       error:
-        error instanceof Error
-          ? error.message
-          : "Unknown server error",
+        error instanceof Error ? error.message : "Unknown server error",
     });
 
     return json(
@@ -254,7 +252,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST() {
+export async function POST(): Promise<NextResponse> {
   return json(
     {
       success: false,
@@ -266,23 +264,35 @@ export async function POST() {
   );
 }
 
-export async function PUT() {
+export async function PUT(): Promise<NextResponse> {
   return json(
-    { success: false, code: "METHOD_NOT_ALLOWED", message: "Method not allowed." },
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Method not allowed.",
+    },
     405,
   );
 }
 
-export async function PATCH() {
+export async function PATCH(): Promise<NextResponse> {
   return json(
-    { success: false, code: "METHOD_NOT_ALLOWED", message: "Method not allowed." },
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Method not allowed.",
+    },
     405,
   );
 }
 
-export async function DELETE() {
+export async function DELETE(): Promise<NextResponse> {
   return json(
-    { success: false, code: "METHOD_NOT_ALLOWED", message: "Method not allowed." },
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Method not allowed.",
+    },
     405,
   );
 }

@@ -90,7 +90,7 @@ type ApplyRequestBody = {
 
   consentDeclaration?: unknown;
 
-  // Legacy plan and price fields are intentionally ignored.
+  // Legacy plan and price fields are intentionally ignored.*
 
   internshipId?: unknown;
 
@@ -494,7 +494,7 @@ function duplicateKey(error: unknown): boolean {
 
 async function findAvailableInternship(track: string): Promise<PublicInternship | null> {
 
-  // Exact, case-insensitive match. Do not accept a plan or price from the browser.
+  // Exact, case-insensitive match. Do not accept a plan or price from the browser.*
 
   const escaped = track.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -602,7 +602,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     if (!validEmail(email)) return fail("Enter a valid email address.", "INVALID_EMAIL", 400);
 
-    if (phone.length > MAX_PHONE_LENGTH || !/^\+[1-9]\d{6,14}$/.test(phone)) {
+    if (phone.length > MAX_PHONE_LENGTH || !/^\\+[1-9]\d{6,14}$/.test(phone)) {
 
       return fail("Enter a valid international phone number with country code.", "INVALID_PHONE", 400);
 
@@ -770,7 +770,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const expiresAt = new Date(now.getTime() + OTP_EXPIRE_MINUTES * 60 * 1000);
 
-    // Send before replacing a previous OTP so SMTP failure does not invalidate it.
+    // Send before replacing a previous OTP so SMTP failure does not invalidate it.*
 
     try {
 
@@ -848,7 +848,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
       console.error("[APPLY] OTP session save failed after email send", { requestId, error: safeErrorMetadata(error) });
 
-      // Do not expose the OTP or internal database error to the client.
+      // Do not expose the OTP or internal database error to the client.*
 
       return fail("We sent the email but could not finish setting up verification. Please contact support before retrying.", "OTP_SESSION_SAVE_FAILED", 503, { requestId });
 

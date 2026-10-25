@@ -74,7 +74,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     return normalizeDelegatedResponse(await approvalGET(request));
   } catch (error) {
-    // Do not return internal database, session, or stack details to the client.
+    // Keep internal database, session, and stack details out of the response.
     console.error("[ADMIN_APPLICATIONS_GET]", error);
     return jsonError(
       "Unable to load applications right now.",
@@ -120,18 +120,11 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
 /**
  * DELETE /api/admin/applications?applicationId=CN-...
- *
- * Deletion is intentionally conservative:
- * - The canonical admin endpoint is used as the authentication/authorization gate.
- * - Records linked to a student account, payment, or active/passed assessment
- *   are retained for lifecycle integrity and audit history.
- * - A conditional delete protects against the record changing between read
- *   and delete.
+ * Deletes only applications that have no linked student, payment, or active
+ * assessment. The canonical approval endpoint is reused as the admin gate.
  */
 export async function DELETE(request: NextRequest): Promise<NextResponse> {
   try {
-    // Reuse the canonical admin gate so this endpoint does not introduce a
-    // second authentication mechanism. A failed gate response is passed through.
     const authCheck = await approvalGET(request);
     if (!authCheck.ok) {
       return normalizeDelegatedResponse(authCheck);
@@ -196,8 +189,7 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Use a guarded delete rather than relying only on the preceding read.
-    // Missing optional fields are allowed, but protected values are not.
+    // Guard the delete against changes made after the initial read.
     const result = await Application.deleteOne({
       _id: application._id,
       applicationId,

@@ -1,24 +1,7 @@
+
 import type { Connection, Model, InferSchemaType } from "mongoose";
 import { Schema } from "mongoose";
-
 import { connectStudentDB } from "@/lib/student-db";
-
-/**
- * CyberNet Careers — Student Operations data model.
- *
- * Database boundary:
- * - This model is registered ONLY on the dedicated Student Operations connection.
- * - Main Careers applications, main assessment results, and verified payment
- *   records remain owned by the Main Careers database.
- * - This collection stores the operational student projection and learning data:
- *   operations approval, enrollment, dashboard access state, daily tasks,
- *   submissions, attendance, weekly assessments, progress and certificate state.
- *
- * Security:
- * - Never store plaintext passwords, payment secrets, or session tokens here.
- * - Dashboard credential hashes are excluded from normal query results.
- * - API/service layers must authorize every read/write and validate transitions.
- */
 
 const COLLECTION_NAME = "student_operations";
 
@@ -36,13 +19,12 @@ const boundedPercentage = {
 
 const StudentOperationsSchema = new Schema(
   {
-    // Stable link to the canonical student in the Main Careers database.
     mainStudentId: {
       type: String,
-      required: [true, "Main student ID is required."],
+      required: [true, "Main database student ID is required."],
       trim: true,
+      minlength: [1, "Main database student ID cannot be empty."],
       maxlength: [100, "Main student ID cannot exceed 100 characters."],
-      index: true,
     },
     applicationId: {
       type: String,
@@ -67,14 +49,18 @@ const StudentOperationsSchema = new Schema(
       maxlength: [60, "Dashboard student ID cannot exceed 60 characters."],
       default: "",
     },
-
-    // Minimal contact/display projection; canonical identity remains in Main DB.
     fullName: {
       type: String,
       required: [true, "Student full name is required."],
       trim: true,
       minlength: [2, "Student full name must contain at least 2 characters."],
       maxlength: [120, "Student full name cannot exceed 120 characters."],
+    },
+    phone: {
+      type: String,
+      trim: true,
+      maxlength: [30, "Phone number cannot exceed 30 characters."],
+      default: "",
     },
     email: {
       type: String,
@@ -95,15 +81,59 @@ const StudentOperationsSchema = new Schema(
       enum: ["", "1 month", "3 months", "6 months"],
       default: "",
     },
+    internshipDurationMonths: {
+      type: Number,
+      min: [0, "Internship duration cannot be negative."],
+      max: [36, "Internship duration cannot exceed 36 months."],
+      default: 0,
+    },
     internshipDurationDays: {
       type: Number,
       min: [0, "Internship duration cannot be negative."],
+      max: [3650, "Internship duration cannot exceed 3650 days."],
       default: 0,
     },
     internshipStartedAt: nullableDate,
     internshipEndsAt: nullableDate,
-
-    // Student Operations approval is separate from Main Admin approval.
+    paymentStatus: {
+      type: String,
+      enum: ["unpaid", "pending", "paid", "failed", "refunded"],
+      default: "unpaid",
+      index: true,
+    },
+    paymentAmount: {
+      type: Number,
+      min: [0, "Payment amount cannot be negative."],
+      default: 0,
+    },
+    paymentCurrency: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      maxlength: [3, "Payment currency must be a three-letter code."],
+      default: "INR",
+    },
+    studentOpsApprovalStatus: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
+      index: true,
+    },
+    studentOpsStatus: {
+      type: String,
+      enum: [
+        "not-ready",
+        "payment-pending",
+        "pending-review",
+        "approved",
+        "active",
+        "suspended",
+        "completed",
+        "expired",
+      ],
+      default: "not-ready",
+      index: true,
+    },
     operationsApprovalStatus: {
       type: String,
       enum: ["pending", "approved", "rejected"],
@@ -127,6 +157,8 @@ const StudentOperationsSchema = new Schema(
     operationsStatus: {
       type: String,
       enum: [
+        "not-ready",
+        "payment-pending",
         "pending-review",
         "approved",
         "active",
@@ -137,8 +169,6 @@ const StudentOperationsSchema = new Schema(
       default: "pending-review",
       index: true,
     },
-
-    // Dashboard access is a projection controlled by trusted services.
     dashboardStatus: {
       type: String,
       enum: ["locked", "pending", "active", "suspended", "completed"],
@@ -150,6 +180,7 @@ const StudentOperationsSchema = new Schema(
       default: false,
       index: true,
     },
+    dashboardLoginEnabledAt: nullableDate,
     dashboardStudentIdNormalized: {
       type: String,
       trim: true,
@@ -193,8 +224,6 @@ const StudentOperationsSchema = new Schema(
       maxlength: [1000, "Deactivation reason cannot exceed 1000 characters."],
       default: "",
     },
-
-    // Idempotency/cross-database reconciliation metadata.
     sourceVersion: {
       type: Number,
       default: 1,
@@ -214,9 +243,6 @@ const StudentOperationsSchema = new Schema(
       maxlength: [500, "Sync error cannot exceed 500 characters."],
       default: "",
     },
-
-    // Learning summary. Detailed tasks/submissions can be split into separate
-    // collections later if the operational data volume requires it.
     learningStatus: {
       type: String,
       enum: ["not-started", "active", "paused", "completed"],
@@ -235,8 +261,6 @@ const StudentOperationsSchema = new Schema(
     taskCompletionPercentage: boundedPercentage,
     learningProgressPercentage: boundedPercentage,
     attendancePercentage: boundedPercentage,
-
-    // Daily coding task / submission summary.
     currentTaskId: {
       type: String,
       trim: true,
@@ -260,8 +284,6 @@ const StudentOperationsSchema = new Schema(
       default: 0,
       min: [0, "Approved task count cannot be negative."],
     },
-
-    // Weekly/Saturday assessment summary.
     weeklyAssessmentStatus: {
       type: String,
       enum: ["locked", "available", "in-progress", "submitted", "passed", "failed"],
@@ -286,9 +308,6 @@ const StudentOperationsSchema = new Schema(
       max: [100, "Assessment score cannot exceed 100."],
     },
     saturdayAssessmentSubmittedAt: nullableDate,
-
-    // Attendance aggregates only; actual attendance events should be recorded
-    // in a separate immutable/auditable collection if required.
     attendanceDaysPresent: {
       type: Number,
       default: 0,
@@ -300,11 +319,18 @@ const StudentOperationsSchema = new Schema(
       min: [0, "Absent days cannot be negative."],
     },
     lastAttendanceAt: nullableDate,
-
-    // Project completion summary.
     projectStatus: {
       type: String,
-      enum: ["not-started", "in-progress", "submitted", "approved", "rework"],
+      enum: [
+        "not-started",
+        "in-progress",
+        "submitted",
+        "under-review",
+        "approved",
+        "completed",
+        "rework",
+        "rejected",
+      ],
       default: "not-started",
       index: true,
     },
@@ -322,11 +348,9 @@ const StudentOperationsSchema = new Schema(
       maxlength: [2000, "Project review notes cannot exceed 2000 characters."],
       default: "",
     },
-
-    // Certificate state is a projection; issuance is performed by a service.
     certificateStatus: {
       type: String,
-      enum: ["not-eligible", "eligible", "generated", "revoked"],
+      enum: ["not-eligible", "eligible", "generated", "verified", "revoked"],
       default: "not-eligible",
       index: true,
     },
@@ -337,7 +361,6 @@ const StudentOperationsSchema = new Schema(
       default: "",
     },
     certificateGeneratedAt: nullableDate,
-
     notes: {
       type: String,
       trim: true,
@@ -355,17 +378,76 @@ const StudentOperationsSchema = new Schema(
   },
 );
 
-// One operational projection per canonical Main Careers student.
-StudentOperationsSchema.index({ mainStudentId: 1 }, { unique: true });
-StudentOperationsSchema.index({ operationsApprovalStatus: 1, createdAt: -1 });
-StudentOperationsSchema.index({ operationsStatus: 1, createdAt: -1 });
-StudentOperationsSchema.index({ dashboardStatus: 1, dashboardLoginEnabled: 1 });
-StudentOperationsSchema.index({ syncStatus: 1, updatedAt: 1 });
-StudentOperationsSchema.index({ internshipEndsAt: 1, operationsStatus: 1 });
-StudentOperationsSchema.index({ certificateStatus: 1, updatedAt: -1 });
+StudentOperationsSchema.index(
+  { mainStudentId: 1 },
+  {
+    name: "uniq_student_operations_main_student",
+    unique: true,
+    partialFilterExpression: {
+      mainStudentId: { $type: "string", $gt: "" },
+    },
+  },
+);
+
+StudentOperationsSchema.index(
+  { operationsApprovalStatus: 1, createdAt: -1 },
+  { name: "student_operations_approval_created" },
+);
+
+StudentOperationsSchema.index(
+  { operationsStatus: 1, createdAt: -1 },
+  { name: "student_operations_status_created" },
+);
+
+StudentOperationsSchema.index(
+  { dashboardStatus: 1, dashboardLoginEnabled: 1 },
+  { name: "student_operations_dashboard_access" },
+);
+
+StudentOperationsSchema.index(
+  { syncStatus: 1, updatedAt: 1 },
+  { name: "student_operations_sync_updated" },
+);
+
+StudentOperationsSchema.index(
+  { internshipEndsAt: 1, operationsStatus: 1 },
+  { name: "student_operations_internship_completion" },
+);
+
+StudentOperationsSchema.index(
+  { certificateStatus: 1, updatedAt: -1 },
+  { name: "student_operations_certificate_updated" },
+);
+
+StudentOperationsSchema.index(
+  { email: 1, createdAt: -1 },
+  { name: "student_operations_email_created" },
+);
+
+StudentOperationsSchema.index(
+  { studentId: 1, createdAt: -1 },
+  { name: "student_operations_student_id_created" },
+);
+
+StudentOperationsSchema.index(
+  { dashboardStudentId: 1, createdAt: -1 },
+  { name: "student_operations_dashboard_id_created" },
+);
+
+StudentOperationsSchema.index(
+  { paymentStatus: 1, operationsApprovalStatus: 1, createdAt: -1 },
+  { name: "student_operations_payment_approval_created" },
+);
+
+StudentOperationsSchema.index(
+  { projectStatus: 1, certificateStatus: 1, internshipEndsAt: 1 },
+  { name: "student_operations_project_certificate_eligibility" },
+);
 
 StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
-  this.mainStudentId = this.mainStudentId.trim();
+  if (typeof this.mainStudentId === "string") {
+    this.mainStudentId = this.mainStudentId.trim();
+  }
 
   if (typeof this.applicationId === "string") {
     this.applicationId = this.applicationId.trim().toUpperCase();
@@ -384,23 +466,123 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
       this.dashboardStudentIdNormalized.trim().toUpperCase();
   }
 
+  if (typeof this.fullName === "string") {
+    this.fullName = this.fullName.trim().replace(/\s+/g, " ");
+  }
+
   if (typeof this.email === "string") {
     this.email = this.email.trim().toLowerCase();
   }
+
+  if (typeof this.phone === "string") {
+    this.phone = this.phone.trim();
+  }
+
+  if (typeof this.internshipTrack === "string") {
+    this.internshipTrack = this.internshipTrack.trim();
+  }
+
+  if (typeof this.internshipPlan === "string") {
+    this.internshipPlan = this.internshipPlan.trim() as typeof this.internshipPlan;
+  }
+
+  if (typeof this.paymentCurrency === "string") {
+    this.paymentCurrency = this.paymentCurrency.trim().toUpperCase();
+  }
+
+  if (typeof this.certificateId === "string") {
+    this.certificateId = this.certificateId.trim().toUpperCase();
+  }
+
+  if (typeof this.operationsApprovedBy === "string") {
+    this.operationsApprovedBy = this.operationsApprovedBy.trim();
+  }
+
+  if (typeof this.syncError === "string") {
+    this.syncError = this.syncError.trim().slice(0, 500);
+  }
+
+  if (
+    this.internshipStartedAt instanceof Date &&
+    this.internshipEndsAt instanceof Date &&
+    !Number.isNaN(this.internshipStartedAt.getTime()) &&
+    !Number.isNaN(this.internshipEndsAt.getTime()) &&
+    this.internshipEndsAt.getTime() < this.internshipStartedAt.getTime()
+  ) {
+    this.invalidate(
+      "internshipEndsAt",
+      "Internship end date cannot be earlier than the start date.",
+    );
+  }
+
+  if (
+    this.dashboardCredentialsGeneratedAt instanceof Date &&
+    this.dashboardCredentialsExpiresAt instanceof Date &&
+    !Number.isNaN(this.dashboardCredentialsGeneratedAt.getTime()) &&
+    !Number.isNaN(this.dashboardCredentialsExpiresAt.getTime()) &&
+    this.dashboardCredentialsExpiresAt.getTime() <=
+      this.dashboardCredentialsGeneratedAt.getTime()
+  ) {
+    this.invalidate(
+      "dashboardCredentialsExpiresAt",
+      "Dashboard credentials expiry must be after generation.",
+    );
+  }
+
+  if (
+    this.certificateStatus === "generated" ||
+    this.certificateStatus === "verified"
+  ) {
+    if (!this.certificateId?.trim()) {
+      this.invalidate(
+        "certificateId",
+        "Generated or verified certificates require a certificate ID.",
+      );
+    }
+
+    if (
+      !(this.certificateGeneratedAt instanceof Date) ||
+      Number.isNaN(this.certificateGeneratedAt.getTime())
+    ) {
+      this.invalidate(
+        "certificateGeneratedAt",
+        "Generated or verified certificates require a valid generation date.",
+      );
+    }
+  }
+
+  if (
+    this.certificateStatus === "not-eligible" ||
+    this.certificateStatus === "eligible"
+  ) {
+    if (this.certificateId?.trim()) {
+      this.invalidate(
+        "certificateId",
+        "A certificate ID cannot be assigned before certificate generation.",
+      );
+    }
+  }
+
 });
 
-export type StudentOperationsDocument = InferSchemaType<typeof StudentOperationsSchema>;
+export type StudentOperationsDocument = InferSchemaType<
+  typeof StudentOperationsSchema
+>;
 
-const modelRegistry = new WeakMap<Connection, Model<StudentOperationsDocument>>();
+const modelRegistry = new WeakMap<
+  Connection,
+  Model<StudentOperationsDocument>
+>();
 
-/**
- * Returns the Student Operations model bound to the dedicated database.
- * Registration is cached per connection and never uses mongoose.model().
- */
 export async function getStudentOperationsModel(): Promise<
   Model<StudentOperationsDocument>
 > {
   const connection = await connectStudentDB();
+
+  if (connection.readyState !== 1 || !connection.db) {
+    throw new Error("Student Operations database connection is not ready.");
+  }
+
   const cached = modelRegistry.get(connection);
 
   if (cached) {
@@ -423,10 +605,10 @@ export async function getStudentOperationsModel(): Promise<
   );
 
   modelRegistry.set(connection, model);
+
   return model;
 }
 
-/**
- * Convenience alias for service code that uses a descriptive model getter.
- */
 export const getStudentOperations = getStudentOperationsModel;
+
+export default getStudentOperationsModel;

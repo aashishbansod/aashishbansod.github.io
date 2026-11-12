@@ -7,11 +7,12 @@ import Assessment from "@/models/Assessment";
 import Question, {
   generateQuestionId,
   normalizeQuestionDomain,
-  type QuestionDifficulty,
+  normalizeQuestionSection,
   type QuestionSection,
-  type QuestionType,
+  type QuestionStatus,
 } from "@/models/Question";
 import {
+  ADMIN_AUTH_COOKIE_NAME,
   AUTH_COOKIE_NAME,
   verifyAuthToken,
   type AuthUser,
@@ -21,24 +22,38 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const REQUIRED_MCQ = 30;
-const REQUIRED_CODING = 2;
-const REQUIRED_TOTAL = REQUIRED_MCQ + REQUIRED_CODING;
-const MCQ_MARKS = 2;
-const CODING_MARKS = 20;
+const REQUIRED_PER_SECTION = 30;
 const MAX_LIMIT = 100;
-
-const QUESTION_TYPES = ["mcq", "coding"] as const;
-const DB_STATUSES = ["draft", "published", "archived"] as const;
-const UI_STATUSES = ["draft", "active", "inactive"] as const;
-const DIFFICULTIES = ["easy", "medium", "hard"] as const;
+const MAX_SEARCH_LENGTH = 100;
+const MAX_QUESTION_LENGTH = 10000;
+const MAX_OPTION_LENGTH = 1000;
 
 type AnyRecord = Record<string, unknown>;
-type UiStatus = (typeof UI_STATUSES)[number];
-type DbStatus = (typeof DB_STATUSES)[number];
+type MongoFilter = Record<string, any>;
+type UiStatus = "draft" | "active" | "inactive";
+type DbStatus = "draft" | "published" | "archived";
 type OptionId = "A" | "B" | "C" | "D";
-type SafeOption = { optionId: OptionId; text: string };
-type SafeExample = { input: string; output: string; explanation?: string };
+type AdminPermission = "read" | "manage" | "delete";
+
+type SafeOption = {
+  optionId: OptionId;
+  text: string;
+};
+
+type AdminContext = AuthUser & {
+  adminRole?: string;
+  designation?: string;
+  persistedRole?: string;
+};
+
+type ValidationResult =
+  | { valid: true; value: AnyRecord }
+  | { valid: false; message: string; code: string };
+
+const SECTIONS: QuestionSection[] = ["easy", "medium", "hard"];
+const UI_STATUSES: UiStatus[] = ["draft", "active", "inactive"];
+const DB_STATUSES: DbStatus[] = ["draft", "published", "archived"];
+const OPTION_IDS: OptionId[] = ["A", "B", "C", "D"];
 
 function respond(body: unknown, status = 200): NextResponse {
   return NextResponse.json(body, {
@@ -48,13 +63,48 @@ function respond(body: unknown, status = 200): NextResponse {
       Pragma: "no-cache",
       Expires: "0",
       "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "same-origin",
       "X-Robots-Tag": "noindex, nofollow, noarchive",
+      Vary: "Cookie",
     },
   });
 }
 
 function ok(data: Record<string, unknown>, status = 200): NextResponse {
   return respond({ success: true, ...data }, status);
+}
+
+function verifyMutationOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+
+  if (!origin && !referer) return true;
+
+  try {
+    const expected = request.nextUrl.origin;
+    if (origin && new URL(origin).origin !== expected) return false;
+    if (!origin && referer && new URL(referer).origin !== expected) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readJsonBody(
+  request: NextRequest,
+  maximumBytes = 256_000,
+): Promise<AnyRecord | null> {
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    throw new Error("REQUEST_BODY_TOO_LARGE");
+  }
+
+  const raw = await request.text();
+  if (!raw || new TextEncoder().encode(raw).byteLength > maximumBytes) return null;
+
+  const parsed: unknown = JSON.parse(raw);
+  return isRecord(parsed) ? parsed : null;
 }
 
 function fail(message: string, code: string, status: number): NextResponse {
@@ -66,85 +116,162 @@ function isRecord(value: unknown): value is AnyRecord {
 }
 
 function text(value: unknown, max = 10000): string {
-  return typeof value === "string" ? value.trim().slice(0, max) : "";
+  return typeof value === "string"
+    ? value.normalize("NFKC").trim().slice(0, max)
+    : "";
+}
+
+function normalizedRole(value: unknown): string {
+  return text(value, 100).toLowerCase().replace(/[^a-z]/g, "");
 }
 
 function toObjectId(value: unknown): mongoose.Types.ObjectId | null {
   if (value instanceof mongoose.Types.ObjectId) return value;
   const valueText = text(value, 100);
-  return valueText && mongoose.isValidObjectId(valueText)
-    ? new mongoose.Types.ObjectId(valueText)
-    : null;
+  if (!valueText || !mongoose.isValidObjectId(valueText)) return null;
+  return new mongoose.Types.ObjectId(valueText);
 }
 
-function isQuestionType(value: unknown): value is QuestionType {
-  return QUESTION_TYPES.includes(value as QuestionType);
+function isSection(value: unknown): value is QuestionSection {
+  return SECTIONS.includes(value as QuestionSection);
 }
 
-function isDifficulty(value: unknown): value is QuestionDifficulty {
-  return DIFFICULTIES.includes(value as QuestionDifficulty);
+function isValidStatus(value: unknown): value is UiStatus {
+  return UI_STATUSES.includes(value as UiStatus);
 }
 
 function toUiStatus(value: unknown, isActive?: unknown): UiStatus {
   const status = text(value, 30).toLowerCase();
   if (status === "draft") return "draft";
   if (status === "inactive" || status === "archived") return "inactive";
-  if (status === "active" || status === "published") return "active";
+  if (status === "active" || status === "published") {
+    return isActive === false ? "inactive" : "active";
+  }
   return isActive === false ? "inactive" : "draft";
 }
 
-/**
- * Compatibility layer:
- * The existing Question model uses draft/published/archived.
- * The admin UI uses draft/active/inactive.
- * Keep the schema-compatible database values while returning UI vocabulary.
- */
-function toDbStatus(value: UiStatus): DbStatus {
-  if (value === "active") return "published";
-  if (value === "inactive") return "archived";
+function toDbStatus(status: UiStatus): DbStatus {
+  if (status === "active") return "published";
+  if (status === "inactive") return "archived";
   return "draft";
 }
 
-function activeForStatus(status: UiStatus): boolean {
-  return status === "active";
-}
-
-function idFromRequest(request: NextRequest, body?: AnyRecord): mongoose.Types.ObjectId | null {
-  const queryId = request.nextUrl.searchParams.get("id") ??
+function idFromRequest(
+  request: NextRequest,
+  body?: AnyRecord,
+): mongoose.Types.ObjectId | null {
+  const queryId =
+    request.nextUrl.searchParams.get("id") ??
     request.nextUrl.searchParams.get("questionId");
-  return toObjectId(queryId || body?.id || body?._id || body?.questionId);
+
+  return toObjectId(
+    queryId || body?.id || body?._id || body?.questionId,
+  );
 }
 
-async function authenticateAdmin(request: NextRequest): Promise<AuthUser | null> {
+async function authenticateAdmin(
+  request: NextRequest,
+): Promise<AdminContext | null> {
   try {
-    const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+    const dedicatedToken = request.cookies.get(ADMIN_AUTH_COOKIE_NAME)?.value;
+    const legacyToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+    const token = dedicatedToken || legacyToken;
+
     if (!token) return null;
 
     const user = await verifyAuthToken(token);
     if (!user || user.role !== "admin" || !user.id) return null;
 
+    if (dedicatedToken && user.sessionType !== "admin") return null;
+    if (
+      !dedicatedToken &&
+      user.sessionType &&
+      !["admin", "legacy"].includes(user.sessionType)
+    ) {
+      return null;
+    }
+
     await connectDB();
+
     const adminId = toObjectId(user.id);
     if (!adminId) return null;
 
     const admin = await AdminModel.findById(adminId)
-      .select("_id role isActive")
+      .select("_id role isActive adminRole designation isEmailVerified security")
       .lean()
-      .exec();
+      .exec() as unknown as AnyRecord | null;
 
     if (!admin || admin.isActive === false) return null;
-    return user;
+    if (admin.isEmailVerified === false) return null;
+
+    const security = isRecord(admin.security) ? admin.security : {};
+    if (security.accountLocked === true) return null;
+    if (security.lockedUntil) {
+      const lockedUntil = new Date(String(security.lockedUntil));
+      if (!Number.isNaN(lockedUntil.getTime()) && lockedUntil.getTime() > Date.now()) {
+        return null;
+      }
+    }
+
+    const persistedRoles = [
+      admin.adminRole,
+      admin.designation,
+      admin.role,
+    ].map(normalizedRole).filter(Boolean);
+
+    const isSuperAdmin = persistedRoles.includes("superadmin");
+    const isAssessmentManager = persistedRoles.includes("assessmentmanager");
+    const isAdmin = persistedRoles.includes("admin");
+
+    const effectiveRole = isSuperAdmin
+      ? "Super Admin"
+      : isAssessmentManager
+        ? "Assessment Manager"
+        : isAdmin
+          ? "Admin"
+          : text(admin.adminRole ?? admin.designation ?? admin.role, 100) || "Admin";
+
+    return {
+      ...user,
+      adminRole: effectiveRole,
+      designation: text(admin.designation, 100),
+      persistedRole: text(admin.role, 100),
+    } as AdminContext;
   } catch (error) {
     console.error("[admin/questions] authentication error", error);
     return null;
   }
 }
 
+function hasPermission(admin: AdminContext, permission: AdminPermission): boolean {
+  const assignedRoles = [admin.adminRole, admin.designation]
+    .map(normalizedRole)
+    .filter(Boolean);
+  const roles = (assignedRoles.length > 0
+    ? assignedRoles
+    : [admin.persistedRole].map(normalizedRole));
+
+  const isSuperAdmin = roles.includes("superadmin");
+  const isAssessmentManager = roles.includes("assessmentmanager");
+  const isAdmin = roles.includes("admin");
+
+  if (permission === "read") {
+    return isSuperAdmin || isAssessmentManager || isAdmin ||
+      roles.includes("hr") || roles.includes("support");
+  }
+
+  if (permission === "manage") {
+    return isSuperAdmin || isAssessmentManager || isAdmin;
+  }
+
+  return isSuperAdmin;
+}
+
 function assessmentDomain(assessment: AnyRecord): string {
   return text(assessment.domain, 200) || text(assessment.category, 200);
 }
 
-function getAssessmentDomainKey(assessment: AnyRecord): string {
+function assessmentDomainKey(assessment: AnyRecord): string {
   return normalizeQuestionDomain(
     text(assessment.domainKey, 200) || assessmentDomain(assessment),
   );
@@ -155,356 +282,406 @@ function assessmentIsLocked(assessment: AnyRecord): boolean {
   return status === "published" || status === "archived";
 }
 
-async function findAssessment(id: mongoose.Types.ObjectId): Promise<AnyRecord | null> {
+async function findAssessment(
+  id: mongoose.Types.ObjectId,
+): Promise<AnyRecord | null> {
   const assessment = await Assessment.findById(id).lean().exec();
-  return assessment ? (assessment as unknown as AnyRecord) : null;
+  return assessment ? assessment as unknown as AnyRecord : null;
 }
 
 function normalizeOptions(value: unknown): SafeOption[] {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, 4).map((entry, index) => {
-    const fallback = String.fromCharCode(65 + index) as OptionId;
+  if (!Array.isArray(value) || value.length !== 4) return [];
+
+  return value.map((entry, index) => {
+    const fallback = OPTION_IDS[index];
     const raw = typeof entry === "string"
       ? { text: entry }
-      : isRecord(entry) ? entry : {};
+      : isRecord(entry)
+        ? entry
+        : {};
+
     const candidate = text(raw.optionId ?? raw.id, 5).toUpperCase();
-    const optionId = (["A", "B", "C", "D"].includes(candidate)
+    const optionId = (OPTION_IDS.includes(candidate as OptionId)
       ? candidate
       : fallback) as OptionId;
+
     return {
       optionId,
-      text: text(raw.text ?? raw.value ?? raw.label, 1000),
+      text: text(raw.text ?? raw.value ?? raw.label, MAX_OPTION_LENGTH),
     };
   });
 }
 
 function normalizeCorrectOption(value: unknown, options: SafeOption[]): string {
   if (typeof value === "number" && Number.isInteger(value)) {
-    if (value >= 0 && value < options.length) return options[value].optionId;
-    if (value >= 1 && value <= options.length) return options[value - 1].optionId;
+    if (value >= 0 && value <= 3) return OPTION_IDS[value];
+    return "";
   }
-  const raw = text(value, 1000).toUpperCase();
-  if (["A", "B", "C", "D"].includes(raw)) return raw;
+
+  const raw = text(value, MAX_OPTION_LENGTH).toUpperCase();
+  if (OPTION_IDS.includes(raw as OptionId)) return raw;
+
   const match = options.find(
-    (option) => option.text.toLowerCase() === text(value, 1000).toLowerCase(),
+    (option) => option.text.toLowerCase() === text(value, MAX_OPTION_LENGTH).toLowerCase(),
   );
   return match?.optionId ?? "";
 }
 
-function normalizeLanguages(body: AnyRecord): string[] {
-  const source: unknown[] = Array.isArray(body.languages)
-    ? body.languages
-    : [body.language];
-  return [...new Set(source.map((item) => text(item, 100)).filter(Boolean))].slice(0, 10);
-}
-
-function normalizeExamples(value: unknown): SafeExample[] {
-  let parsed: unknown = value;
-
-  if (typeof parsed === "string") {
-    const source = parsed.trim();
-    if (!source) return [];
-    try {
-      parsed = JSON.parse(source) as unknown;
-    } catch {
-      const blocks = source
-        .split(/\n\s*(?:---+|Example\s*\d+\s*:|Sample\s*\d+\s*:)\s*\n/i)
-        .filter(Boolean);
-      parsed = blocks.map((block) => {
-        const inputMatch = block.match(
-          /(?:^|\n)\s*(?:sample\s*)?input\s*:\s*([\s\S]*?)(?=\n\s*(?:sample\s*)?output\s*:|$)/i,
-        );
-        const outputMatch = block.match(
-          /(?:^|\n)\s*(?:expected\s*)?output\s*:\s*([\s\S]*?)(?=\n\s*(?:explanation|input|sample\s*input)\s*:|$)/i,
-        );
-        const explanationMatch = block.match(/(?:^|\n)\s*explanation\s*:\s*([\s\S]*?)\s*$/i);
-        return inputMatch && outputMatch
-          ? {
-              input: inputMatch[1].trim(),
-              output: outputMatch[1].trim(),
-              explanation: explanationMatch?.[1]?.trim() ?? "",
-            }
-          : null;
-      }).filter(Boolean);
-    }
+function normalizeQuestionPayload(
+  body: AnyRecord,
+  assessment: AnyRecord,
+): ValidationResult {
+  const suppliedType = text(body.type ?? body.questionType, 30).toLowerCase();
+  if (suppliedType && suppliedType !== "mcq") {
+    return {
+      valid: false,
+      code: "INVALID_QUESTION_TYPE",
+      message: "Only MCQ questions are supported.",
+    };
   }
 
-  if (!Array.isArray(parsed)) return [];
-  return parsed
-    .filter(isRecord)
-    .map((item) => {
-      const input = text(item.input ?? item.sampleInput, 5000);
-      const output = text(item.output ?? item.expectedOutput ?? item.sampleOutput, 5000);
-      const explanation = text(item.explanation, 3000);
-      return { input, output, ...(explanation ? { explanation } : {}) };
-    })
-    .filter((item) => item.input.length > 0 && item.output.length > 0)
-    .slice(0, 50);
-}
+  const sectionRaw = text(body.section ?? body.difficulty, 30).toLowerCase();
+  if (!isSection(sectionRaw)) {
+    return {
+      valid: false,
+      code: "INVALID_QUESTION_SECTION",
+      message: "Select Easy, Medium or Hard difficulty.",
+    };
+  }
 
-function serializeQuestion(rawValue: unknown): AnyRecord {
-  const raw = isRecord(rawValue) ? rawValue : {};
-  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
-  const options = rawOptions.filter(isRecord).map((option, index) => {
-    const fallback = String.fromCharCode(65 + index);
-    const optionId = text(option.optionId ?? option.id ?? fallback, 5).toUpperCase();
-    return { id: optionId, optionId, text: text(option.text, 1000) };
-  });
-  const rawExamples = Array.isArray(raw.examples) ? raw.examples : [];
-  const examples = rawExamples.filter(isRecord).map((example) => ({
-    input: text(example.input ?? example.sampleInput, 5000),
-    output: text(example.output ?? example.expectedOutput ?? example.sampleOutput, 5000),
-    expectedOutput: text(example.expectedOutput ?? example.output ?? example.sampleOutput, 5000),
-    ...(text(example.explanation, 3000)
-      ? { explanation: text(example.explanation, 3000) }
-      : {}),
-  }));
-  const correctOption = text(raw.correctOption ?? raw.correctAnswer, 10);
-  const status = toUiStatus(raw.status, raw.isActive);
-  const createdAt = raw.createdAt ? new Date(String(raw.createdAt)).toISOString() : undefined;
-  const updatedAt = raw.updatedAt ? new Date(String(raw.updatedAt)).toISOString() : undefined;
+  const difficultyRaw = text(body.difficulty ?? body.section, 30).toLowerCase();
+  if (!isSection(difficultyRaw) || difficultyRaw !== sectionRaw) {
+    return {
+      valid: false,
+      code: "SECTION_DIFFICULTY_MISMATCH",
+      message: "Question section and difficulty must match.",
+    };
+  }
+
+  const question = text(
+    body.question ?? body.questionText ?? body.text,
+    MAX_QUESTION_LENGTH,
+  );
+
+  if (question.length < 5) {
+    return {
+      valid: false,
+      code: "QUESTION_TOO_SHORT",
+      message: "Question must contain at least five characters.",
+    };
+  }
+
+  const domain = assessmentDomain(assessment);
+  const domainKey = assessmentDomainKey(assessment);
+  if (!domain || domainKey.length < 2) {
+    return {
+      valid: false,
+      code: "ASSESSMENT_DOMAIN_MISSING",
+      message: "The assessment requires a valid domain.",
+    };
+  }
+
+  const options = normalizeOptions(body.options);
+  if (options.length !== 4 || options.some((option) => !option.text)) {
+    return {
+      valid: false,
+      code: "MCQ_OPTIONS_REQUIRED",
+      message: "Every MCQ must contain exactly four non-empty options.",
+    };
+  }
+
+  const optionIds = options.map((option) => option.optionId);
+  const normalizedOptionTexts = options.map((option) =>
+    option.text.normalize("NFKC").trim().toLocaleLowerCase(),
+  );
+
+  if (
+    new Set(optionIds).size !== 4 ||
+    !OPTION_IDS.every((id) => optionIds.includes(id))
+  ) {
+    return {
+      valid: false,
+      code: "MCQ_OPTION_IDS_INVALID",
+      message: "MCQ options must have unique A, B, C and D identifiers.",
+    };
+  }
+
+  if (new Set(normalizedOptionTexts).size !== 4) {
+    return {
+      valid: false,
+      code: "MCQ_OPTIONS_DUPLICATE",
+      message: "All four answer options must be different.",
+    };
+  }
+
+  const correctOption = normalizeCorrectOption(
+    body.correctOption ?? body.correctAnswer ?? body.answer,
+    options,
+  );
+
+  if (!optionIds.includes(correctOption as OptionId)) {
+    return {
+      valid: false,
+      code: "MCQ_CORRECT_OPTION_REQUIRED",
+      message: "Select one valid correct answer. Numeric answers use zero-based indexes 0–3.",
+    };
+  }
 
   return {
-    _id: String(raw._id ?? raw.id ?? ""),
-    id: String(raw._id ?? raw.id ?? ""),
+    valid: true,
+    value: {
+      type: "mcq",
+      section: sectionRaw,
+      difficulty: sectionRaw,
+      question,
+      description: text(body.description, 15000),
+      domain,
+      domainKey,
+      topic: text(body.topic, 150),
+      marks: 1,
+      negativeMarks: 0,
+      options,
+      correctOption,
+    },
+  };
+}
+
+function validIsoDate(value: unknown): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function serializeQuestion(rawValue: unknown, includeAnswer = true): AnyRecord {
+  const raw = isRecord(rawValue) ? rawValue : {};
+  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+
+  const options = rawOptions.filter(isRecord).map((option, index) => {
+    const fallback = OPTION_IDS[index] ?? "A";
+    const optionId = text(option.optionId ?? option.id ?? fallback, 5).toUpperCase();
+    return {
+      id: optionId,
+      optionId,
+      text: text(option.text, MAX_OPTION_LENGTH),
+    };
+  });
+
+  const status = toUiStatus(raw.status, raw.isActive);
+  const correctOption = text(raw.correctOption, 5).toUpperCase();
+
+  return {
+    _id: String(raw._id ?? ""),
+    id: String(raw._id ?? ""),
     questionId: text(raw.questionId, 150),
     assessmentId: String(raw.assessmentId ?? ""),
     domain: text(raw.domain, 200),
     domainKey: text(raw.domainKey, 200),
     section: text(raw.section, 30),
-    type: text(raw.type, 30),
-    question: text(raw.question, 10000),
-    questionText: text(raw.question, 10000),
+    type: "mcq",
+    question: text(raw.question, MAX_QUESTION_LENGTH),
+    questionText: text(raw.question, MAX_QUESTION_LENGTH),
     description: text(raw.description, 15000),
     options,
-    correctOption: correctOption || undefined,
-    correctAnswer: correctOption || undefined,
-    inputFormat: text(raw.inputFormat, 10000),
-    outputFormat: text(raw.outputFormat, 10000),
-    constraints: text(raw.constraints, 10000),
-    examples,
-    testCases: examples,
-    starterCode: text(raw.starterCode, 30000),
-    codeTemplate: text(raw.starterCode, 30000),
-    languages: Array.isArray(raw.languages)
-      ? raw.languages.filter((item): item is string => typeof item === "string")
-      : [],
-    language: Array.isArray(raw.languages) && typeof raw.languages[0] === "string"
-      ? raw.languages[0]
-      : undefined,
+    ...(includeAnswer && correctOption
+      ? { correctOption, correctAnswer: correctOption }
+      : {}),
     topic: text(raw.topic, 150),
-    difficulty: text(raw.difficulty, 20) || "medium",
-    marks: Number(raw.marks) || 0,
-    negativeMarks: Number(raw.negativeMarks) || 0,
+    difficulty: text(raw.difficulty, 20),
+    marks: 1,
+    negativeMarks: 0,
     status,
-    isActive: activeForStatus(status),
-    order: Number(raw.order) || 0,
+    isActive: status === "active",
+    order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 0,
     createdBy: raw.createdBy ? String(raw.createdBy) : undefined,
     updatedBy: raw.updatedBy ? String(raw.updatedBy) : undefined,
-    createdAt,
-    updatedAt,
+    createdAt: validIsoDate(raw.createdAt),
+    updatedAt: validIsoDate(raw.updatedAt),
   };
 }
 
-async function getStats(assessmentId: mongoose.Types.ObjectId) {
-  const docs = await Question.find({ assessmentId }).select("section type status isActive marks").lean().exec();
-  const visible = docs.filter((doc) => String(doc.status) !== "archived");
-  const mcq = visible.filter((doc) => String(doc.section ?? doc.type) === "mcq").length;
-  const coding = visible.filter((doc) => String(doc.section ?? doc.type) === "coding").length;
-  const activeMcq = visible.filter(
-    (doc) => String(doc.section ?? doc.type) === "mcq" &&
-      String(doc.status) === "published" && doc.isActive !== false,
-  ).length;
-  const activeCoding = visible.filter(
-    (doc) => String(doc.section ?? doc.type) === "coding" &&
-      String(doc.status) === "published" && doc.isActive !== false,
-  ).length;
+async function getStats(assessmentId: mongoose.Types.ObjectId): Promise<AnyRecord> {
+  const documents = await Question.find({ assessmentId })
+    .select("section difficulty status isActive marks")
+    .lean()
+    .exec();
+
+  const stats: Record<
+    QuestionSection,
+    { total: number; active: number; draft: number; archived: number }
+  > = {
+    easy: { total: 0, active: 0, draft: 0, archived: 0 },
+    medium: { total: 0, active: 0, draft: 0, archived: 0 },
+    hard: { total: 0, active: 0, draft: 0, archived: 0 },
+  };
+
+  for (const document of documents) {
+    const section = String(document.section ?? document.difficulty ?? "") as QuestionSection;
+    if (!SECTIONS.includes(section)) continue;
+
+    const status = String(document.status ?? "draft");
+    if (status === "archived") {
+      stats[section].archived += 1;
+      continue;
+    }
+
+    stats[section].total += 1;
+    if (status === "published" && document.isActive !== false) {
+      stats[section].active += 1;
+    }
+    if (status === "draft") stats[section].draft += 1;
+  }
+
+  const total = Object.values(stats).reduce((sum, section) => sum + section.total, 0);
+  const activeTotal = Object.values(stats).reduce((sum, section) => sum + section.active, 0);
+  const complete = SECTIONS.every((section) => stats[section].total === REQUIRED_PER_SECTION);
+  const activeComplete = SECTIONS.every((section) => stats[section].active === REQUIRED_PER_SECTION);
 
   return {
-    mcq,
-    coding,
-    total: mcq + coding,
-    activeMcq,
-    activeCoding,
-    activeTotal: activeMcq + activeCoding,
-    requiredMcq: REQUIRED_MCQ,
-    requiredCoding: REQUIRED_CODING,
-    requiredTotal: REQUIRED_TOTAL,
-    complete: mcq === REQUIRED_MCQ && coding === REQUIRED_CODING,
-    activeComplete: activeMcq === REQUIRED_MCQ && activeCoding === REQUIRED_CODING,
-    totalMarks: activeMcq * MCQ_MARKS + activeCoding * CODING_MARKS,
+    easy: stats.easy,
+    medium: stats.medium,
+    hard: stats.hard,
+    total,
+    activeTotal,
+    draftTotal: stats.easy.draft + stats.medium.draft + stats.hard.draft,
+    archivedTotal: stats.easy.archived + stats.medium.archived + stats.hard.archived,
+    requiredPerSection: REQUIRED_PER_SECTION,
+    requiredTotal: 90,
+    totalMarks: activeTotal,
+    passingPercentage: 40,
+    passingMarks: 36,
+    complete,
+    activeComplete,
+    readiness: activeComplete ? "ready" : "incomplete",
   };
 }
 
-function normalizeQuestionPayload(body: AnyRecord, assessment: AnyRecord):
-  | { valid: true; value: AnyRecord }
-  | { valid: false; message: string; code: string } {
-  const typeRaw = text(body.type ?? body.questionType ?? body.section, 30).toLowerCase();
-  const sectionRaw = text(body.section ?? body.type ?? body.questionType, 30).toLowerCase();
-
-  if (!isQuestionType(typeRaw)) {
-    return { valid: false, code: "INVALID_QUESTION_TYPE", message: "Question type must be mcq or coding." };
-  }
-  if (!isQuestionType(sectionRaw) || typeRaw !== sectionRaw) {
-    return { valid: false, code: "QUESTION_SECTION_MISMATCH", message: "Question type and section must match." };
-  }
-
-  const question = text(body.question ?? body.questionText ?? body.text, 10000);
-  if (question.length < 5) {
-    return { valid: false, code: "QUESTION_TOO_SHORT", message: "Question/problem must contain at least 5 characters." };
-  }
-
-  const domain = text(assessment.domain, 200) || text(assessment.category, 200);
-  const domainKey = normalizeQuestionDomain(
-    text(assessment.domainKey, 200) || domain,
-  );
-  if (!domain || !domainKey) {
-    return { valid: false, code: "ASSESSMENT_DOMAIN_MISSING", message: "The assessment needs a valid domain or category." };
-  }
-
-  const difficultyRaw = text(body.difficulty, 20).toLowerCase();
-  const difficulty: QuestionDifficulty = isDifficulty(difficultyRaw) ? difficultyRaw : "medium";
-  const description = text(body.description, 15000);
-  const topic = text(body.topic, 150);
-
-  if (typeRaw === "mcq") {
-    const options = normalizeOptions(body.options);
-    if (options.length !== 4 || options.some((option) => !option.text)) {
-      return { valid: false, code: "MCQ_OPTIONS_REQUIRED", message: "MCQs require four non-empty options." };
-    }
-    const ids = options.map((option) => option.optionId);
-    if (new Set(ids).size !== 4 || !["A", "B", "C", "D"].every((id) => ids.includes(id as OptionId))) {
-      return { valid: false, code: "MCQ_OPTION_IDS_INVALID", message: "MCQ options must have unique A, B, C and D IDs." };
-    }
-    const correctOption = normalizeCorrectOption(
-      body.correctOption ?? body.correctAnswer ?? body.answer,
-      options,
-    );
-    if (!ids.includes(correctOption as OptionId)) {
-      return { valid: false, code: "MCQ_CORRECT_OPTION_REQUIRED", message: "Select the correct MCQ answer." };
-    }
-
-    return {
-      valid: true,
-      value: {
-        type: "mcq",
-        section: "mcq",
-        question,
-        description,
-        domain,
-        domainKey,
-        difficulty,
-        marks: MCQ_MARKS,
-        negativeMarks: 0,
-        options,
-        correctOption,
-        inputFormat: "",
-        outputFormat: "",
-        constraints: "",
-        examples: [],
-        starterCode: "",
-        languages: [],
-        topic,
-      },
-    };
-  }
-
-  const inputFormat = text(body.inputFormat, 10000);
-  const outputFormat = text(body.outputFormat, 10000);
-  const constraints = text(body.constraints, 10000);
-  const starterCode = text(body.starterCode ?? body.sampleCode ?? body.codeTemplate ?? body.solutionTemplate, 30000);
-  const languages = normalizeLanguages(body);
-  const examples = normalizeExamples(body.examples ?? body.testCases);
-
-  if (!inputFormat) return { valid: false, code: "CODING_INPUT_FORMAT_REQUIRED", message: "Coding questions require an input format." };
-  if (!outputFormat) return { valid: false, code: "CODING_OUTPUT_FORMAT_REQUIRED", message: "Coding questions require an output format." };
-  if (!starterCode) return { valid: false, code: "CODING_STARTER_CODE_REQUIRED", message: "Add starter code for the coding problem." };
-  if (!languages.length) return { valid: false, code: "CODING_LANGUAGE_REQUIRED", message: "Select at least one programming language." };
-  if (!examples.length) return { valid: false, code: "CODING_EXAMPLES_REQUIRED", message: "Add at least one example with input and expected output." };
-
-  return {
-    valid: true,
-    value: {
-      type: "coding",
-      section: "coding",
-      question,
-      description,
-      domain,
-      domainKey,
-      difficulty,
-      marks: CODING_MARKS,
-      negativeMarks: 0,
-      options: [],
-      correctOption: undefined,
-      inputFormat,
-      outputFormat,
-      constraints,
-      examples,
-      starterCode,
-      languages,
-      topic,
-    },
+async function countSectionQuestions(
+  assessmentId: mongoose.Types.ObjectId,
+  section: QuestionSection,
+  excludeId?: mongoose.Types.ObjectId,
+): Promise<number> {
+  const filter: AnyRecord = {
+    assessmentId,
+    section,
+    status: { $ne: "archived" },
   };
+  if (excludeId) filter._id = { $ne: excludeId };
+
+  return Question.countDocuments(
+    filter as MongoFilter,
+  ).exec();
 }
 
 function jsonError(error: unknown, fallback: string, code: string): NextResponse {
+  if (error instanceof Error && error.message === "REQUEST_BODY_TOO_LARGE") {
+    return fail("Request body exceeds the allowed size.", "REQUEST_BODY_TOO_LARGE", 413);
+  }
+
   if (error instanceof mongoose.Error.ValidationError) {
-    const message = Object.values(error.errors).map((item) => item.message).filter(Boolean).join(" ");
+    const message = Object.values(error.errors)
+      .map((item) => item.message)
+      .filter(Boolean)
+      .join(" ");
     return fail(message || "Question validation failed.", "QUESTION_VALIDATION_FAILED", 400);
   }
-  if (isRecord(error) && error.code === 11000) {
-    return fail("A question with this identifier already exists.", "QUESTION_DUPLICATE", 409);
+
+  if (error instanceof mongoose.Error.CastError) {
+    return fail(
+      "One or more supplied database identifiers are invalid.",
+      "INVALID_DATABASE_VALUE",
+      400,
+    );
   }
+
+  if (isRecord(error) && error.code === 11000) {
+    return fail(
+      "A question with this identifier already exists.",
+      "QUESTION_DUPLICATE",
+      409,
+    );
+  }
+
+  if (error instanceof SyntaxError) {
+    return fail("Invalid request body.", "INVALID_JSON", 400);
+  }
+
   console.error(`[admin/questions] ${code}`, error);
   return fail(fallback, code, 500);
+}
+
+function permissionDenied(permission: AdminPermission): NextResponse {
+  const message = permission === "delete"
+    ? "Only Super Admin can permanently delete questions."
+    : "Your administrator role does not have permission to modify the question bank.";
+  return fail(message, "FORBIDDEN", 403);
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const admin = await authenticateAdmin(request);
   if (!admin) return fail("Unauthorized. Admin login required.", "UNAUTHORIZED", 401);
+  if (!hasPermission(admin, "read")) return permissionDenied("read");
 
   try {
     await connectDB();
+
     const params = request.nextUrl.searchParams;
     const assessmentRaw = params.get("assessmentId");
     let assessmentId: mongoose.Types.ObjectId | null = null;
 
     if (assessmentRaw) {
       assessmentId = toObjectId(assessmentRaw);
-      if (!assessmentId) return fail("Invalid assessment ID.", "INVALID_ASSESSMENT_ID", 400);
-      if (!(await findAssessment(assessmentId))) return fail("Assessment not found.", "ASSESSMENT_NOT_FOUND", 404);
+      if (!assessmentId) {
+        return fail("Invalid assessment ID.", "INVALID_ASSESSMENT_ID", 400);
+      }
+      if (!(await findAssessment(assessmentId))) {
+        return fail("Assessment not found.", "ASSESSMENT_NOT_FOUND", 404);
+      }
     }
 
     const pageRaw = Number(params.get("page") || 1);
     const limitRaw = Number(params.get("limit") || 50);
-    const page = Number.isSafeInteger(pageRaw) && pageRaw > 0 ? Math.min(pageRaw, 10000) : 1;
-    const limit = Number.isSafeInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_LIMIT) : 50;
-    const filter: AnyRecord = {};
+    const page = Number.isSafeInteger(pageRaw) && pageRaw > 0
+      ? Math.min(pageRaw, 10000)
+      : 1;
+    const limit = Number.isSafeInteger(limitRaw) && limitRaw > 0
+      ? Math.min(limitRaw, MAX_LIMIT)
+      : 50;
 
+    const filter: AnyRecord = {};
     if (assessmentId) filter.assessmentId = assessmentId;
 
-    const type = text(params.get("type") ?? params.get("section"), 30).toLowerCase();
-    if (isQuestionType(type)) {
-      filter.type = type;
-      filter.section = type;
+    const sectionRaw = text(params.get("section") ?? params.get("difficulty"), 30).toLowerCase();
+    if (sectionRaw) {
+      const section = normalizeQuestionSection(sectionRaw);
+      if (!section) {
+        return fail("Section must be easy, medium or hard.", "INVALID_QUESTION_SECTION", 400);
+      }
+      filter.section = section;
+      filter.difficulty = section;
+    }
+
+    const type = text(params.get("type"), 30).toLowerCase();
+    if (type && type !== "mcq") {
+      return fail("Only MCQ questions are supported.", "INVALID_QUESTION_TYPE", 400);
     }
 
     const rawStatus = text(params.get("status"), 30).toLowerCase();
-    if (UI_STATUSES.includes(rawStatus as UiStatus)) {
-      const uiStatus = rawStatus as UiStatus;
-      filter.status = toDbStatus(uiStatus);
-      filter.isActive = activeForStatus(uiStatus);
-    } else if (DB_STATUSES.includes(rawStatus as DbStatus)) {
-      filter.status = rawStatus;
+    if (rawStatus) {
+      if (UI_STATUSES.includes(rawStatus as UiStatus)) {
+        filter.status = toDbStatus(rawStatus as UiStatus);
+      } else if (DB_STATUSES.includes(rawStatus as DbStatus)) {
+        filter.status = rawStatus;
+      } else {
+        return fail("Invalid question status.", "INVALID_QUESTION_STATUS", 400);
+      }
     }
 
-    const difficulty = text(params.get("difficulty"), 20).toLowerCase();
-    if (isDifficulty(difficulty)) filter.difficulty = difficulty;
-
     const activeParam = params.get("isActive");
-    if (activeParam === "true" || activeParam === "false") filter.isActive = activeParam === "true";
+    if (activeParam === "true" || activeParam === "false") {
+      filter.isActive = activeParam === "true";
+    }
 
-    const search = text(params.get("search"), 100);
+    const search = text(params.get("search"), MAX_SEARCH_LENGTH);
     if (search) {
       const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const regex = new RegExp(escaped, "i");
@@ -517,13 +694,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
 
     const sortFieldRaw = text(params.get("sortField") ?? params.get("sort"), 30);
-    const sortField = ["order", "createdAt", "updatedAt", "difficulty", "marks"].includes(sortFieldRaw)
+    const sortField = ["order", "createdAt", "updatedAt", "difficulty", "marks"]
+      .includes(sortFieldRaw)
       ? sortFieldRaw
       : "order";
-    const direction = params.get("sortDirection") === "desc" || params.get("direction") === "desc" ? -1 : 1;
+    const direction =
+      params.get("sortDirection") === "desc" || params.get("direction") === "desc"
+        ? -1
+        : 1;
 
-    const mongoFilter = filter as unknown as Parameters<typeof Question.find>[0];
-    const [documents, total] = await Promise.all([
+    const mongoFilter = filter as MongoFilter;
+    const [documents, total, stats] = await Promise.all([
       Question.find(mongoFilter)
         .select("+correctOption")
         .sort({ [sortField]: direction, _id: 1 })
@@ -532,10 +713,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         .lean()
         .exec(),
       Question.countDocuments(mongoFilter).exec(),
+      assessmentId ? getStats(assessmentId) : Promise.resolve(null),
     ]);
 
-    const questions = documents.map((doc) => serializeQuestion(doc));
-    const stats = assessmentId ? await getStats(assessmentId) : null;
+    const canViewAnswerKey = hasPermission(admin, "manage");
+    const questions = documents.map((document) =>
+      serializeQuestion(document, canViewAnswerKey),
+    );
     const totalPages = Math.ceil(total / limit);
 
     return ok({
@@ -561,54 +745,69 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const admin = await authenticateAdmin(request);
   if (!admin) return fail("Unauthorized. Admin login required.", "UNAUTHORIZED", 401);
+  if (!hasPermission(admin, "manage")) return permissionDenied("manage");
+  if (!verifyMutationOrigin(request)) {
+    return fail("Request origin could not be verified.", "INVALID_ORIGIN", 403);
+  }
 
   try {
     await connectDB();
-    const body: unknown = await request.json().catch(() => null);
-    if (!isRecord(body)) return fail("Request body must be valid JSON.", "INVALID_JSON", 400);
+
+    const body = await readJsonBody(request);
+    if (!body) {
+      return fail("Request body must be a valid JSON object.", "INVALID_JSON", 400);
+    }
 
     const assessmentId = toObjectId(body.assessmentId);
-    if (!assessmentId) return fail("A valid assessmentId is required.", "INVALID_ASSESSMENT_ID", 400);
+    if (!assessmentId) {
+      return fail("A valid assessmentId is required.", "INVALID_ASSESSMENT_ID", 400);
+    }
+
     const assessment = await findAssessment(assessmentId);
     if (!assessment) return fail("Assessment not found.", "ASSESSMENT_NOT_FOUND", 404);
     if (assessmentIsLocked(assessment)) {
       return fail("Published or archived assessments are locked.", "ASSESSMENT_LOCKED", 409);
     }
 
-    const requestedStatus = text(body.status, 30).toLowerCase();
-    const status: UiStatus = UI_STATUSES.includes(requestedStatus as UiStatus)
-      ? requestedStatus as UiStatus
-      : "draft";
-
     const validation = normalizeQuestionPayload(body, assessment);
-    if (!validation.valid) return fail(validation.message, validation.code, 400);
+    if (!validation.valid) {
+      return fail(validation.message, validation.code, 400);
+    }
 
-    const stats = await getStats(assessmentId);
     const value = validation.value;
-    if (value.section === "mcq" && stats.mcq >= REQUIRED_MCQ) {
-      return fail("This assessment already contains 30 MCQs.", "MCQ_LIMIT_REACHED", 409);
-    }
-    if (value.section === "coding" && stats.coding >= REQUIRED_CODING) {
-      return fail("This assessment already contains 2 coding questions.", "CODING_LIMIT_REACHED", 409);
-    }
-    if (stats.total >= REQUIRED_TOTAL) {
-      return fail("This assessment already contains 32 questions.", "TOTAL_QUESTION_LIMIT_REACHED", 409);
+    const section = value.section as QuestionSection;
+    const count = await countSectionQuestions(assessmentId, section);
+    if (count >= REQUIRED_PER_SECTION) {
+      return fail(
+        `The ${section} section already contains 30 questions.`,
+        "SECTION_LIMIT_REACHED",
+        409,
+      );
     }
 
+    const requestedStatus = text(body.status, 30).toLowerCase();
+    if (requestedStatus && !isValidStatus(requestedStatus)) {
+      return fail(
+        "Status must be draft, active or inactive.",
+        "INVALID_QUESTION_STATUS",
+        400,
+      );
+    }
+    const status: UiStatus = requestedStatus ? requestedStatus as UiStatus : "draft";
     const created = await Question.create({
       questionId: generateQuestionId(),
       assessmentId,
       ...value,
       status: toDbStatus(status),
-      isActive: activeForStatus(status),
-      order: value.section === "mcq" ? stats.mcq : stats.coding,
+      isActive: status === "active",
+      order: count,
       createdBy: toObjectId(admin.id) ?? undefined,
       updatedBy: toObjectId(admin.id) ?? undefined,
     });
 
     const question = serializeQuestion(created.toObject());
     return ok({
-      message: "Question added successfully.",
+      message: "MCQ question created successfully.",
       question,
       data: question,
       stats: await getStats(assessmentId),
@@ -626,14 +825,24 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
   return updateQuestion(request, true);
 }
 
-async function updateQuestion(request: NextRequest, statusOnlyAllowed: boolean): Promise<NextResponse> {
+async function updateQuestion(
+  request: NextRequest,
+  statusOnlyAllowed: boolean,
+): Promise<NextResponse> {
   const admin = await authenticateAdmin(request);
   if (!admin) return fail("Unauthorized. Admin login required.", "UNAUTHORIZED", 401);
+  if (!hasPermission(admin, "manage")) return permissionDenied("manage");
+  if (!verifyMutationOrigin(request)) {
+    return fail("Request origin could not be verified.", "INVALID_ORIGIN", 403);
+  }
 
   try {
     await connectDB();
-    const parsed: unknown = await request.json().catch(() => null);
-    if (!isRecord(parsed)) return fail("Request body must be valid JSON.", "INVALID_JSON", 400);
+
+    const parsed = await readJsonBody(request);
+    if (!parsed) {
+      return fail("Request body must be a valid JSON object.", "INVALID_JSON", 400);
+    }
 
     const id = idFromRequest(request, parsed);
     if (!id) return fail("A valid question ID is required.", "INVALID_QUESTION_ID", 400);
@@ -642,32 +851,64 @@ async function updateQuestion(request: NextRequest, statusOnlyAllowed: boolean):
     if (!existing) return fail("Question not found.", "QUESTION_NOT_FOUND", 404);
 
     const assessmentId = toObjectId(existing.assessmentId);
-    if (!assessmentId) return fail("Question has an invalid assessment reference.", "INVALID_ASSESSMENT_ID", 409);
+    if (!assessmentId) {
+      return fail("Question has an invalid assessment reference.", "INVALID_ASSESSMENT_ID", 409);
+    }
+
     const assessment = await findAssessment(assessmentId);
     if (!assessment) return fail("Parent assessment not found.", "ASSESSMENT_NOT_FOUND", 404);
     if (assessmentIsLocked(assessment)) {
-      return fail("Published or archived assessments are locked; their questions cannot be changed.", "ASSESSMENT_LOCKED", 409);
+      return fail(
+        "Published or archived assessments are locked. Create a new assessment version to make changes.",
+        "ASSESSMENT_LOCKED",
+        409,
+      );
     }
 
-    // Status-only PATCH is deliberately handled separately so it cannot fail
-    // content validation for legacy questions that predate the current editor.
-    const requestedStatus = text(parsed.status, 30).toLowerCase();
+    const allowedStatusKeys = ["status", "isActive", "id", "_id", "questionId"];
     const statusOnly = statusOnlyAllowed &&
-      Object.keys(parsed).every((key) => ["status", "isActive", "id", "_id", "questionId"].includes(key));
+      Object.keys(parsed).every((key) => allowedStatusKeys.includes(key));
+
+    const requestedStatus = text(parsed.status, 30).toLowerCase();
+
+    if (requestedStatus && !isValidStatus(requestedStatus)) {
+      return fail(
+        "Status must be draft, active or inactive.",
+        "INVALID_QUESTION_STATUS",
+        400,
+      );
+    }
 
     if (statusOnly) {
       let nextStatus: UiStatus | null = null;
-      if (UI_STATUSES.includes(requestedStatus as UiStatus)) {
-        nextStatus = requestedStatus as UiStatus;
+      if (isValidStatus(requestedStatus)) {
+        nextStatus = requestedStatus;
       } else if (typeof parsed.isActive === "boolean") {
         nextStatus = parsed.isActive ? "active" : "inactive";
       }
+
       if (!nextStatus) {
         return fail("Status must be draft, active or inactive.", "INVALID_QUESTION_STATUS", 400);
       }
 
-      existing.status = toDbStatus(nextStatus) as typeof existing.status;
-      existing.isActive = activeForStatus(nextStatus);
+      const nextDbStatus = toDbStatus(nextStatus);
+      if (nextDbStatus === "published") {
+        const count = await countSectionQuestions(
+          assessmentId,
+          existing.section as QuestionSection,
+          existing._id,
+        );
+        if (count >= REQUIRED_PER_SECTION) {
+          return fail(
+            "This difficulty section already has 30 questions.",
+            "SECTION_LIMIT_REACHED",
+            409,
+          );
+        }
+      }
+
+      existing.status = nextDbStatus as QuestionStatus;
+      existing.isActive = nextStatus === "active";
       existing.updatedBy = toObjectId(admin.id) ?? undefined;
       await existing.save();
 
@@ -681,70 +922,82 @@ async function updateQuestion(request: NextRequest, statusOnlyAllowed: boolean):
     }
 
     const old = existing.toObject() as unknown as AnyRecord;
-    const merged: AnyRecord = { ...old, ...parsed, assessmentId: String(assessmentId) };
-    merged.type = parsed.type ?? parsed.questionType ?? old.type;
-    merged.section = parsed.section ?? parsed.type ?? old.section;
-    merged.question = parsed.question ?? parsed.questionText ?? old.question;
-    merged.options = parsed.options ?? old.options;
-    merged.correctOption = parsed.correctOption ?? parsed.correctAnswer ?? old.correctOption;
-    merged.inputFormat = parsed.inputFormat ?? old.inputFormat;
-    merged.outputFormat = parsed.outputFormat ?? old.outputFormat;
-    merged.constraints = parsed.constraints ?? old.constraints;
-    merged.examples = parsed.examples ?? parsed.testCases ?? old.examples;
-    merged.starterCode = parsed.starterCode ?? parsed.sampleCode ?? parsed.codeTemplate ?? old.starterCode;
-    merged.languages = parsed.languages ?? (parsed.language !== undefined ? [parsed.language] : old.languages);
+    const merged: AnyRecord = {
+      ...old,
+      ...parsed,
+      assessmentId: String(assessmentId),
+      section: parsed.section ?? parsed.difficulty ?? old.section,
+      difficulty: parsed.difficulty ?? parsed.section ?? old.difficulty,
+      type: parsed.type ?? old.type,
+      question: parsed.question ?? parsed.questionText ?? old.question,
+      options: parsed.options ?? old.options,
+      correctOption: parsed.correctOption ?? parsed.correctAnswer ?? old.correctOption,
+      description: parsed.description ?? old.description,
+      topic: parsed.topic ?? old.topic,
+    };
 
     const validation = normalizeQuestionPayload(merged, assessment);
-    if (!validation.valid) return fail(validation.message, validation.code, 400);
-    const value = validation.value;
+    if (!validation.valid) {
+      return fail(validation.message, validation.code, 400);
+    }
 
-    if (String(existing.section) !== String(value.section)) {
-      const stats = await getStats(assessmentId);
-      const count = value.section === "mcq" ? stats.mcq : stats.coding;
-      const limit = value.section === "mcq" ? REQUIRED_MCQ : REQUIRED_CODING;
-      if (count >= limit) {
-        return fail(`The assessment already contains the maximum number of ${value.section} questions.`, "QUESTION_LIMIT_REACHED", 409);
+    const value = validation.value;
+    const nextSection = value.section as QuestionSection;
+    const currentSection = existing.section as QuestionSection;
+    const sectionChanged = nextSection !== currentSection;
+
+    if (sectionChanged) {
+      const count = await countSectionQuestions(assessmentId, nextSection, existing._id);
+      if (count >= REQUIRED_PER_SECTION) {
+        return fail(
+          `The ${nextSection} section already contains 30 questions.`,
+          "SECTION_LIMIT_REACHED",
+          409,
+        );
       }
       existing.order = count;
     }
 
-    existing.section = value.section as QuestionSection;
-    existing.type = value.type as QuestionType;
+    existing.section = nextSection;
+    existing.difficulty = nextSection;
+    existing.type = "mcq";
     existing.question = String(value.question);
     existing.description = String(value.description);
     existing.domain = String(value.domain);
     existing.domainKey = String(value.domainKey);
     existing.options = value.options as typeof existing.options;
-    existing.correctOption = value.correctOption as typeof existing.correctOption;
-    existing.inputFormat = String(value.inputFormat);
-    existing.outputFormat = String(value.outputFormat);
-    existing.constraints = String(value.constraints);
-    existing.examples = value.examples as typeof existing.examples;
-    existing.starterCode = String(value.starterCode);
-    existing.languages = value.languages as typeof existing.languages;
+    existing.correctOption = String(value.correctOption) as typeof existing.correctOption;
     existing.topic = String(value.topic);
-    existing.difficulty = value.difficulty as QuestionDifficulty;
-    existing.marks = Number(value.marks);
-    existing.negativeMarks = Number(value.negativeMarks);
+    existing.marks = 1;
+    existing.negativeMarks = 0;
     existing.updatedBy = toObjectId(admin.id) ?? undefined;
 
-    if (UI_STATUSES.includes(requestedStatus as UiStatus)) {
-      const nextStatus = requestedStatus as UiStatus;
-      existing.status = toDbStatus(nextStatus) as typeof existing.status;
-      existing.isActive = activeForStatus(nextStatus);
+    if (isValidStatus(requestedStatus)) {
+      existing.status = toDbStatus(requestedStatus) as QuestionStatus;
+      existing.isActive = requestedStatus === "active";
     } else if (typeof parsed.isActive === "boolean") {
       existing.isActive = parsed.isActive;
-      if (!parsed.isActive && String(existing.status) === "published") {
-        existing.status = "archived" as typeof existing.status;
-      } else if (parsed.isActive) {
-        existing.status = "published" as typeof existing.status;
+      existing.status = parsed.isActive
+        ? "published" as QuestionStatus
+        : "archived" as QuestionStatus;
+    }
+
+    if (existing.status === "published" && existing.isActive !== false) {
+      const count = await countSectionQuestions(assessmentId, nextSection, existing._id);
+      if (count >= REQUIRED_PER_SECTION) {
+        return fail(
+          `The ${nextSection} section already contains 30 questions.`,
+          "SECTION_LIMIT_REACHED",
+          409,
+        );
       }
     }
 
     await existing.save();
+
     const question = serializeQuestion(existing.toObject());
     return ok({
-      message: "Question updated successfully.",
+      message: "MCQ question updated successfully.",
       question,
       data: question,
       stats: await getStats(assessmentId),
@@ -757,47 +1010,61 @@ async function updateQuestion(request: NextRequest, statusOnlyAllowed: boolean):
 export async function DELETE(request: NextRequest): Promise<NextResponse> {
   const admin = await authenticateAdmin(request);
   if (!admin) return fail("Unauthorized. Admin login required.", "UNAUTHORIZED", 401);
-
-  // Permanent deletion is restricted to the explicitly designated Super Admin.
-  const adminRecord = await AdminModel.findById(toObjectId(admin.id))
-    .select("adminRole designation")
-    .lean()
-    .exec()
-    .catch(() => null) as unknown as AnyRecord | null;
-
-  const designation = text(adminRecord?.adminRole ?? adminRecord?.designation, 100)
-    .toLowerCase()
-    .replace(/[_-]+/g, " ");
-  if (designation !== "super admin") {
-    return fail("Only Super Admin can permanently delete questions.", "FORBIDDEN", 403);
+  if (!hasPermission(admin, "delete")) return permissionDenied("delete");
+  if (!verifyMutationOrigin(request)) {
+    return fail("Request origin could not be verified.", "INVALID_ORIGIN", 403);
   }
 
   try {
     await connectDB();
+
     const id = idFromRequest(request);
-    if (!id) return fail("A valid question ID is required. Use ?id=QUESTION_ID.", "INVALID_QUESTION_ID", 400);
+    if (!id) {
+      return fail(
+        "A valid question ID is required. Use ?id=QUESTION_ID.",
+        "INVALID_QUESTION_ID",
+        400,
+      );
+    }
 
     const existing = await Question.findById(id).exec();
     if (!existing) return fail("Question not found.", "QUESTION_NOT_FOUND", 404);
 
     const assessmentId = toObjectId(existing.assessmentId);
-    if (assessmentId) {
-      const assessment = await findAssessment(assessmentId);
-      if (assessment && assessmentIsLocked(assessment)) {
-        return fail("Questions belonging to a published or archived assessment cannot be permanently deleted.", "ASSESSMENT_LOCKED", 409);
-      }
+    if (!assessmentId) {
+      return fail("Question has an invalid assessment reference.", "INVALID_ASSESSMENT_ID", 409);
     }
 
-    const result = await Question.deleteOne({ _id: id }).exec();
+    const assessment = await findAssessment(assessmentId);
+    if (!assessment) return fail("Parent assessment not found.", "ASSESSMENT_NOT_FOUND", 404);
+    if (assessmentIsLocked(assessment)) {
+      return fail(
+        "Questions belonging to a published or archived assessment cannot be deleted.",
+        "ASSESSMENT_LOCKED",
+        409,
+      );
+    }
+
+    const result = await Question.deleteOne({
+      _id: id,
+      assessmentId,
+      status: existing.status,
+      updatedAt: existing.updatedAt,
+    }).exec();
+
     if (result.deletedCount !== 1) {
-      return fail("Question changed before deletion. Refresh and retry.", "QUESTION_STATE_CHANGED", 409);
+      return fail(
+        "Question changed before deletion. Refresh and retry.",
+        "QUESTION_STATE_CHANGED",
+        409,
+      );
     }
 
     return ok({
       message: "Question deleted successfully.",
       deleted: true,
       questionId: String(id),
-      stats: assessmentId ? await getStats(assessmentId) : null,
+      stats: await getStats(assessmentId),
     });
   } catch (error) {
     return jsonError(error, "Unable to delete question.", "QUESTION_DELETE_FAILED");

@@ -1,4 +1,3 @@
-
 import mongoose, {
   Document,
   Model,
@@ -7,32 +6,15 @@ import mongoose, {
 } from "mongoose";
 import { randomBytes } from "node:crypto";
 
-/* -------------------------------------------------------------------------- */
-/* Types                                                                      */
-/* -------------------------------------------------------------------------- */
-
-export type QuestionType = "mcq" | "coding";
-export type QuestionSection = "mcq" | "coding";
-export type QuestionDifficulty = "easy" | "medium" | "hard";
+export type QuestionType = "mcq";
+export type QuestionSection = "easy" | "medium" | "hard";
+export type QuestionDifficulty = QuestionSection;
 export type QuestionStatus = "draft" | "published" | "archived";
+export type QuestionOptionId = "A" | "B" | "C" | "D";
 
 export interface IQuestionOption {
-  optionId: string;
+  optionId: QuestionOptionId;
   text: string;
-}
-
-export interface ICodingExample {
-  input: string;
-  output: string;
-  explanation?: string;
-}
-
-/** Optional grader cases. Keep hidden expected outputs server-side only. */
-export interface ICodingTestCase {
-  input: string;
-  expectedOutput: string;
-  isHidden: boolean;
-  points: number;
 }
 
 export interface IQuestion extends Document {
@@ -44,17 +26,10 @@ export interface IQuestion extends Document {
   section: QuestionSection;
   type: QuestionType;
   question: string;
-  description?: string;
+  description: string;
   options: IQuestionOption[];
-  correctOption?: string;
-  inputFormat?: string;
-  outputFormat?: string;
-  constraints?: string;
-  examples: ICodingExample[];
-  testCases: ICodingTestCase[];
-  starterCode?: string;
-  languages: string[];
-  topic?: string;
+  correctOption?: QuestionOptionId;
+  topic: string;
   difficulty: QuestionDifficulty;
   marks: number;
   negativeMarks: number;
@@ -67,37 +42,105 @@ export interface IQuestion extends Document {
   updatedAt: Date;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Constants                                                                  */
-/* -------------------------------------------------------------------------- */
-
 export const QUESTION_COLLECTION = "questions";
 
-export const QUESTION_TYPES = {
+export const QUESTION_TYPES = Object.freeze({
   MCQ: "mcq",
-  CODING: "coding",
-} as const;
+} as const);
 
-export const QUESTION_STATUSES = {
+export const QUESTION_SECTIONS = Object.freeze({
+  EASY: "easy",
+  MEDIUM: "medium",
+  HARD: "hard",
+} as const);
+
+export const QUESTION_DIFFICULTIES = Object.freeze({
+  EASY: "easy",
+  MEDIUM: "medium",
+  HARD: "hard",
+} as const);
+
+export const QUESTION_STATUSES = Object.freeze({
   DRAFT: "draft",
   PUBLISHED: "published",
   ARCHIVED: "archived",
-} as const;
+} as const);
 
-export const QUESTION_LIMITS = {
-  QUESTION_TEXT: 10_000,
-  DESCRIPTION: 15_000,
-  OPTION_TEXT: 1_000,
-  EXAMPLE_TEXT: 5_000,
-  STARTER_CODE: 30_000,
-  MAX_OPTIONS: 4,
-  MAX_LANGUAGES: 10,
-  MAX_TEST_CASES: 50,
-} as const;
+export const QUESTION_CONFIG = Object.freeze({
+  type: "mcq" as const,
+  marks: 1,
+  negativeMarks: 0,
+  optionsPerQuestion: 4,
+  questionsPerSection: 30,
+  totalQuestions: 90,
+  totalMarks: 90,
+  passingPercentage: 40,
+  passingMarks: 36,
+  totalDurationMinutes: 90,
+});
 
-/* -------------------------------------------------------------------------- */
-/* Normalization utilities                                                    */
-/* -------------------------------------------------------------------------- */
+export const QUESTION_LIMITS = Object.freeze({
+  QUESTION_TEXT: 10000,
+  DESCRIPTION: 15000,
+  OPTION_TEXT: 1000,
+  TOPIC: 150,
+  DOMAIN: 120,
+  DOMAIN_KEY: 150,
+  QUESTION_ID: 100,
+  OPTION_ID: 1,
+  MAX_ORDER: 100000,
+});
+
+const VALID_SECTIONS: readonly QuestionSection[] = [
+  "easy",
+  "medium",
+  "hard",
+];
+
+const VALID_OPTION_IDS: readonly QuestionOptionId[] = [
+  "A",
+  "B",
+  "C",
+  "D",
+];
+
+const VALID_STATUSES: readonly QuestionStatus[] = [
+  "draft",
+  "published",
+  "archived",
+];
+
+const FIXED_UPDATE_FIELDS = new Set([
+  "type",
+  "marks",
+  "negativeMarks",
+]);
+
+const IMMUTABLE_UPDATE_FIELDS = new Set([
+  "_id",
+  "id",
+  "__v",
+  "createdAt",
+  "updatedAt",
+  "questionId",
+  "assessmentId",
+  "createdBy",
+]);
+
+const EDITABLE_UPDATE_FIELDS = new Set([
+  "domain",
+  "domainKey",
+  "section",
+  "question",
+  "description",
+  "options",
+  "correctOption",
+  "topic",
+  "difficulty",
+  "status",
+  "order",
+  "updatedBy",
+]);
 
 export function normalizeQuestionDomain(domain: string): string {
   return String(domain ?? "")
@@ -106,69 +149,158 @@ export function normalizeQuestionDomain(domain: string): string {
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+|-+$/g, "")
+    .slice(0, QUESTION_LIMITS.DOMAIN_KEY);
 }
 
 export function normalizeQuestionType(value: unknown): QuestionType | null {
-  const normalized = String(value ?? "").trim().toLowerCase();
-
-  if (normalized === "mcq" || normalized === "coding") {
-    return normalized;
-  }
-
-  return null;
+  return String(value ?? "").trim().toLowerCase() === "mcq" ? "mcq" : null;
 }
 
-export function normalizeQuestionStatus(
-  value: unknown,
-): QuestionStatus | null {
+export function normalizeQuestionSection(value: unknown): QuestionSection | null {
   const normalized = String(value ?? "").trim().toLowerCase();
+  return VALID_SECTIONS.includes(normalized as QuestionSection)
+    ? (normalized as QuestionSection)
+    : null;
+}
 
-  if (
-    normalized === "draft" ||
-    normalized === "published" ||
-    normalized === "archived"
-  ) {
-    return normalized;
-  }
+export function normalizeQuestionDifficulty(value: unknown): QuestionDifficulty | null {
+  return normalizeQuestionSection(value);
+}
 
-  return null;
+export function normalizeQuestionStatus(value: unknown): QuestionStatus | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return VALID_STATUSES.includes(normalized as QuestionStatus)
+    ? (normalized as QuestionStatus)
+    : null;
 }
 
 export function generateQuestionId(): string {
-  return `CN-Q-${Date.now()}-${randomBytes(5)
-    .toString("hex")
-    .toUpperCase()}`;
+  return `CN-Q-${Date.now()}-${randomBytes(5).toString("hex").toUpperCase()}`;
 }
 
-function normalizeOptionId(value: unknown): string {
-  return String(value ?? "").trim().toUpperCase();
+export function normalizeQuestionOptionId(value: unknown): QuestionOptionId | null {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  return VALID_OPTION_IDS.includes(normalized as QuestionOptionId)
+    ? (normalized as QuestionOptionId)
+    : null;
 }
 
-function normalizeLanguages(value: unknown): string[] {
+export function isValidObjectId(value: unknown): boolean {
+  if (value instanceof Types.ObjectId) return true;
+  if (typeof value !== "string" || !/^[a-f\d]{24}$/i.test(value)) return false;
+  return mongoose.Types.ObjectId.isValid(value);
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.normalize("NFKC").trim() : "";
+}
+
+function normalizeOptions(value: unknown): IQuestionOption[] {
   if (!Array.isArray(value)) return [];
 
-  return [
-    ...new Set(
-      value
-        .filter((item): item is string => typeof item === "string")
-        .map((item) => item.trim().toLowerCase())
-        .filter(Boolean),
-    ),
-  ].slice(0, QUESTION_LIMITS.MAX_LANGUAGES);
+  return value.map((item) => {
+    const option = item && typeof item === "object"
+      ? item as Record<string, unknown>
+      : {};
+    const optionId = normalizeQuestionOptionId(option.optionId);
+
+    return {
+      optionId: optionId ?? ("" as QuestionOptionId),
+      text: normalizeText(option.text),
+    };
+  });
 }
 
-function isValidObjectId(value: unknown): boolean {
-  return (
-    typeof value === "string" &&
-    /^[a-f\d]{24}$/i.test(value) &&
-    mongoose.Types.ObjectId.isValid(value)
+function applyFixedQuestionConfiguration(question: IQuestion): void {
+  question.type = QUESTION_CONFIG.type;
+  question.marks = QUESTION_CONFIG.marks;
+  question.negativeMarks = QUESTION_CONFIG.negativeMarks;
+
+  if (question.section) {
+    question.difficulty = question.section;
+  } else if (question.difficulty) {
+    question.section = question.difficulty;
+  }
+}
+
+function synchronizeQuestionStatus(question: IQuestion): void {
+  if (question.status === "published") {
+    question.isActive = true;
+  } else {
+    question.isActive = false;
+  }
+}
+
+function validatePublishedQuestion(question: IQuestion): void {
+  if (!question.question || question.question.trim().length < 5) {
+    question.invalidate("question", "A published question requires at least five characters.");
+  }
+
+  if (!question.assessmentId || !isValidObjectId(question.assessmentId)) {
+    question.invalidate("assessmentId", "A valid assessment reference is required.");
+  }
+
+  if (!question.domain || question.domain.trim().length < 2) {
+    question.invalidate("domain", "A valid assessment domain is required.");
+  }
+
+  if (!question.domainKey || question.domainKey.trim().length < 2) {
+    question.invalidate("domainKey", "A valid assessment domain key is required.");
+  }
+
+  if (!normalizeQuestionSection(question.section)) {
+    question.invalidate("section", "Question section must be easy, medium or hard.");
+  }
+
+  if (question.difficulty !== question.section) {
+    question.invalidate("difficulty", "Question difficulty must match its section.");
+  }
+
+  if (question.type !== QUESTION_CONFIG.type) {
+    question.invalidate("type", "Only multiple-choice questions are supported.");
+  }
+
+  if (
+    !Array.isArray(question.options) ||
+    question.options.length !== QUESTION_CONFIG.optionsPerQuestion
+  ) {
+    question.invalidate("options", "A published MCQ must contain exactly four options.");
+    return;
+  }
+
+  const optionIds = question.options.map((option) =>
+    normalizeQuestionOptionId(option.optionId),
   );
-}
 
-/* -------------------------------------------------------------------------- */
-/* Embedded schemas                                                           */
-/* -------------------------------------------------------------------------- */
+  if (
+    optionIds.some((optionId) => optionId === null) ||
+    new Set(optionIds).size !== QUESTION_CONFIG.optionsPerQuestion ||
+    !VALID_OPTION_IDS.every((optionId) => optionIds.includes(optionId))
+  ) {
+    question.invalidate("options", "Options must have unique A, B, C and D identifiers.");
+  }
+
+  if (question.options.some((option) => {
+    const text = normalizeText(option.text);
+    return !text || text.length > QUESTION_LIMITS.OPTION_TEXT;
+  })) {
+    question.invalidate("options", "Every option must contain valid text.");
+  }
+
+  const correctOption = normalizeQuestionOptionId(question.correctOption);
+  if (!correctOption || !optionIds.includes(correctOption)) {
+    question.invalidate("correctOption", "Select exactly one valid correct answer.");
+  }
+
+  if (question.marks !== QUESTION_CONFIG.marks) {
+    question.invalidate("marks", "Each assessment question must carry exactly one mark.");
+  }
+
+  if (question.negativeMarks !== QUESTION_CONFIG.negativeMarks) {
+    question.invalidate("negativeMarks", "Negative marking is disabled.");
+  }
+}
 
 const QuestionOptionSchema = new Schema<IQuestionOption>(
   {
@@ -177,8 +309,9 @@ const QuestionOptionSchema = new Schema<IQuestionOption>(
       required: true,
       trim: true,
       uppercase: true,
+      enum: [...VALID_OPTION_IDS],
       minlength: 1,
-      maxlength: 5,
+      maxlength: QUESTION_LIMITS.OPTION_ID,
     },
     text: {
       type: String,
@@ -191,72 +324,9 @@ const QuestionOptionSchema = new Schema<IQuestionOption>(
   {
     _id: false,
     id: false,
-    strict: true,
+    strict: "throw",
   },
 );
-
-const CodingExampleSchema = new Schema<ICodingExample>(
-  {
-    input: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.EXAMPLE_TEXT,
-      default: "",
-    },
-    output: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.EXAMPLE_TEXT,
-      default: "",
-    },
-    explanation: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.EXAMPLE_TEXT,
-      default: "",
-    },
-  },
-  {
-    _id: false,
-    id: false,
-    strict: true,
-  },
-);
-
-const CodingTestCaseSchema = new Schema<ICodingTestCase>(
-  {
-    input: {
-      type: String,
-      required: true,
-      maxlength: QUESTION_LIMITS.EXAMPLE_TEXT,
-      default: "",
-    },
-    expectedOutput: {
-      type: String,
-      required: true,
-      maxlength: QUESTION_LIMITS.EXAMPLE_TEXT,
-    },
-    isHidden: {
-      type: Boolean,
-      default: true,
-    },
-    points: {
-      type: Number,
-      min: 0,
-      max: 100,
-      default: 0,
-    },
-  },
-  {
-    _id: false,
-    id: false,
-    strict: true,
-  },
-);
-
-/* -------------------------------------------------------------------------- */
-/* Main schema                                                                */
-/* -------------------------------------------------------------------------- */
 
 const QuestionSchema = new Schema<IQuestion>(
   {
@@ -267,53 +337,46 @@ const QuestionSchema = new Schema<IQuestion>(
       trim: true,
       uppercase: true,
       minlength: 5,
-      maxlength: 100,
-      index: true,
+      maxlength: QUESTION_LIMITS.QUESTION_ID,
       default: generateQuestionId,
+      immutable: true,
     },
-
     assessmentId: {
       type: Schema.Types.ObjectId,
       ref: "Assessment",
       required: true,
       index: true,
+      immutable: true,
     },
-
     domain: {
       type: String,
       required: true,
       trim: true,
       minlength: 2,
-      maxlength: 120,
-      index: true,
+      maxlength: QUESTION_LIMITS.DOMAIN,
     },
-
     domainKey: {
       type: String,
       required: true,
       trim: true,
       lowercase: true,
       minlength: 2,
-      maxlength: 150,
+      maxlength: QUESTION_LIMITS.DOMAIN_KEY,
       index: true,
     },
-
     section: {
       type: String,
-      enum: ["mcq", "coding"],
+      enum: [...VALID_SECTIONS],
       required: true,
-      trim: true,
       index: true,
     },
-
     type: {
       type: String,
-      enum: ["mcq", "coding"],
+      enum: ["mcq"],
       required: true,
-      trim: true,
-      index: true,
+      default: QUESTION_CONFIG.type,
+      immutable: true,
     },
-
     question: {
       type: String,
       required: true,
@@ -321,156 +384,102 @@ const QuestionSchema = new Schema<IQuestion>(
       minlength: 5,
       maxlength: QUESTION_LIMITS.QUESTION_TEXT,
     },
-
     description: {
       type: String,
       trim: true,
       maxlength: QUESTION_LIMITS.DESCRIPTION,
       default: "",
     },
-
     options: {
       type: [QuestionOptionSchema],
+      required: true,
       default: [],
+      validate: [
+        {
+          validator: (value: IQuestionOption[]) =>
+            Array.isArray(value) && value.length <= QUESTION_CONFIG.optionsPerQuestion,
+          message: "An MCQ can contain no more than four options.",
+        },
+        {
+          validator: (value: IQuestionOption[]) => {
+            if (!Array.isArray(value)) return false;
+            const ids = value.map((option) => option.optionId);
+            return new Set(ids).size === ids.length;
+          },
+          message: "Option identifiers must be unique.",
+        },
+      ],
     },
-
-    // Hidden by default. Admin-side answer checking must explicitly
-    // request .select("+correctOption").
     correctOption: {
       type: String,
       trim: true,
       uppercase: true,
+      enum: [...VALID_OPTION_IDS],
       minlength: 1,
-      maxlength: 5,
+      maxlength: QUESTION_LIMITS.OPTION_ID,
       select: false,
       default: undefined,
     },
-
-    inputFormat: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.DESCRIPTION,
-      default: "",
-    },
-
-    outputFormat: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.DESCRIPTION,
-      default: "",
-    },
-
-    constraints: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.DESCRIPTION,
-      default: "",
-    },
-
-    examples: {
-      type: [CodingExampleSchema],
-      default: [],
-    },
-
-    // Hidden grader cases must never be serialized into student-facing payloads.
-    testCases: {
-      type: [CodingTestCaseSchema],
-      default: [],
-      validate: {
-        validator: (value: ICodingTestCase[]) =>
-          Array.isArray(value) && value.length <= QUESTION_LIMITS.MAX_TEST_CASES,
-        message: `A question may contain at most ${QUESTION_LIMITS.MAX_TEST_CASES} test cases.`,
-      },
-      select: false,
-    },
-
-    starterCode: {
-      type: String,
-      trim: true,
-      maxlength: QUESTION_LIMITS.STARTER_CODE,
-      default: "",
-    },
-
-    languages: {
-      type: [
-        {
-          type: String,
-          trim: true,
-          lowercase: true,
-          maxlength: 30,
-        },
-      ],
-      default: [],
-      validate: {
-        validator: (value: string[]) =>
-          Array.isArray(value) &&
-          value.length <= QUESTION_LIMITS.MAX_LANGUAGES &&
-          value.every(
-            (item) =>
-              typeof item === "string" && Boolean(item.trim()),
-          ),
-        message: "Languages must contain at most 10 valid entries.",
-      },
-    },
-
     topic: {
       type: String,
       trim: true,
-      maxlength: 150,
+      maxlength: QUESTION_LIMITS.TOPIC,
       default: "",
     },
-
     difficulty: {
       type: String,
-      enum: ["easy", "medium", "hard"],
+      enum: [...VALID_SECTIONS],
       required: true,
-      default: "medium",
       index: true,
     },
-
     marks: {
       type: Number,
       required: true,
-      min: 0.5,
-      max: 100,
-      default: 1,
+      default: QUESTION_CONFIG.marks,
+      min: QUESTION_CONFIG.marks,
+      max: QUESTION_CONFIG.marks,
+      validate: {
+        validator: Number.isInteger,
+        message: "Question marks must be an integer.",
+      },
     },
-
     negativeMarks: {
       type: Number,
       required: true,
-      min: 0,
-      max: 100,
-      default: 0,
+      default: QUESTION_CONFIG.negativeMarks,
+      min: QUESTION_CONFIG.negativeMarks,
+      max: QUESTION_CONFIG.negativeMarks,
     },
-
     status: {
       type: String,
-      enum: ["draft", "published", "archived"],
+      enum: [...VALID_STATUSES],
       required: true,
       default: "draft",
       index: true,
     },
-
     isActive: {
       type: Boolean,
-      default: true,
+      required: true,
+      default: false,
       index: true,
     },
-
     order: {
       type: Number,
+      required: true,
       default: 0,
       min: 0,
-      max: 100_000,
+      max: QUESTION_LIMITS.MAX_ORDER,
+      validate: {
+        validator: Number.isInteger,
+        message: "Question order must be a non-negative integer.",
+      },
     },
-
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: "Admin",
       default: undefined,
+      immutable: true,
     },
-
     updatedBy: {
       type: Schema.Types.ObjectId,
       ref: "Admin",
@@ -480,241 +489,347 @@ const QuestionSchema = new Schema<IQuestion>(
   {
     timestamps: true,
     versionKey: false,
-    strict: true,
+    strict: "throw",
     minimize: false,
     collection: QUESTION_COLLECTION,
+    toJSON: {
+      virtuals: false,
+      versionKey: false,
+      transform: (_document, returned) => {
+        delete returned.correctOption;
+        return returned;
+      },
+    },
+    toObject: {
+      virtuals: false,
+      versionKey: false,
+    },
   },
 );
 
-/* -------------------------------------------------------------------------- */
-/* Validation and normalization                                               */
-/* -------------------------------------------------------------------------- */
-
 QuestionSchema.pre("validate", function () {
-  if (typeof this.domain === "string") {
-    this.domain = this.domain.trim();
-    this.domainKey = normalizeQuestionDomain(this.domain);
+  this.questionId = String(this.questionId ?? "").trim().toUpperCase();
+  this.domain = normalizeText(this.domain);
+  this.domainKey = normalizeQuestionDomain(this.domain);
+  this.question = normalizeText(this.question);
+  this.description = normalizeText(this.description);
+  this.topic = normalizeText(this.topic);
+
+  const normalizedSection = normalizeQuestionSection(this.section);
+  const normalizedDifficulty = normalizeQuestionDifficulty(this.difficulty);
+
+  if (!normalizedSection) {
+    this.invalidate("section", "Section must be easy, medium or hard.");
+  } else {
+    this.section = normalizedSection;
   }
 
-  if (typeof this.questionId === "string") {
-    this.questionId = this.questionId.trim().toUpperCase();
-  }
-
-  if (typeof this.correctOption === "string") {
-    this.correctOption = normalizeOptionId(this.correctOption);
-  }
-
-  if (this.section !== this.type) {
-    this.invalidate(
-      "type",
-      "Question type must match question section.",
-    );
-  }
-
-  if (Array.isArray(this.options)) {
-    this.options = this.options.map((option) => ({
-      optionId: normalizeOptionId(option.optionId),
-      text: String(option.text ?? "").trim(),
-    }));
-  }
-
-  this.languages = normalizeLanguages(this.languages);
-
-  if (this.status === "archived") {
-    this.isActive = false;
-  }
-
-  if (!Number.isFinite(this.marks) || this.marks <= 0) {
-    this.invalidate("marks", "Marks must be greater than zero.");
+  if (!normalizedDifficulty) {
+    this.invalidate("difficulty", "Difficulty must be easy, medium or hard.");
+  } else {
+    this.difficulty = normalizedDifficulty;
   }
 
   if (
-    !Number.isFinite(this.negativeMarks) ||
-    this.negativeMarks < 0
+    normalizedSection &&
+    normalizedDifficulty &&
+    normalizedSection !== normalizedDifficulty
   ) {
-    this.invalidate(
-      "negativeMarks",
-      "Negative marks cannot be negative.",
-    );
+    this.invalidate("difficulty", "Difficulty must match the selected section.");
   }
 
-  if (this.negativeMarks > this.marks) {
-    this.invalidate(
-      "negativeMarks",
-      "Negative marks cannot exceed question marks.",
-    );
+  if (normalizeQuestionType(this.type) !== QUESTION_CONFIG.type) {
+    this.invalidate("type", "Only multiple-choice questions are supported.");
   }
 
-  // Draft questions can be incomplete while an admin edits them.
-  if (this.status !== "published") {
-    return;
+  this.options = normalizeOptions(this.options);
+
+  const normalizedCorrectOption = normalizeQuestionOptionId(this.correctOption);
+  if (normalizedCorrectOption) {
+    this.correctOption = normalizedCorrectOption;
   }
 
-  if (!this.question?.trim()) {
-    this.invalidate(
-      "question",
-      "A published question cannot be empty.",
-    );
+  const normalizedStatus = normalizeQuestionStatus(this.status);
+
+  if (!normalizedStatus) {
+    this.invalidate("status", "Question status must be draft, published or archived.");
+  } else {
+    this.status = normalizedStatus;
   }
 
-  if (!this.domainKey || this.domainKey.length < 2) {
-    this.invalidate("domainKey", "A valid domain is required.");
+  applyFixedQuestionConfiguration(this);
+  synchronizeQuestionStatus(this);
+
+  if (this.status === "published") {
+    validatePublishedQuestion(this);
   }
 
-  if (this.section === "mcq" && this.type === "mcq") {
-    if (this.options.length !== 4) {
-      this.invalidate(
-        "options",
-        "A published MCQ requires exactly 4 options.",
-      );
-    } else {
-      const optionIds = this.options.map(
-        (option) => option.optionId,
-      );
-      const uniqueOptionIds = new Set(optionIds);
-
-      if (uniqueOptionIds.size !== 4) {
-        this.invalidate(
-          "options",
-          "MCQ option IDs must be unique.",
-        );
-      }
-
-      if (
-        this.options.some(
-          (option) => !option.optionId || !option.text,
-        )
-      ) {
-        this.invalidate(
-          "options",
-          "Every MCQ option needs an ID and text.",
-        );
-      }
-
-      if (!this.correctOption) {
-        this.invalidate(
-          "correctOption",
-          "An MCQ requires a correct option.",
-        );
-      } else if (!uniqueOptionIds.has(this.correctOption)) {
-        this.invalidate(
-          "correctOption",
-          "The correct option must match one option ID.",
-        );
-      }
-    }
-
-    // Clear coding-only properties on published MCQs.
-    this.inputFormat = "";
-    this.outputFormat = "";
-    this.constraints = "";
-    this.examples = [];
-    this.testCases = [];
-    this.starterCode = "";
-    this.languages = [];
+  if (this.assessmentId && !isValidObjectId(this.assessmentId)) {
+    this.invalidate("assessmentId", "Invalid assessment reference.");
   }
 
-  if (this.section === "coding" && this.type === "coding") {
-    if (this.options.length > 0) {
-      this.invalidate(
-        "options",
-        "Coding questions cannot contain MCQ options.",
-      );
-    }
-
-    if (this.correctOption) {
-      this.invalidate(
-        "correctOption",
-        "Coding questions cannot have an MCQ answer.",
-      );
-    }
-
-    if (!this.inputFormat?.trim()) {
-      this.invalidate(
-        "inputFormat",
-        "A published coding question requires an input format.",
-      );
-    }
-
-    if (!this.outputFormat?.trim()) {
-      this.invalidate(
-        "outputFormat",
-        "A published coding question requires an output format.",
-      );
-    }
-
-    if (!Array.isArray(this.examples) || this.examples.length === 0) {
-      this.invalidate(
-        "examples",
-        "A published coding question requires an example.",
-      );
-    } else {
-      for (const example of this.examples) {
-        if (!example.input?.trim()) {
-          this.invalidate(
-            "examples",
-            "Coding example input cannot be empty.",
-          );
-        }
-
-        if (!example.output?.trim()) {
-          this.invalidate(
-            "examples",
-            "Coding example output cannot be empty.",
-          );
-        }
-      }
-    }
-
-    if (!this.languages.length) {
-      this.invalidate(
-        "languages",
-        "A published coding question requires a programming language.",
-      );
-    }
-
-    if (Array.isArray(this.testCases)) {
-      if (this.testCases.length > QUESTION_LIMITS.MAX_TEST_CASES) {
-        this.invalidate(
-          "testCases",
-          `A question may contain at most ${QUESTION_LIMITS.MAX_TEST_CASES} test cases.`,
-        );
-      }
-      for (const testCase of this.testCases) {
-        if (typeof testCase.input !== "string" || typeof testCase.expectedOutput !== "string") {
-          this.invalidate("testCases", "Each coding test case requires input and expected output.");
-          break;
-        }
-        if (!Number.isFinite(testCase.points) || testCase.points < 0 || testCase.points > 100) {
-          this.invalidate("testCases", "Test-case points must be between 0 and 100.");
-          break;
-        }
-      }
-    }
+  if (!Number.isInteger(this.order) || this.order < 0 || this.order > QUESTION_LIMITS.MAX_ORDER) {
+    this.invalidate("order", "Question order must be a valid non-negative integer.");
   }
 });
 
 QuestionSchema.pre("save", function () {
-  if (typeof this.domain === "string") {
-    this.domainKey = normalizeQuestionDomain(this.domain);
-  }
-
-  if (this.status === "archived") {
-    this.isActive = false;
-  }
+  applyFixedQuestionConfiguration(this);
+  synchronizeQuestionStatus(this);
+  this.domain = normalizeText(this.domain);
+  this.domainKey = normalizeQuestionDomain(this.domain);
 });
 
-/* -------------------------------------------------------------------------- */
-/* Indexes                                                                    */
-/* -------------------------------------------------------------------------- */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
 
-// Supports assessment-start lookups by assessment, domain and section.
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isAllowedUpdatePath(path: string): boolean {
+  if (
+    path.startsWith("$") ||
+    path.includes("$") ||
+    path.split(".").some((part) => part === "__proto__" || part === "prototype" || part === "constructor")
+  ) {
+    return false;
+  }
+
+  const normalized = path.replace(/\.\d+(?=\.|$)/g, ".*");
+  if (IMMUTABLE_UPDATE_FIELDS.has(normalized)) return false;
+  if (FIXED_UPDATE_FIELDS.has(normalized)) return false;
+
+  if (EDITABLE_UPDATE_FIELDS.has(normalized)) return true;
+
+  if (/^options\.\*\.(optionId|text)$/.test(normalized)) return true;
+
+  return false;
+}
+
+function sanitizeUpdateValues(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const [path, value] of Object.entries(values)) {
+    if (!isAllowedUpdatePath(path)) {
+      throw new Error(`Question field "${path}" cannot be updated.`);
+    }
+
+    result[path] = value;
+  }
+
+  return result;
+}
+
+function normalizeUpdateDocument(
+  update: Record<string, unknown>,
+): Record<string, unknown> {
+  const keys = Object.keys(update);
+  const hasOperators = keys.some((key) => key.startsWith("$"));
+  const hasPlainKeys = keys.some((key) => !key.startsWith("$"));
+
+  if (hasOperators && hasPlainKeys) {
+    throw new Error("Question updates cannot mix operator and plain fields.");
+  }
+
+  let setValues: Record<string, unknown> = {};
+  let insertValues: Record<string, unknown> = {};
+
+  if (!hasOperators) {
+    setValues = sanitizeUpdateValues(update);
+  } else {
+    for (const [operator, rawValues] of Object.entries(update)) {
+      if (operator !== "$set" && operator !== "$setOnInsert") {
+        throw new Error(`Question update operator "${operator}" is not permitted.`);
+      }
+
+      if (!isPlainObject(rawValues)) {
+        throw new Error(`Invalid question update payload for ${operator}.`);
+      }
+
+      const sanitized = sanitizeUpdateValues(rawValues);
+
+      if (operator === "$set") {
+        setValues = { ...setValues, ...sanitized };
+      } else {
+        insertValues = { ...insertValues, ...sanitized };
+      }
+    }
+  }
+
+  const normalizeValues = (
+    values: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const normalized = { ...values };
+
+    if (Object.prototype.hasOwnProperty.call(normalized, "domain")) {
+      if (typeof normalized.domain !== "string") {
+        throw new Error("Question domain must be a string.");
+      }
+
+      const domain = normalizeText(normalized.domain);
+      normalized.domain = domain;
+      const domainKey = normalizeQuestionDomain(domain);
+
+      if (domain.length < 2 || !domainKey) {
+        throw new Error("A valid question domain is required.");
+      }
+
+      normalized.domainKey = domainKey;
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(normalized, "domainKey") &&
+      !Object.prototype.hasOwnProperty.call(normalized, "domain")
+    ) {
+      throw new Error("Question domainKey is managed by the system.");
+    }
+
+    const section = Object.prototype.hasOwnProperty.call(normalized, "section")
+      ? normalizeQuestionSection(normalized.section)
+      : null;
+    const difficulty = Object.prototype.hasOwnProperty.call(normalized, "difficulty")
+      ? normalizeQuestionDifficulty(normalized.difficulty)
+      : null;
+
+    if (
+      Object.prototype.hasOwnProperty.call(normalized, "section") &&
+      !section
+    ) {
+      throw new Error("Question section must be easy, medium or hard.");
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(normalized, "difficulty") &&
+      !difficulty
+    ) {
+      throw new Error("Question difficulty must be easy, medium or hard.");
+    }
+
+    if (section && difficulty && section !== difficulty) {
+      throw new Error("Question difficulty must match its section.");
+    }
+
+    if (section) {
+      normalized.section = section;
+      normalized.difficulty = section;
+    } else if (difficulty) {
+      normalized.difficulty = difficulty;
+      normalized.section = difficulty;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(normalized, "status")) {
+      const status = normalizeQuestionStatus(normalized.status);
+
+      if (!status) {
+        throw new Error("Question status must be draft, published or archived.");
+      }
+
+      normalized.status = status;
+      normalized.isActive = status === "published";
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(normalized, "question") &&
+      (typeof normalized.question !== "string" ||
+        normalizeText(normalized.question).length < 5)
+    ) {
+      throw new Error("Question text must contain at least five characters.");
+    }
+
+    if (Object.prototype.hasOwnProperty.call(normalized, "options")) {
+      const options = normalizeOptions(normalized.options);
+
+      if (options.length > QUESTION_CONFIG.optionsPerQuestion) {
+        throw new Error("An MCQ can contain no more than four options.");
+      }
+
+      normalized.options = options;
+    }
+
+    return normalized;
+  };
+
+  setValues = normalizeValues(setValues);
+  insertValues = normalizeValues(insertValues);
+
+  const result: Record<string, unknown> = {};
+
+  if (Object.keys(setValues).length > 0) {
+    result.$set = {
+      ...setValues,
+      type: QUESTION_CONFIG.type,
+      marks: QUESTION_CONFIG.marks,
+      negativeMarks: QUESTION_CONFIG.negativeMarks,
+    };
+  }
+
+  if (Object.keys(insertValues).length > 0) {
+    result.$setOnInsert = {
+      ...insertValues,
+      type: QUESTION_CONFIG.type,
+      marks: QUESTION_CONFIG.marks,
+      negativeMarks: QUESTION_CONFIG.negativeMarks,
+    };
+  }
+
+  if (Object.keys(result).length === 0) {
+    throw new Error("Question update contains no editable fields.");
+  }
+
+  return result;
+}
+
+function applyQuestionUpdateMiddleware(
+  query: mongoose.Query<unknown, IQuestion>,
+): void {
+  const update = query.getUpdate();
+
+  if (!update) return;
+
+  if (Array.isArray(update)) {
+    throw new Error("Aggregation pipeline updates are not permitted for questions.");
+  }
+
+  query.setOptions({
+    runValidators: true,
+    context: "query",
+    strict: "throw",
+  });
+
+  query.setUpdate(normalizeUpdateDocument(update as Record<string, unknown>));
+}
+
+QuestionSchema.pre("findOneAndUpdate", function () {
+  applyQuestionUpdateMiddleware(this);
+});
+
+QuestionSchema.pre("updateOne", function () {
+  applyQuestionUpdateMiddleware(this);
+});
+
+QuestionSchema.pre("updateMany", function () {
+  applyQuestionUpdateMiddleware(this);
+});
+
+QuestionSchema.pre("replaceOne", function () {
+  throw new Error("Question replacement is disabled. Load the document and update it with save().");
+});
+
+QuestionSchema.pre("findOneAndReplace", function () {
+  throw new Error("Question replacement is disabled. Load the document and update it with save().");
+});
+
 QuestionSchema.index(
   {
     assessmentId: 1,
     domainKey: 1,
     section: 1,
-    type: 1,
+    difficulty: 1,
     status: 1,
     isActive: 1,
   },
@@ -723,11 +838,11 @@ QuestionSchema.index(
   },
 );
 
-// Supports ordered admin lists and deterministic question selection.
 QuestionSchema.index(
   {
     assessmentId: 1,
     section: 1,
+    status: 1,
     order: 1,
     createdAt: 1,
   },
@@ -736,12 +851,28 @@ QuestionSchema.index(
   },
 );
 
-/* -------------------------------------------------------------------------- */
-/* Model export                                                               */
-/* -------------------------------------------------------------------------- */
+QuestionSchema.index(
+  {
+    domainKey: 1,
+    section: 1,
+    status: 1,
+    isActive: 1,
+  },
+  {
+    name: "question_domain_difficulty_lookup",
+  },
+);
 
-// Reuse the existing model during Next.js hot reload to avoid
-// OverwriteModelError. Keep the existing default mongoose connection.
+QuestionSchema.index(
+  {
+    assessmentId: 1,
+    questionId: 1,
+  },
+  {
+    name: "assessment_question_id_lookup",
+  },
+);
+
 const Question: Model<IQuestion> =
   (mongoose.models.Question as Model<IQuestion> | undefined) ??
   mongoose.model<IQuestion>(
@@ -750,5 +881,5 @@ const Question: Model<IQuestion> =
     QUESTION_COLLECTION,
   );
 
-export { isValidObjectId };
+export { QuestionSchema };
 export default Question;

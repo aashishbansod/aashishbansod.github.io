@@ -3,33 +3,22 @@ import mongoose, {
   type ConnectOptions,
 } from "mongoose";
 
-/**
- * CyberNet Careers MongoDB connection manager.
- *
- * Main database:
- *   MONGODB_URI
- *   ADMIN_MONGODB_DATABASE (preferred) or MONGODB_DATABASE (legacy)
- *
- * Student Operations database:
- *   STUDENT_MONGODB_URI
- *   STUDENT_MONGODB_DATABASE
- *
- * Main models use mongoose.model() after connectDB().
- * Student Operations models must use connection.model() on the
- * Connection returned by connectStudentDB().
- *
- * Never disconnect databases inside ordinary API requests.
- */
-
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const MAX_CONNECT_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 750;
+const MAX_RETRY_DELAY_MS = 4000;
+
 const CONNECTION_OPTIONS: ConnectOptions = {
   autoIndex: !IS_PRODUCTION,
   maxPoolSize: 10,
   minPoolSize: 0,
+  maxIdleTimeMS: 30_000,
+  waitQueueTimeoutMS: 10_000,
   serverSelectionTimeoutMS: 10_000,
   connectTimeoutMS: 10_000,
   socketTimeoutMS: 45_000,
   bufferCommands: false,
+  retryWrites: true,
 };
 
 interface MainConnectionCache {
@@ -42,15 +31,21 @@ interface StudentConnectionCache {
   promise: Promise<Connection> | null;
 }
 
+interface MongoErrorDetails {
+  name: string;
+  code?: string;
+  codeName?: string;
+  message: string;
+}
+
 declare global {
-  // eslint-disable-next-line no-var
   var mongooseConnection: MainConnectionCache | undefined;
-  // eslint-disable-next-line no-var
   var studentMongooseConnection: StudentConnectionCache | undefined;
 }
 
 const mainCache: MainConnectionCache =
   globalThis.mongooseConnection ?? { conn: null, promise: null };
+
 const studentCache: StudentConnectionCache =
   globalThis.studentMongooseConnection ?? { conn: null, promise: null };
 
@@ -73,23 +68,38 @@ function requireMongoUri(uri: string, variableName: string): string {
   if (!uri) {
     throw new Error(`Missing ${variableName} in environment configuration.`);
   }
+
   if (!/^mongodb(?:\+srv)?:\/\//i.test(uri)) {
     throw new Error(
       `${variableName} must start with mongodb:// or mongodb+srv://.`,
     );
   }
+
+  try {
+    const parsed = new URL(uri);
+    if (!parsed.hostname) {
+      throw new Error("Missing MongoDB hostname.");
+    }
+  } catch {
+    throw new Error(`${variableName} is not a valid MongoDB connection URI.`);
+  }
+
   return uri;
 }
 
 function requireDatabaseName(name: string, variableName: string): string {
   const normalized = name.trim();
+
   if (
     !normalized ||
     Buffer.byteLength(normalized, "utf8") > 63 ||
-    /[./\\ "$*<>:|?]/.test(normalized)
+    /[./\\ "$*<>:|?\0]/.test(normalized)
   ) {
-    throw new Error(`${variableName} contains an invalid MongoDB database name.`);
+    throw new Error(
+      `${variableName} contains an invalid MongoDB database name.`,
+    );
   }
+
   return normalized;
 }
 
@@ -99,151 +109,383 @@ function isConnectionConnected(connection: Connection): boolean {
 
 function isMainConnected(): boolean {
   return (
-    mongoose.connection.readyState === 1 && Boolean(mongoose.connection.db)
+    mongoose.connection.readyState === 1 &&
+    Boolean(mongoose.connection.db)
   );
 }
 
-/** Never log raw driver messages: they can expose connection details. */
-function logConnectionFailure(label: string, error: unknown): void {
+function getMongoErrorDetails(error: unknown): MongoErrorDetails {
   const value = error as
-    | { name?: unknown; code?: unknown; codeName?: unknown }
+    | {
+        name?: unknown;
+        code?: unknown;
+        codeName?: unknown;
+        message?: unknown;
+      }
     | null
     | undefined;
-  const name = typeof value?.name === "string" ? value.name : "ConnectionError";
-  const code =
-    typeof value?.code === "string" || typeof value?.code === "number"
-      ? String(value.code)
-      : undefined;
-  const codeName = typeof value?.codeName === "string" ? value.codeName : undefined;
+
+  const details: MongoErrorDetails = {
+    name: typeof value?.name === "string" ? value.name : "ConnectionError",
+    message:
+      typeof value?.message === "string"
+        ? value.message.slice(0, 500)
+        : "Unknown MongoDB connection error.",
+  };
+
+  if (
+    typeof value?.code === "string" ||
+    typeof value?.code === "number"
+  ) {
+    details.code = String(value.code);
+  }
+
+  if (typeof value?.codeName === "string") {
+    details.codeName = value.codeName;
+  }
+
+  return details;
+}
+
+function logConnectionFailure(
+  label: string,
+  error: unknown,
+  attempt?: number,
+): void {
+  const details = getMongoErrorDetails(error);
+
   console.error(`[MongoDB:${label}] Connection failed`, {
-    name,
-    ...(code ? { code } : {}),
-    ...(codeName ? { codeName } : {}),
+    name: details.name,
+    ...(details.code ? { code: details.code } : {}),
+    ...(details.codeName ? { codeName: details.codeName } : {}),
+    ...(attempt
+      ? { attempt, maxAttempts: MAX_CONNECT_ATTEMPTS }
+      : {}),
   });
 }
 
-/** Connect to the main Careers database. Concurrent callers share one attempt. */
-export async function connectDB(): Promise<typeof mongoose> {
-  if (isMainConnected()) {
-    mainCache.conn = mongoose;
-    return mongoose;
-  }
-  if (mainCache.promise) return mainCache.promise;
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
-  if (mongoose.connection.readyState === 2) {
-    const pending = mongoose.connection.asPromise().then(() => mongoose);
-    mainCache.promise = pending;
-    try {
-      const connected = await pending;
-      mainCache.conn = connected;
-      return connected;
-    } catch (error) {
-      mainCache.conn = null;
-      logConnectionFailure("Main", error);
-      throw new Error("Unable to connect to the main database.");
-    } finally {
-      if (mainCache.promise === pending) mainCache.promise = null;
-    }
+function isAuthenticationError(error: unknown): boolean {
+  const details = getMongoErrorDetails(error);
+  const name = details.name.toLowerCase();
+  const message = details.message.toLowerCase();
+  const code = (details.code ?? "").toLowerCase();
+
+  return (
+    code === "18" ||
+    code === "authenticationfailed" ||
+    name.includes("authentication") ||
+    name.includes("auth") ||
+    message.includes("authentication failed") ||
+    message.includes("bad auth")
+  );
+}
+
+function isRetryableConnectionError(error: unknown): boolean {
+  if (isAuthenticationError(error)) return false;
+
+  const details = getMongoErrorDetails(error);
+  const name = details.name.toLowerCase();
+  const message = details.message.toLowerCase();
+  const code = (details.code ?? "").toLowerCase();
+
+  return (
+    name.includes("serverselection") ||
+    name.includes("network") ||
+    name.includes("timeout") ||
+    name.includes("topologyclosed") ||
+    name.includes("mongonotconnected") ||
+    name.includes("connection") ||
+    code === "econnreset" ||
+    code === "econnrefused" ||
+    code === "ehostunreach" ||
+    code === "enotfound" ||
+    code === "etimedout" ||
+    code === "eai_again" ||
+    message.includes("server selection") ||
+    message.includes("timed out") ||
+    message.includes("connection closed") ||
+    message.includes("connection reset") ||
+    message.includes("network is unreachable")
+  );
+}
+
+function createSafeConnectionError(label: string, error: unknown): Error {
+  const details = getMongoErrorDetails(error);
+  const wrapped = new Error(
+    `Unable to connect to the ${label} database. Check its URI, credentials, Atlas Network Access, DNS, database name and cluster status. Cause: ${details.name}${details.code ? ` (${details.code})` : ""}.`,
+  );
+
+  wrapped.name = "MongoDBConnectionError";
+  return wrapped;
+}
+
+function getRetryDelay(attempt: number): number {
+  return Math.min(
+    RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+    MAX_RETRY_DELAY_MS,
+  );
+}
+
+async function closeMainConnection(): Promise<void> {
+  if (mongoose.connection.readyState === 0) {
+    mainCache.conn = null;
+    return;
   }
 
+  try {
+    await mongoose.disconnect();
+  } catch (error) {
+    logConnectionFailure("Main cleanup", error);
+    throw error;
+  } finally {
+    mainCache.conn = null;
+  }
+}
+
+async function connectMainWithRetry(): Promise<typeof mongoose> {
   const uri = requireMongoUri(readEnv("MONGODB_URI"), "MONGODB_URI");
-  // Supports the variable used by .env.local and the legacy name.
   const databaseName = requireDatabaseName(
     readFirstEnv("ADMIN_MONGODB_DATABASE", "MONGODB_DATABASE") ||
       "cybernet_careers",
     "ADMIN_MONGODB_DATABASE/MONGODB_DATABASE",
   );
 
-  const pending = mongoose.connect(uri, {
-    ...CONNECTION_OPTIONS,
-    dbName: databaseName,
-  });
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt += 1) {
+    try {
+      if (isMainConnected()) {
+        mainCache.conn = mongoose;
+        return mongoose;
+      }
+
+      if (mongoose.connection.readyState === 2) {
+        try {
+          await mongoose.connection.asPromise();
+          if (isMainConnected()) {
+            mainCache.conn = mongoose;
+            return mongoose;
+          }
+        } catch (error) {
+          lastError = error;
+          if (!isRetryableConnectionError(error)) throw error;
+        }
+      }
+
+      if (mongoose.connection.readyState !== 0) {
+        await closeMainConnection();
+      }
+
+      const connected = await mongoose.connect(uri, {
+        ...CONNECTION_OPTIONS,
+        dbName: databaseName,
+      });
+
+      if (!isMainConnected()) {
+        throw new Error("Main MongoDB connection did not reach ready state.");
+      }
+
+      mainCache.conn = connected;
+      return connected;
+    } catch (error) {
+      lastError = error;
+      mainCache.conn = null;
+      logConnectionFailure("Main", error, attempt);
+
+      if (
+        attempt >= MAX_CONNECT_ATTEMPTS ||
+        !isRetryableConnectionError(error)
+      ) {
+        break;
+      }
+
+      if (mongoose.connection.readyState !== 0) {
+        try {
+          await mongoose.disconnect();
+        } catch (cleanupError) {
+          logConnectionFailure("Main retry cleanup", cleanupError);
+        }
+      }
+
+      await delay(getRetryDelay(attempt));
+    }
+  }
+
+  throw createSafeConnectionError("Main", lastError);
+}
+
+export async function connectDB(): Promise<typeof mongoose> {
+  if (isMainConnected()) {
+    mainCache.conn = mongoose;
+    return mongoose;
+  }
+
+  if (mainCache.promise) {
+    return mainCache.promise;
+  }
+
+  const pending = connectMainWithRetry();
   mainCache.promise = pending;
 
   try {
-    const connected = await pending;
-    mainCache.conn = connected;
-    return connected;
-  } catch (error) {
-    mainCache.conn = null;
-    logConnectionFailure("Main", error);
-    throw new Error("Unable to connect to the main database.");
+    return await pending;
   } finally {
-    if (mainCache.promise === pending) mainCache.promise = null;
+    if (mainCache.promise === pending) {
+      mainCache.promise = null;
+    }
   }
 }
 
-/** Connect to Student Operations using a separate Mongoose connection. */
-export async function connectStudentDB(): Promise<Connection> {
-  const cached = studentCache.conn;
-  if (cached && isConnectionConnected(cached)) return cached;
-  if (studentCache.promise) return studentCache.promise;
+async function closeStudentConnection(
+  connection: Connection,
+): Promise<void> {
+  if (connection.readyState === 0) return;
 
+  try {
+    await connection.close();
+  } catch (error) {
+    logConnectionFailure("Student Operations cleanup", error);
+    throw error;
+  }
+}
+
+function attachStudentConnectionListeners(connection: Connection): void {
+  connection.on("error", (error: unknown) => {
+    logConnectionFailure("Student Operations runtime", error);
+  });
+
+  connection.on("disconnected", () => {
+    if (studentCache.conn === connection) {
+      console.error(
+        "[MongoDB:Student Operations] Connection disconnected.",
+      );
+    }
+  });
+
+  connection.on("reconnected", () => {
+    if (studentCache.conn === connection) {
+      console.info("[MongoDB:Student Operations] Connection restored.");
+    }
+  });
+}
+
+async function connectStudentWithRetry(): Promise<Connection> {
   const uri = requireMongoUri(
     readEnv("STUDENT_MONGODB_URI"),
     "STUDENT_MONGODB_URI",
   );
+
   const databaseName = requireDatabaseName(
     readEnv("STUDENT_MONGODB_DATABASE") || "cybernet_student",
     "STUDENT_MONGODB_DATABASE",
   );
 
-  const pending = (async (): Promise<Connection> => {
-    let existing = studentCache.conn;
+  let lastError: unknown;
 
-    if (existing?.readyState === 2) {
-      try {
-        const connected = await existing.asPromise();
-        studentCache.conn = connected;
-        return connected;
-      } catch (error) {
-        logConnectionFailure("Student Operations", error);
-        if (studentCache.conn === existing) studentCache.conn = null;
-        try {
-          await existing.close();
-        } catch {
-          // Best-effort cleanup; preserve the original error.
-        }
-        existing = null;
-      }
-    }
+  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt += 1) {
+    let connection: Connection | null = null;
 
-    if (existing && existing.readyState !== 0) {
-      try {
-        await existing.close();
-      } catch {
-        // Best-effort cleanup before opening a replacement connection.
-      }
-      if (studentCache.conn === existing) studentCache.conn = null;
-    }
-
-    const next = mongoose.createConnection(uri, {
-      ...CONNECTION_OPTIONS,
-      dbName: databaseName,
-    });
     try {
-      const connected = await next.asPromise();
+      const existing = studentCache.conn;
+
+      if (existing && isConnectionConnected(existing)) {
+        return existing;
+      }
+
+      if (existing && existing.readyState === 2) {
+        try {
+          await existing.asPromise();
+          if (isConnectionConnected(existing)) return existing;
+        } catch (error) {
+          lastError = error;
+          if (!isRetryableConnectionError(error)) throw error;
+        }
+      }
+
+      if (existing && existing.readyState !== 0) {
+        await closeStudentConnection(existing);
+      }
+
+      if (studentCache.conn === existing) {
+        studentCache.conn = null;
+      }
+
+      connection = mongoose.createConnection(uri, {
+        ...CONNECTION_OPTIONS,
+        dbName: databaseName,
+      });
+
+      studentCache.conn = connection;
+
+      const connected = await connection.asPromise();
+
+      if (!isConnectionConnected(connected)) {
+        throw new Error(
+          "Student Operations MongoDB connection did not reach ready state.",
+        );
+      }
+
+      attachStudentConnectionListeners(connected);
       studentCache.conn = connected;
       return connected;
     } catch (error) {
-      if (studentCache.conn === next) studentCache.conn = null;
-      try {
-        await next.close();
-      } catch {
-        // Preserve the original connection error.
-      }
-      throw error;
-    }
-  })();
+      lastError = error;
 
+      if (connection) {
+        if (studentCache.conn === connection) {
+          studentCache.conn = null;
+        }
+
+        try {
+          await closeStudentConnection(connection);
+        } catch (cleanupError) {
+          logConnectionFailure(
+            "Student Operations retry cleanup",
+            cleanupError,
+          );
+        }
+      }
+
+      logConnectionFailure("Student Operations", error, attempt);
+
+      if (
+        attempt >= MAX_CONNECT_ATTEMPTS ||
+        !isRetryableConnectionError(error)
+      ) {
+        break;
+      }
+
+      await delay(getRetryDelay(attempt));
+    }
+  }
+
+  throw createSafeConnectionError("Student Operations", lastError);
+}
+
+export async function connectStudentDB(): Promise<Connection> {
+  const cached = studentCache.conn;
+
+  if (cached && isConnectionConnected(cached)) {
+    return cached;
+  }
+
+  if (studentCache.promise) {
+    return studentCache.promise;
+  }
+
+  const pending = connectStudentWithRetry();
   studentCache.promise = pending;
+
   try {
     return await pending;
-  } catch (error) {
-    logConnectionFailure("Student Operations", error);
-    throw new Error("Unable to connect to the Student Operations database.");
   } finally {
-    if (studentCache.promise === pending) studentCache.promise = null;
+    if (studentCache.promise === pending) {
+      studentCache.promise = null;
+    }
   }
 }
 
@@ -252,10 +494,11 @@ export function isDBConnected(): boolean {
 }
 
 export function isStudentDBConnected(): boolean {
-  return Boolean(studentCache.conn && isConnectionConnected(studentCache.conn));
+  return Boolean(
+    studentCache.conn && isConnectionConnected(studentCache.conn),
+  );
 }
 
-/** Mongoose readyState: 0 disconnected, 1 connected, 2 connecting, 3 disconnecting. */
 export function getDBState(): number {
   return mongoose.connection.readyState;
 }
@@ -264,28 +507,45 @@ export function getStudentDBState(): number {
   return studentCache.conn?.readyState ?? 0;
 }
 
-/** Controlled shutdown for tests/scripts only; never use in ordinary API routes. */
 export async function disconnectDB(): Promise<void> {
   const pendingConnections: Promise<unknown>[] = [];
+
   if (mainCache.promise) pendingConnections.push(mainCache.promise);
   if (studentCache.promise) pendingConnections.push(studentCache.promise);
+
   await Promise.allSettled(pendingConnections);
 
+  const mainConnection = mongoose.connection;
+  const studentConnection = studentCache.conn;
   const closeTasks: Promise<unknown>[] = [];
-  if (mongoose.connection.readyState !== 0) {
+
+  if (mainConnection.readyState !== 0) {
     closeTasks.push(mongoose.disconnect());
   }
-  const student = studentCache.conn;
-  if (student && student.readyState !== 0) closeTasks.push(student.close());
+
+  if (
+    studentConnection &&
+    studentConnection.readyState !== 0 &&
+    studentConnection !== mainConnection
+  ) {
+    closeTasks.push(studentConnection.close());
+  }
 
   const results = await Promise.allSettled(closeTasks);
+
   mainCache.conn = null;
   mainCache.promise = null;
   studentCache.conn = null;
   studentCache.promise = null;
 
-  const failure = results.find((result) => result.status === "rejected");
-  if (failure?.status === "rejected") throw failure.reason;
+  const failure = results.find(
+    (result): result is PromiseRejectedResult =>
+      result.status === "rejected",
+  );
+
+  if (failure) {
+    throw failure.reason;
+  }
 }
 
 export default connectDB;

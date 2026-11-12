@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "node:crypto";
 import mongoose from "mongoose";
-
+import { randomUUID } from "node:crypto";
 import connectDB from "@/lib/db";
 import StudentModel from "@/models/Student";
 import InternshipModel from "@/models/Internship";
@@ -16,20 +15,16 @@ import {
   selectInternship,
   type InternshipPlan,
 } from "@/services/internship.service";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
 const MAX_BODY_BYTES = 12_000;
-const NO_STORE_HEADERS = {
+const RESPONSE_HEADERS = {
   "Cache-Control": "private, no-store, no-cache, max-age=0, must-revalidate",
   Pragma: "no-cache",
   "X-Content-Type-Options": "nosniff",
-  "Referrer-Policy": "strict-origin-when-cross-origin",
   Vary: "Cookie",
 };
-
 type TokenPayload = {
   userId?: unknown;
   id?: unknown;
@@ -37,53 +32,17 @@ type TokenPayload = {
   role?: unknown;
   sessionType?: unknown;
 };
-
-type RequestBody = {
+type SelectionBody = {
   internshipId?: unknown;
-  planCode?: unknown;
   plan?: unknown;
-  dateOfBirth?: unknown;
-  startPreference?: unknown;
-};
-
-type AnyRecord = Record<string, unknown>;
-
-type RouteStudent = AnyRecord & {
-  _id?: unknown;
-  studentId?: unknown;
-  emailVerified?: unknown;
-  applicationStatus?: unknown;
-  adminApprovalStatus?: unknown;
-  assessmentStatus?: unknown;
-  resultStatus?: unknown;
-  internshipApplicationAllowed?: unknown;
-  loginEnabled?: unknown;
-  accountLocked?: unknown;
-  lockedUntil?: unknown;
-  internshipPlan?: unknown;
-  internshipTrack?: unknown;
-  paymentStatus?: unknown;
-  internshipStatus?: unknown;
-  dateOfBirth?: unknown;
-  assessmentDomain?: unknown;
-  selectedDomain?: unknown;
-  selectedInternshipDomain?: unknown;
-  domain?: unknown;
-};
-
-type PlanRecord = {
-  internshipId?: unknown;
   planCode?: unknown;
-  code?: unknown;
-  duration?: unknown;
-  durationMonths?: unknown;
-  price?: unknown;
-  priceInPaise?: unknown;
-  currency?: unknown;
+  track?: unknown;
+  internshipTrack?: unknown;
+  startPreference?: unknown;
+  dateOfBirth?: unknown;
 };
-
-type RouteInternship = AnyRecord & {
-  _id?: unknown;
+type InternshipRecord = {
+  _id: unknown;
   title?: unknown;
   name?: unknown;
   domain?: unknown;
@@ -95,241 +54,215 @@ type RouteInternship = AnyRecord & {
   priceInPaise?: unknown;
   currency?: unknown;
   status?: unknown;
-  isActive?: unknown;
   isPublic?: unknown;
   isSelectable?: unknown;
-  plans?: unknown;
+  startDate?: unknown;
+  endDate?: unknown;
 };
-
-class RequestBodyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RequestBodyError";
-  }
-}
-
-function cleanString(value: unknown, max = 200): string {
+class InvalidBodyError extends Error {}
+class OversizedBodyError extends Error {}
+function cleanString(value: unknown, maxLength = 200): string {
   if (typeof value !== "string") return "";
-  return value.replace(/\u0000/g, "").trim().slice(0, max);
+  return value
+    .replace(/\u0000/g, "")
+    .trim()
+    .slice(0, maxLength);
 }
-
-function normalizeStatus(value: unknown): string {
-  return cleanString(value, 80).toLowerCase().replace(/_/g, "-");
-}
-
-function normalizeDomain(value: unknown): string {
-  return cleanString(value, 180)
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, "");
-}
-
-function response(
-  body: Record<string, unknown>,
+function json(
+  data: Record<string, unknown>,
   status = 200,
   requestId?: string,
 ) {
-  return NextResponse.json(body, {
+  return NextResponse.json(data, {
     status,
     headers: {
-      ...NO_STORE_HEADERS,
+      ...RESPONSE_HEADERS,
       ...(requestId ? { "X-Request-Id": requestId } : {}),
     },
   });
 }
-
-function requestIdFor(request: NextRequest): string {
-  const incoming = cleanString(request.headers.get("x-request-id"), 128);
-  return /^[a-zA-Z0-9._:-]{8,128}$/.test(incoming)
-    ? incoming
-    : crypto.randomUUID();
+function getRequestId(request: NextRequest): string {
+  const value = cleanString(
+    request.headers.get("x-request-id"),
+    128,
+  );
+  return /^[a-zA-Z0-9._:-]{8,128}$/.test(value)
+    ? value
+    : randomUUID();
 }
-
-function trustedOrigin(request: NextRequest): boolean {
+function isTrustedOrigin(request: NextRequest): boolean {
   const origin = request.headers.get("origin");
-  // Some same-origin clients omit Origin. Authentication and server-side
-  // authorization remain mandatory in that case.
   if (!origin) return true;
-
   try {
     return new URL(origin).origin === new URL(request.url).origin;
   } catch {
     return false;
   }
 }
-
-async function readBody(request: NextRequest): Promise<RequestBody> {
+async function parseBody(
+  request: NextRequest,
+): Promise<SelectionBody> {
   const contentType = request.headers.get("content-type") || "";
   if (!contentType.toLowerCase().includes("application/json")) {
-    throw new RequestBodyError("Content-Type must be application/json.");
+    throw new InvalidBodyError("Content-Type must be application/json.");
   }
-
-  const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-    throw new RequestBodyError("Request body is too large.");
+  const length = Number(request.headers.get("content-length") || 0);
+  if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
+    throw new OversizedBodyError();
   }
-
-  const raw = await request.text();
-  if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) {
-    throw new RequestBodyError("Request body is too large.");
+  if (!request.body) {
+    throw new InvalidBodyError("Request body is required.");
   }
-
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        throw new OversizedBodyError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(decoder.decode(bytes));
   } catch {
-    throw new RequestBodyError("Request body contains invalid JSON.");
+    throw new InvalidBodyError("Request body contains invalid JSON.");
   }
-
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new RequestBodyError("A JSON object is required.");
+    throw new InvalidBodyError("A JSON object is required.");
   }
-
-  return parsed as RequestBody;
+  const allowed = new Set([
+    "internshipId",
+    "plan",
+    "planCode",
+    "track",
+    "internshipTrack",
+    "startPreference",
+    "dateOfBirth",
+  ]);
+  if (Object.keys(parsed as Record<string, unknown>).some((key) => !allowed.has(key))) {
+    throw new InvalidBodyError("The request contains unsupported fields.");
+  }
+  return parsed as SelectionBody;
 }
-
-async function authenticateStudent(
+async function authenticateMainStudent(
   request: NextRequest,
 ): Promise<{ userId: string } | null> {
-  const tokens = [
+  const candidates = [
     request.cookies.get(STUDENT_AUTH_COOKIE_NAME)?.value,
     request.cookies.get(AUTH_COOKIE_NAME)?.value,
   ].filter((token): token is string => Boolean(token?.trim()));
-
-  for (const token of tokens) {
+  for (const token of candidates) {
     try {
       const payload = await verifyAccessToken(token);
       if (!payload || typeof payload !== "object") continue;
-
       const claims = payload as TokenPayload;
       const userId = cleanString(
         claims.userId ?? claims.id ?? claims.identifier,
         254,
       );
-      const role = cleanString(claims.role, 40).toLowerCase();
-      const sessionType = cleanString(claims.sessionType, 60).toLowerCase();
-
+      const role = cleanString(claims.role).toLowerCase();
+      const sessionType = cleanString(claims.sessionType).toLowerCase();
       if (!userId || role !== "student") continue;
-      if (sessionType === "admin" || sessionType === "student-dashboard") continue;
-      if (sessionType && !["student", "legacy"].includes(sessionType)) continue;
-
+      if (
+        sessionType === "admin" ||
+        sessionType === "student-dashboard"
+      ) {
+        continue;
+      }
+      if (
+        sessionType &&
+        sessionType !== "student" &&
+        sessionType !== "legacy"
+      ) {
+        continue;
+      }
       return { userId };
     } catch {
-      // Never return token details to the caller.
     }
   }
-
   return null;
 }
-
-async function findStudent(userId: string): Promise<RouteStudent | null> {
-  const fields =
-    "studentId email emailVerified applicationStatus adminApprovalStatus " +
-    "assessmentStatus resultStatus internshipApplicationAllowed loginEnabled " +
-    "accountLocked lockedUntil internshipPlan internshipTrack paymentStatus " +
-    "internshipStatus dateOfBirth assessmentDomain selectedDomain " +
-    "selectedInternshipDomain domain";
-
+async function findMainStudent(userId: string) {
   if (mongoose.isValidObjectId(userId)) {
     const byObjectId = await StudentModel.findById(userId)
-      .select(fields)
+      .select(
+        "studentId email emailVerified applicationStatus adminApprovalStatus " +
+          "assessmentStatus resultStatus internshipApplicationAllowed " +
+          "loginEnabled accountLocked lockedUntil internshipPlan internshipTrack " +
+          "selectedInternshipDomain internshipDomain assessmentDomain selectedDomain " +
+          "paymentStatus internshipStatus dateOfBirth razorpayOrderId",
+      )
       .lean()
       .exec();
-    if (byObjectId) return byObjectId as RouteStudent;
+    if (byObjectId) return byObjectId;
   }
-
-  const byStudentId = await StudentModel.findOne({ studentId: userId })
-    .select(fields)
+  return StudentModel.findOne({ studentId: userId })
+    .select(
+      "studentId email emailVerified applicationStatus adminApprovalStatus " +
+        "assessmentStatus resultStatus internshipApplicationAllowed " +
+        "loginEnabled accountLocked lockedUntil internshipPlan internshipTrack " +
+        "selectedInternshipDomain internshipDomain assessmentDomain selectedDomain " +
+        "paymentStatus internshipStatus dateOfBirth razorpayOrderId",
+    )
     .lean()
     .exec();
-
-  return (byStudentId as RouteStudent | null) ?? null;
 }
-
-function assignedStudentDomain(student: RouteStudent): string {
+function normalizeStatus(value: unknown): string {
+  return cleanString(value, 80).toLowerCase().replace(/_/g, "-");
+}
+function normalizeDomain(value: unknown): string {
+  let normalized = cleanString(value, 180)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const suffix = /\s+(developer|development|engineer|engineering)$/i;
+  while (suffix.test(normalized)) normalized = normalized.replace(suffix, "").trim();
+  return normalized.replace(/\s+/g, " ");
+}
+function getAssignedStudentDomain(student: Record<string, unknown>): string {
   return (
-    cleanString(student.selectedInternshipDomain, 180) ||
-    cleanString(student.assessmentDomain, 180) ||
     cleanString(student.internshipTrack, 180) ||
-    cleanString(student.selectedDomain, 180) ||
-    cleanString(student.domain, 180)
+    cleanString(student.selectedInternshipDomain, 180) ||
+    cleanString(student.internshipDomain, 180) ||
+    cleanString(student.assessmentDomain, 180) ||
+    cleanString(student.selectedDomain, 180)
   );
 }
-
-function validDob(value: string): Date | null {
+function isValidDateOfBirth(value: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const date = new Date(`${value}T00:00:00.000Z`);
-  if (
-    !Number.isFinite(date.getTime()) ||
-    date.toISOString().slice(0, 10) !== value ||
-    date.getTime() > Date.now()
-  ) {
-    return null;
-  }
-
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
   const now = new Date();
   let age = now.getUTCFullYear() - date.getUTCFullYear();
   if (
     now.getUTCMonth() < date.getUTCMonth() ||
-    (now.getUTCMonth() === date.getUTCMonth() &&
-      now.getUTCDate() < date.getUTCDate())
-  ) {
-    age -= 1;
-  }
-  return age >= 13 && age <= 100 ? date : null;
+    (now.getUTCMonth() === date.getUTCMonth() && now.getUTCDate() < date.getUTCDate())
+  ) age -= 1;
+  return age >= 13 && age <= 100 && date.getTime() <= now.getTime() ? date : null;
 }
-
-function normalizedPlanCode(value: unknown): string {
-  return cleanString(value, 50).toUpperCase().replace(/[\s-]+/g, "_");
-}
-
-function findMatchingPlan(
-  internship: RouteInternship,
-  requestedPlan: string,
-  internshipId: string,
-): PlanRecord | null {
-  if (Array.isArray(internship.plans)) {
-    for (const item of internship.plans) {
-      if (!item || typeof item !== "object") continue;
-      const plan = item as PlanRecord;
-      if (normalizedPlanCode(plan.planCode ?? plan.code) === requestedPlan) {
-        return { ...plan, internshipId: cleanString(plan.internshipId, 100) || internshipId };
-      }
-    }
-  }
-
-  // Legacy schema support: a program may store one plan at the document root.
-  if (normalizedPlanCode(internship.planCode) === requestedPlan) {
-    return {
-      internshipId,
-      planCode: internship.planCode,
-      duration: internship.duration,
-      durationMonths: internship.durationMonths,
-      price: internship.price,
-      priceInPaise: internship.priceInPaise,
-      currency: internship.currency,
-    };
-  }
-
-  return null;
-}
-
-function planAmountPaise(planRecord: PlanRecord): number | null {
-  const paise = Number(planRecord.priceInPaise);
-  if (Number.isFinite(paise) && paise >= 0) return Math.round(paise);
-
-  const price = Number(planRecord.price);
-  if (Number.isFinite(price) && price >= 0) return Math.round(price * 100);
-
-  return null;
-}
-
 export async function POST(request: NextRequest) {
-  const requestId = requestIdFor(request);
-
+  const requestId = getRequestId(request);
   try {
-    if (!trustedOrigin(request)) {
-      return response(
+    if (!isTrustedOrigin(request)) {
+      return json(
         {
           success: false,
           code: "UNTRUSTED_ORIGIN",
@@ -339,10 +272,9 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
-
-    const auth = await authenticateStudent(request);
-    if (!auth) {
-      return response(
+    const authenticated = await authenticateMainStudent(request);
+    if (!authenticated) {
+      return json(
         {
           success: false,
           code: "STUDENT_AUTH_REQUIRED",
@@ -352,27 +284,16 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
-
-    const body = await readBody(request);
+    const body = await parseBody(request);
+    const requestedPlan = cleanString(
+      body.planCode ?? body.plan,
+      50,
+    ).toUpperCase().replace(/[\s-]+/g, "_");
     const internshipId = cleanString(body.internshipId, 100);
-    const planCode = normalizedPlanCode(body.planCode ?? body.plan);
     const dateOfBirth = cleanString(body.dateOfBirth, 20);
     const startPreference = cleanString(body.startPreference, 100);
-
-    if (!internshipId || !mongoose.isValidObjectId(internshipId)) {
-      return response(
-        {
-          success: false,
-          code: "INVALID_INTERNSHIP_ID",
-          message: "Choose a valid internship program.",
-        },
-        400,
-        requestId,
-      );
-    }
-
-    if (!planCode || !isValidInternshipPlan(planCode)) {
-      return response(
+    if (!requestedPlan || !isValidInternshipPlan(requestedPlan)) {
+      return json(
         {
           success: false,
           code: "INVALID_INTERNSHIP_PLAN",
@@ -382,25 +303,10 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
-
-    const dob = validDob(dateOfBirth);
-    if (!dob) {
-      return response(
-        {
-          success: false,
-          code: "INVALID_DATE_OF_BIRTH",
-          message: "Enter a valid date of birth.",
-        },
-        400,
-        requestId,
-      );
-    }
-
     await connectDB();
-
-    const student = await findStudent(auth.userId);
+    const student = await findMainStudent(authenticated.userId);
     if (!student || !cleanString(student.studentId, 100)) {
-      return response(
+      return json(
         {
           success: false,
           code: "STUDENT_NOT_FOUND",
@@ -410,265 +316,388 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
-
     if (student.accountLocked === true) {
-      return response(
-        { success: false, code: "ACCOUNT_LOCKED", message: "Your account is locked. Please contact support." },
+      return json(
+        {
+          success: false,
+          code: "ACCOUNT_LOCKED",
+          message: "Your account is locked. Please contact support.",
+        },
         403,
         requestId,
       );
     }
-
     if (student.loginEnabled === false) {
-      return response(
-        { success: false, code: "STUDENT_LOGIN_DISABLED", message: "Your student login is currently disabled." },
+      return json(
+        {
+          success: false,
+          code: "STUDENT_LOGIN_DISABLED",
+          message: "Your student login is currently disabled.",
+        },
         403,
         requestId,
       );
     }
-
     if (student.emailVerified !== true) {
-      return response(
-        { success: false, code: "EMAIL_VERIFICATION_REQUIRED", message: "Verify your email before selecting an internship." },
+      return json(
+        {
+          success: false,
+          code: "EMAIL_VERIFICATION_REQUIRED",
+          message: "Verify your email before selecting an internship.",
+        },
         403,
         requestId,
       );
     }
-
     const applicationApproved =
       normalizeStatus(student.applicationStatus) === "approved" ||
       normalizeStatus(student.adminApprovalStatus) === "approved";
-
     if (!applicationApproved) {
-      return response(
-        { success: false, code: "APPLICATION_NOT_APPROVED", message: "Main Admin approval is required first." },
+      return json(
+        {
+          success: false,
+          code: "APPLICATION_NOT_APPROVED",
+          message: "Main Admin approval is required first.",
+        },
         403,
         requestId,
       );
     }
-
     const assessmentPassed =
       normalizeStatus(student.assessmentStatus) === "passed" &&
       normalizeStatus(student.resultStatus) === "passed";
-
     if (!assessmentPassed) {
-      return response(
-        { success: false, code: "ASSESSMENT_NOT_PASSED", message: "Pass the main assessment before selecting an internship." },
+      return json(
+        {
+          success: false,
+          code: "ASSESSMENT_NOT_PASSED",
+          message: "Pass the main assessment before selecting an internship.",
+        },
         403,
         requestId,
       );
     }
-
     if (student.internshipApplicationAllowed !== true) {
-      return response(
-        { success: false, code: "INTERNSHIP_SELECTION_NOT_ALLOWED", message: "Internship selection is not enabled for your account." },
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_SELECTION_NOT_ALLOWED",
+          message: "Internship selection is not enabled for your account.",
+        },
         403,
         requestId,
       );
     }
-
-    const plan = getInternshipPlan(planCode);
+    const plan = getInternshipPlan(requestedPlan);
     if (!plan) {
-      return response(
-        { success: false, code: "PLAN_NOT_AVAILABLE", message: "The selected internship plan is unavailable." },
+      return json(
+        {
+          success: false,
+          code: "PLAN_NOT_AVAILABLE",
+          message: "The selected internship plan is unavailable.",
+        },
         400,
         requestId,
       );
     }
-
-    const internship = (await InternshipModel.findById(internshipId)
+    if (!mongoose.isValidObjectId(internshipId)) {
+      return json(
+        {
+          success: false,
+          code: "INVALID_INTERNSHIP_ID",
+          message: "Choose a valid internship program.",
+        },
+        400,
+        requestId,
+      );
+    }
+    const internship = await InternshipModel.findById(internshipId)
       .select(
         "_id title name domain assessmentDomain planCode duration durationMonths " +
-          "price priceInPaise currency status isActive isPublic isSelectable plans",
+          "price priceInPaise currency status isPublic isSelectable startDate endDate",
       )
       .lean()
-      .exec()) as RouteInternship | null;
-
+      .exec() as InternshipRecord | null;
     if (!internship) {
-      return response(
-        { success: false, code: "INTERNSHIP_NOT_FOUND", message: "The selected internship program was not found." },
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_NOT_FOUND",
+          message: "The selected internship program was not found.",
+        },
         404,
         requestId,
       );
     }
-
-    const internshipStatus = normalizeStatus(internship.status);
     if (
-      (internshipStatus && internshipStatus !== "active") ||
-      internship.isActive === false ||
+      normalizeStatus(internship.status) !== "active" ||
       internship.isPublic === false ||
       internship.isSelectable === false
     ) {
-      return response(
-        { success: false, code: "INTERNSHIP_UNAVAILABLE", message: "This internship program is not currently available." },
-        409,
-        requestId,
-      );
-    }
-
-    const studentDomain = assignedStudentDomain(student);
-    const programDomain =
-      cleanString(internship.domain, 180) ||
-      cleanString(internship.assessmentDomain, 180);
-
-    if (!studentDomain) {
-      return response(
-        { success: false, code: "STUDENT_DOMAIN_NOT_ASSIGNED", message: "Your internship domain is not assigned. Contact Student Operations." },
-        403,
-        requestId,
-      );
-    }
-
-    if (!programDomain || normalizeDomain(studentDomain) !== normalizeDomain(programDomain)) {
-      return response(
-        { success: false, code: "DOMAIN_MISMATCH", message: "This internship does not belong to your assigned assessment domain." },
-        403,
-        requestId,
-      );
-    }
-
-    const databasePlan = findMatchingPlan(internship, planCode, internshipId);
-    if (!databasePlan) {
-      return response(
-        { success: false, code: "PLAN_NOT_CONFIGURED", message: "This duration is not configured for the selected internship." },
-        409,
-        requestId,
-      );
-    }
-
-    const databaseMonths = Number(databasePlan.durationMonths);
-    const databaseCurrency = cleanString(databasePlan.currency ?? internship.currency, 8).toUpperCase() || "INR";
-    const databasePaise = planAmountPaise(databasePlan);
-
-    if (
-      databaseMonths !== plan.durationMonths ||
-      databaseCurrency !== plan.currency ||
-      databasePaise === null ||
-      databasePaise !== plan.amountInPaise
-    ) {
-      console.error("[STUDENT INTERNSHIP SELECT] Plan configuration mismatch", {
-        requestId,
-        internshipId,
-        planCode,
-      });
-      return response(
-        { success: false, code: "PLAN_CONFIGURATION_MISMATCH", message: "This plan is temporarily unavailable. Please contact support." },
-        409,
-        requestId,
-      );
-    }
-
-    const paymentStatus = normalizeStatus(student.paymentStatus);
-    const currentInternshipStatus = normalizeStatus(student.internshipStatus);
-    const completedOrInProgress = [
-      "paid",
-      "payment-completed",
-      "approved",
-      "active",
-      "completed",
-      "pending-review",
-      "under-review",
-    ].includes(paymentStatus) || [
-      "payment-completed",
-      "approved",
-      "active",
-      "completed",
-      "pending-review",
-      "under-review",
-    ].includes(currentInternshipStatus);
-
-    if (completedOrInProgress) {
-      return response(
+      return json(
         {
           success: false,
-          code: "INTERNSHIP_ALREADY_SELECTED",
-          message: "Your internship selection or payment is already in progress. Open your internship status instead.",
+          code: "INTERNSHIP_UNAVAILABLE",
+          message: "This internship program is not currently available.",
         },
         409,
         requestId,
       );
     }
-
-    const existingPlan = normalizedPlanCode(student.internshipPlan);
-    const existingTrack = cleanString(student.internshipTrack, 180);
-    const pendingPayment = ["pending", "created", "initiated", "unpaid"].includes(paymentStatus) &&
-      ["payment-pending", "selected", "pending-payment"].includes(currentInternshipStatus);
-
-    if (pendingPayment) {
-      if (
-        existingPlan === planCode &&
-        normalizeDomain(existingTrack) === normalizeDomain(programDomain)
-      ) {
-        return response(
-          {
-            success: true,
-            code: "INTERNSHIP_SELECTION_EXISTS",
-            message: "Your selection is already saved. Continue to secure payment.",
-            data: {
-              internshipId,
-              plan: {
-                code: plan.code,
-                name: plan.name,
-                durationMonths: plan.durationMonths,
-                durationDays: plan.durationDays,
-                amount: plan.amount,
-                currency: plan.currency,
-                amountInPaise: plan.amountInPaise,
-              },
-              paymentStatus: "pending",
-              dashboardStatus: "locked",
-              dashboardLoginEnabled: false,
-              nextStep: "PAYMENT",
-            },
-          },
-          200,
-          requestId,
-        );
-      }
-
-      return response(
-        { success: false, code: "PENDING_SELECTION_EXISTS", message: "You already have a pending selection. Continue or resolve that payment before changing plans." },
+    const storedPlanCode = cleanString(internship.planCode, 50)
+      .toUpperCase()
+      .replace(/[\s-]+/g, "_");
+    const storedMonths = Number(internship.durationMonths);
+    const storedCurrency = cleanString(internship.currency, 8).toUpperCase() || "INR";
+    const storedPrice = Number(internship.price);
+    const storedPriceInPaise = Number(internship.priceInPaise);
+    const authoritativePaise =
+      Number.isFinite(storedPriceInPaise) && storedPriceInPaise > 0
+        ? storedPriceInPaise
+        : Number.isFinite(storedPrice) && storedPrice > 0
+          ? Math.round(storedPrice * 100)
+          : null;
+    if (
+      storedPlanCode !== requestedPlan ||
+      storedMonths !== plan.durationMonths ||
+      storedCurrency !== plan.currency ||
+      authoritativePaise === null ||
+      authoritativePaise !== plan.amountInPaise
+    ) {
+      console.error("[STUDENT INTERNSHIP SELECT] Internship plan configuration mismatch", {
+        requestId,
+        internshipId,
+        requestedPlan,
+      });
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_PLAN_CONFIGURATION_MISMATCH",
+          message: "This plan is temporarily unavailable. Please contact support.",
+        },
         409,
         requestId,
       );
     }
-
-    const result = await selectInternship({
-      studentId: cleanString(student.studentId, 100),
-      plan: planCode as InternshipPlan,
-      track: programDomain,
-      ...(startPreference ? { startPreference } : {}),
-    });
-
-    if (!result.success) {
-      const code = cleanString(result.code, 100) || "INTERNSHIP_SELECTION_FAILED";
-      const httpStatus =
-        code.includes("NOT_FOUND") ? 404 :
-        code.includes("ELIGIBLE") || code.includes("APPROVAL") || code.includes("ASSESSMENT") ? 403 :
-        code.includes("ALREADY") || code.includes("PENDING") ? 409 : 422;
-
-      return response(
-        { success: false, code, message: result.message || "Internship selection could not be completed." },
-        httpStatus,
+    const track = cleanString(internship.domain, 150) ||
+      cleanString(internship.assessmentDomain, 150);
+    if (!track) {
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_DOMAIN_MISSING",
+          message: "This internship is not configured correctly. Please contact support.",
+        },
+        503,
         requestId,
       );
     }
-
-    await StudentModel.updateOne(
-      { _id: student._id },
-      { $set: { dateOfBirth: dob } },
-    ).exec();
-
-    return response(
+    const assignedDomain = getAssignedStudentDomain(student as unknown as Record<string, unknown>);
+    if (!assignedDomain || normalizeDomain(assignedDomain) !== normalizeDomain(track)) {
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_DOMAIN_MISMATCH",
+          message: "You can only select an internship matching your assigned assessment domain.",
+        },
+        403,
+        requestId,
+      );
+    }
+    const dobDate = isValidDateOfBirth(dateOfBirth);
+    if (!dobDate) {
+      return json(
+        {
+          success: false,
+          code: "INVALID_DATE_OF_BIRTH",
+          message: "Enter a valid date of birth. The allowed age range is 13 to 100 years.",
+        },
+        400,
+        requestId,
+      );
+    }
+    const storedDobValue = student.dateOfBirth;
+    const storedDob =
+      typeof storedDobValue === "string" || typeof storedDobValue === "number" ||
+      storedDobValue instanceof Date
+        ? new Date(storedDobValue)
+        : null;
+    if (
+      storedDob &&
+      Number.isFinite(storedDob.getTime()) &&
+      storedDob.toISOString().slice(0, 10) !== dateOfBirth
+    ) {
+      return json(
+        {
+          success: false,
+          code: "DATE_OF_BIRTH_MISMATCH",
+          message: "The date of birth does not match your verified student profile. Contact support to correct it.",
+        },
+        409,
+        requestId,
+      );
+    }
+    const existingPaymentStatus = normalizeStatus(student.paymentStatus);
+    const existingInternshipStatus = normalizeStatus(student.internshipStatus);
+    if (
+      existingPaymentStatus === "paid" ||
+      [
+        "payment-completed",
+        "approved",
+        "active",
+        "completed",
+        "pending-review",
+        "under-review",
+      ].includes(existingInternshipStatus)
+    ) {
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_ALREADY_SELECTED",
+          message:
+            "Your internship selection or payment is already in progress. " +
+            "Please open your internship status instead of creating another selection.",
+        },
+        409,
+        requestId,
+      );
+    }
+    const existingPlan = cleanString(student.internshipPlan, 50)
+      .toUpperCase()
+      .replace(/[\s-]+/g, "_");
+    const existingTrack = cleanString(student.internshipTrack, 150);
+    const terminalPaymentState =
+      ["failed", "cancelled", "canceled", "expired"].includes(existingPaymentStatus) ||
+      [
+        "payment-failed",
+        "payment-cancelled",
+        "payment-canceled",
+        "payment-expired",
+        "cancelled",
+        "canceled",
+        "expired",
+      ].includes(existingInternshipStatus);
+    const hasPendingSelection =
+      ["pending", "created", "initiated", "unpaid"].includes(existingPaymentStatus) &&
+      ["payment-pending", "selected", "pending-payment"].includes(existingInternshipStatus) &&
+      Boolean(existingPlan || existingTrack);
+    if (
+      hasPendingSelection &&
+      existingPlan === requestedPlan &&
+      existingTrack.toLowerCase() === track.toLowerCase()
+    ) {
+      return json(
+        {
+          success: true,
+          code: "INTERNSHIP_SELECTION_EXISTS",
+          message: "Your selection is already saved. Continue to secure payment.",
+          data: {
+            internshipId,
+            plan: {
+              code: plan.code,
+              name: plan.name,
+              durationMonths: plan.durationMonths,
+              durationDays: plan.durationDays,
+              amount: plan.amount,
+              currency: plan.currency,
+              amountInPaise: plan.amountInPaise,
+            },
+            paymentStatus: "pending",
+            dashboardStatus: "locked",
+            dashboardLoginEnabled: false,
+            nextStep: "PAYMENT",
+          },
+        },
+        200,
+        requestId,
+      );
+    }
+    if (
+      hasPendingSelection &&
+      cleanString(student.razorpayOrderId, 100) &&
+      !terminalPaymentState
+    ) {
+      return json(
+        {
+          success: false,
+          code: "PAYMENT_ORDER_ALREADY_CREATED",
+          message:
+            "A payment attempt is still unresolved. Retry the same selection or wait until the payment is marked failed, cancelled, or expired.",
+          data: {
+            paymentStatus: existingPaymentStatus,
+            dashboardStatus: "locked",
+            dashboardLoginEnabled: false,
+          },
+        },
+        409,
+        requestId,
+      );
+    }
+    if (terminalPaymentState && cleanString(student.razorpayOrderId, 100)) {
+      await StudentModel.updateOne(
+        { _id: (student as { _id?: unknown })._id },
+        { $unset: { razorpayOrderId: 1 } },
+      ).exec();
+    }
+    const result = await selectInternship({
+      studentId: cleanString(student.studentId, 100),
+      plan: requestedPlan as InternshipPlan,
+      track,
+      ...(startPreference ? { startPreference } : {}),
+    });
+    if (!result.success) {
+      const failureCode = cleanString(result.code, 100);
+      const statusCode =
+        failureCode.includes("NOT_FOUND")
+          ? 404
+          : failureCode.includes("ELIGIBLE") ||
+              failureCode.includes("APPROVAL") ||
+              failureCode.includes("ASSESSMENT")
+            ? 403
+            : 422;
+      return json(
+        {
+          success: false,
+          code: failureCode || "INTERNSHIP_SELECTION_FAILED",
+          message:
+            result.message ||
+            "Internship selection could not be completed.",
+        },
+        statusCode,
+        requestId,
+      );
+    }
+    if (!storedDob) {
+      const dobUpdate = await StudentModel.updateOne(
+        {
+          _id: (student as { _id?: unknown })._id,
+          dateOfBirth: { $in: [null, undefined] },
+        },
+        { $set: { dateOfBirth: dobDate } },
+      ).exec();
+      if (Number(dobUpdate.matchedCount ?? 0) !== 1) {
+        return json(
+          {
+            success: false,
+            code: "DATE_OF_BIRTH_UPDATE_CONFLICT",
+            message: "Your profile changed while saving your date of birth. Refresh and try again.",
+          },
+          409,
+          requestId,
+        );
+      }
+    }
+    return json(
       {
         success: true,
         code: "INTERNSHIP_SELECTED",
-        message: "Internship selected successfully. Continue to secure payment.",
+        message:
+          "Internship selected successfully. Continue to secure payment.",
         data: {
-          ...(result.data && typeof result.data === "object" ? result.data : {}),
+          ...(result.data && typeof result.data === "object"
+            ? result.data
+            : {}),
           internshipId,
-          internshipTitle: cleanString(internship.title ?? internship.name, 200),
-          internshipDomain: programDomain,
           plan: {
             code: plan.code,
             name: plan.name,
@@ -688,47 +717,80 @@ export async function POST(request: NextRequest) {
       requestId,
     );
   } catch (error) {
-    if (error instanceof RequestBodyError) {
-      const tooLarge = error.message === "Request body is too large.";
-      return response(
+    if (error instanceof OversizedBodyError) {
+      return json(
         {
           success: false,
-          code: tooLarge ? "REQUEST_TOO_LARGE" : "INVALID_REQUEST_BODY",
-          message: error.message,
+          code: "REQUEST_TOO_LARGE",
+          message: "Request body is too large.",
         },
-        tooLarge ? 413 : 400,
+        413,
         requestId,
       );
     }
-
+    if (error instanceof InvalidBodyError) {
+      return json(
+        {
+          success: false,
+          code: "INVALID_REQUEST_BODY",
+          message: error.message,
+        },
+        400,
+        requestId,
+      );
+    }
     console.error("[STUDENT INTERNSHIP SELECT API]", {
       requestId,
       error: error instanceof Error ? error.message : "Unknown server error",
     });
-
-    return response(
-      { success: false, code: "INTERNAL_SERVER_ERROR", message: "Unable to select this internship right now." },
+    return json(
+      {
+        success: false,
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Unable to select this internship right now.",
+      },
       500,
       requestId,
     );
   }
 }
-
 export async function GET() {
-  return response(
-    { success: false, code: "METHOD_NOT_ALLOWED", message: "Use POST to select an internship." },
+  return json(
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Use POST to select an internship.",
+    },
     405,
   );
 }
-
 export async function PUT() {
-  return response({ success: false, code: "METHOD_NOT_ALLOWED", message: "Method not allowed." }, 405);
+  return json(
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Method not allowed.",
+    },
+    405,
+  );
 }
-
 export async function PATCH() {
-  return response({ success: false, code: "METHOD_NOT_ALLOWED", message: "Method not allowed." }, 405);
+  return json(
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Method not allowed.",
+    },
+    405,
+  );
 }
-
 export async function DELETE() {
-  return response({ success: false, code: "METHOD_NOT_ALLOWED", message: "Method not allowed." }, 405);
+  return json(
+    {
+      success: false,
+      code: "METHOD_NOT_ALLOWED",
+      message: "Method not allowed.",
+    },
+    405,
+  );
 }

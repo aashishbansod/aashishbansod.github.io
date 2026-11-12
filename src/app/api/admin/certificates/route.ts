@@ -1,1765 +1,643 @@
 import { NextResponse } from "next/server";
+import mongoose from "mongoose";
 
-import mongoose, {
-
-  type Model,
-
-  type Document,
-
-  Schema,
-
-} from "mongoose";
-
-import { connectDB } from "@/lib/db";
-
+import { connectDB, connectStudentDB } from "@/lib/db";
 import {
-
   AUTH_COOKIE_NAME,
-
   verifyAccessToken,
-
   verifyAuthToken,
-
 } from "@/lib/auth";
-
 import AdminModel from "@/models/Admin";
+import { getStudentOperationsModel } from "@/models/StudentOperations";
 
 export const runtime = "nodejs";
-
 export const dynamic = "force-dynamic";
-
 export const revalidate = 0;
 
-type CertificateStatus = "issued" | "pending" | "revoked" | "expired";
-
-interface ICertificate extends Document {
-
-  certificateId: string;
-
-  studentName: string;
-
-  studentId: string;
-
-  email: string;
-
-  internship: string;
-
-  course?: string;
-
-  issueDate?: Date;
-
-  expiryDate?: Date;
-
-  status: CertificateStatus;
-
-  verificationUrl?: string;
-
-  createdAt: Date;
-
-  updatedAt: Date;
-
-}
-
-const certificateSchema = new Schema<ICertificate>(
-
-  {
-
-    certificateId: {
-
-      type: String,
-
-      required: true,
-
-      unique: true,
-
-      trim: true,
-
-      uppercase: true,
-
-      minlength: 4,
-
-      maxlength: 100,
-
-    },
-
-    studentName: {
-
-      type: String,
-
-      required: true,
-
-      trim: true,
-
-      maxlength: 150,
-
-    },
-
-    studentId: {
-
-      type: String,
-
-      required: true,
-
-      trim: true,
-
-      maxlength: 100,
-
-    },
-
-    email: {
-
-      type: String,
-
-      required: true,
-
-      trim: true,
-
-      lowercase: true,
-
-      maxlength: 254,
-
-    },
-
-    internship: {
-
-      type: String,
-
-      required: true,
-
-      trim: true,
-
-      maxlength: 150,
-
-    },
-
-    course: {
-
-      type: String,
-
-      trim: true,
-
-      maxlength: 150,
-
-    },
-
-    issueDate: {
-
-      type: Date,
-
-    },
-
-    expiryDate: {
-
-      type: Date,
-
-    },
-
-    status: {
-
-      type: String,
-
-      enum: ["issued", "pending", "revoked", "expired"],
-
-      default: "issued",
-
-    },
-
-    verificationUrl: {
-
-      type: String,
-
-      trim: true,
-
-      maxlength: 1000,
-
-    },
-
-  },
-
-  {
-
-    timestamps: true,
-
-    versionKey: false,
-
-    collection: "certificates",
-
-  },
-
-);
-
-certificateSchema.index({ certificateId: 1 }, { unique: true });
-
-certificateSchema.index({ studentId: 1, createdAt: -1 });
-
-certificateSchema.index({ email: 1, createdAt: -1 });
-
-certificateSchema.index({ status: 1, createdAt: -1 });
-
-certificateSchema.index({ createdAt: -1 });
-
-const Certificate: Model<ICertificate> =
-
-  mongoose.models.Certificate ||
-
-  mongoose.model<ICertificate>("Certificate", certificateSchema);
+const MAX_SEARCH_LENGTH = 120;
+const MAX_PAGE_SIZE = 100;
+const MAX_PAGE_NUMBER = 100_000;
+const QUERY_TIMEOUT_MS = 10_000;
+
+type CertificateStatus = "issued" | "pending" | "revoked" | "expired" | "unknown" | "all";
 
 type AdminAuth = {
-
   userId: string;
-
   role: string;
-
   email?: string;
-
 };
 
-function json(data: unknown, status = 200) {
+type AdminRecord = {
+  _id: mongoose.Types.ObjectId;
+  adminId?: string;
+  email?: string;
+  role?: string;
+  isActive?: boolean;
+  active?: boolean;
+};
 
+type StudentOperationsCertificateRecord = {
+  _id: mongoose.Types.ObjectId;
+  mainStudentId?: string;
+  applicationId?: string;
+  studentId?: string;
+  dashboardStudentId?: string;
+  fullName?: string;
+  email?: string;
+  internshipTrack?: string;
+  internshipPlan?: string;
+  internshipDurationDays?: number;
+  certificateStatus?: string;
+  certificateId?: string;
+  certificateGeneratedAt?: Date | string | null;
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+};
+
+type JsonRecord = Record<string, unknown>;
+
+class RouteError extends Error {
+  status: number;
+  code: string;
+
+  constructor(message: string, status: number, code: string) {
+    super(message);
+    this.name = "RouteError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function json(data: unknown, status = 200): NextResponse {
   return NextResponse.json(data, {
-
     status,
-
     headers: {
-
-      "Cache-Control": "no-store, no-cache, must-revalidate",
-
+      "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
       Pragma: "no-cache",
-
       Expires: "0",
-
+      Vary: "Cookie, Authorization",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     },
-
   });
-
 }
 
-function cleanString(value: unknown): string {
-
-  return typeof value === "string" ? value.trim() : "";
-
+function cleanString(value: unknown, maxLength = 200): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\u0000/g, "").trim().slice(0, maxLength);
 }
 
-function optionalString(value: unknown): string | undefined {
-
-  const result = cleanString(value);
-
-  return result || undefined;
-
-}
-
-function parseDate(value: unknown): Date | undefined {
-
-  if (value === undefined || value === null || value === "") return undefined;
-
-  const date = value instanceof Date ? value : new Date(String(value));
-
-  return Number.isNaN(date.getTime()) ? undefined : date;
-
-}
-
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function isValidObjectId(value: string) {
-
-  return mongoose.Types.ObjectId.isValid(value);
-
-}
-
-function isValidStatus(value: unknown): value is CertificateStatus {
-
-  return (
-
-    value === "issued" ||
-
-    value === "pending" ||
-
-    value === "revoked" ||
-
-    value === "expired"
-
-  );
-
-}
-
-function serializeCertificate(certificate: ICertificate) {
-
-  return {
-
-    id: certificate._id.toString(),
-
-    certificateId: certificate.certificateId,
-
-    studentName: certificate.studentName,
-
-    studentId: certificate.studentId,
-
-    email: certificate.email,
-
-    internship: certificate.internship,
-
-    course: certificate.course,
-
-    issueDate: certificate.issueDate?.toISOString(),
-
-    expiryDate: certificate.expiryDate?.toISOString(),
-
-    status: certificate.status,
-
-    verificationUrl: certificate.verificationUrl,
-
-    createdAt: certificate.createdAt?.toISOString(),
-
-    updatedAt: certificate.updatedAt?.toISOString(),
-
-  };
-
-}
-
-function errorMessage(error: unknown) {
-
-  return error instanceof Error ? error.message : "Unknown error";
-
-}
-
-/**
- * Admin authentication.
- *
- * Uses the project's existing auth helpers and Admin model.
- * No database credentials are hardcoded in this route.
- */
-
-function toRecord(value: unknown): Record<string, unknown> | null {
+function toRecord(value: unknown): JsonRecord | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
 
-  return value as Record<string, unknown>;
+  return value as JsonRecord;
+}
+
+function isValidObjectId(value: string): boolean {
+  return mongoose.Types.ObjectId.isValid(value);
+}
+
+function getCookieToken(request: Request): string {
+  const cookieHeader = request.headers.get("cookie") || "";
+  const prefix = `${AUTH_COOKIE_NAME}=`;
+
+  for (const part of cookieHeader.split(";")) {
+    const cookie = part.trim();
+
+    if (!cookie.startsWith(prefix)) continue;
+
+    const rawValue = cookie.slice(prefix.length);
+
+    try {
+      return decodeURIComponent(rawValue).trim();
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+async function verifyToken(token: string): Promise<JsonRecord | null> {
+  try {
+    return toRecord(await verifyAccessToken(token));
+  } catch {
+    try {
+      return toRecord(await verifyAuthToken(token));
+    } catch {
+      return null;
+    }
+  }
 }
 
 async function requireAdmin(request: Request): Promise<AdminAuth> {
-
-  const cookieHeader = request.headers.get("cookie") || "";
-
-  const cookieToken = cookieHeader
-
-    .split(";")
-
-    .map((part) => part.trim())
-
-    .find((part) => part.startsWith(`${AUTH_COOKIE_NAME}=`))
-
-    ?.split("=")
-
-    .slice(1)
-
-    .join("=");
-
+  const cookieToken = getCookieToken(request);
   const authorization = request.headers.get("authorization") || "";
-
   const bearerToken = authorization.toLowerCase().startsWith("bearer ")
-
     ? authorization.slice(7).trim()
-
     : "";
-
   const token = cookieToken || bearerToken;
 
   if (!token) {
-
-    throw new AuthError("Authentication required.", 401, "AUTH_REQUIRED");
-
+    throw new RouteError("Authentication required.", 401, "AUTH_REQUIRED");
   }
 
-  let payload: Record<string, unknown> | null = null;
-
-  try {
-    const accessPayload = await verifyAccessToken(token);
-    payload = toRecord(accessPayload);
-
-    if (!payload) {
-      const legacyPayload = await verifyAuthToken(token);
-      payload = toRecord(legacyPayload);
-    }
-  } catch {
-    try {
-      const legacyPayload = await verifyAuthToken(token);
-      payload = toRecord(legacyPayload);
-    } catch {
-      payload = null;
-    }
-  }
+  const payload = await verifyToken(token);
 
   if (!payload) {
-
-    throw new AuthError("Invalid or expired authentication token.", 401, "AUTH_INVALID");
-
+    throw new RouteError(
+      "Invalid or expired authentication token.",
+      401,
+      "AUTH_INVALID",
+    );
   }
 
-  const role = cleanString(payload.role).toLowerCase();
-
+  const tokenRole = cleanString(payload.role, 80).toLowerCase();
   const userId = cleanString(
-
     payload.userId ?? payload.id ?? payload.adminId ?? payload.sub,
-
+    150,
   );
+  const email = cleanString(payload.email, 254).toLowerCase();
 
-  const email = cleanString(payload.email).toLowerCase();
-
-  if (role !== "admin" || !userId) {
-
-    throw new AuthError("Admin access is required.", 403, "ADMIN_REQUIRED");
-
+  if (tokenRole !== "admin" || !userId) {
+    throw new RouteError("Admin access is required.", 403, "ADMIN_REQUIRED");
   }
 
   await connectDB();
 
-  const lookup: Record<string, unknown>[] = [];
+  const lookup: JsonRecord[] = [];
 
   if (isValidObjectId(userId)) {
-
-    lookup.push({ _id: userId });
-
+    lookup.push({ _id: new mongoose.Types.ObjectId(userId) });
   }
 
   lookup.push({ adminId: userId });
 
   if (email) {
-
     lookup.push({ email });
-
   }
 
   const admin = await AdminModel.findOne({ $or: lookup })
-
     .select("_id adminId email role isActive active")
-
-    .lean();
+    .lean()
+    .exec();
 
   if (!admin) {
-
-    throw new AuthError("Active admin account was not found.", 403, "ADMIN_NOT_FOUND");
-
+    throw new RouteError(
+      "Active admin account was not found.",
+      403,
+      "ADMIN_NOT_FOUND",
+    );
   }
 
-  const active =
+  const adminRecord = admin as unknown as AdminRecord;
 
-    (admin as { isActive?: boolean }).isActive !== false &&
+  if (adminRecord.isActive === false || adminRecord.active === false) {
+    throw new RouteError("Admin account is inactive.", 403, "ADMIN_INACTIVE");
+  }
 
-    (admin as { active?: boolean }).active !== false;
+  const role = cleanString(adminRecord.role, 80);
+  const normalizedRole = role.toLowerCase();
 
-  if (!active) {
+  const allowedRoles = new Set([
+    "super admin",
+    "superadmin",
+    "admin",
+    "hr",
+    "support",
+    "assessment manager",
+    "student operations admin",
+  ]);
 
-    throw new AuthError("Admin account is inactive.", 403, "ADMIN_INACTIVE");
-
+  if (!allowedRoles.has(normalizedRole)) {
+    throw new RouteError(
+      "Your admin role cannot access certificate records.",
+      403,
+      "ROLE_FORBIDDEN",
+    );
   }
 
   return {
-
-    userId: String(
-
-      (admin as { adminId?: unknown }).adminId ??
-
-        (admin as { _id: unknown })._id,
-
-    ),
-
-    role: String((admin as { role?: unknown }).role ?? payload.role),
-
-    email:
-
-      typeof (admin as { email?: unknown }).email === "string"
-
-        ? String((admin as { email?: unknown }).email)
-
-        : email || undefined,
-
-  };
-
-}
-
-class AuthError extends Error {
-
-  status: number;
-
-  code: string;
-
-  constructor(message: string, status: number, code: string) {
-
-    super(message);
-
-    this.name = "AuthError";
-
-    this.status = status;
-
-    this.code = code;
-
-  }
-
-}
-
-function handleError(error: unknown, operation: string) {
-
-  if (error instanceof AuthError) {
-
-    return json(
-
-      {
-
-        success: false,
-
-        message: error.message,
-
-        code: error.code,
-
-      },
-
-      error.status,
-
-    );
-
-  }
-
-  console.error(`[ADMIN CERTIFICATES ${operation}]`, error);
-
-  if (
-
-    typeof error === "object" &&
-
-    error !== null &&
-
-    "code" in error &&
-
-    (error as { code?: unknown }).code === 11000
-
-  ) {
-
-    return json(
-
-      {
-
-        success: false,
-
-        message: "Certificate ID already exists.",
-
-        code: "DUPLICATE_CERTIFICATE_ID",
-
-      },
-
-      409,
-
-    );
-
-  }
-
-  return json(
-
-    {
-
-      success: false,
-
-      message: `Failed to ${operation.toLowerCase()} certificate records.`,
-
-      code: `CERTIFICATES_${operation.toUpperCase()}_FAILED`,
-
-      ...(process.env.NODE_ENV === "development"
-
-        ? { detail: errorMessage(error) }
-
-        : {}),
-
-    },
-
-    500,
-
-  );
-
-}
-
-function buildSearchFilter(search: string) {
-  if (!search) return {};
-
-  const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(escaped, "i");
-
-  return {
-    $or: [
-      { certificateId: regex },
-      { studentName: regex },
-      { studentId: regex },
-      { email: regex },
-      { internship: regex },
-      { course: regex },
-    ],
+    userId: cleanString(adminRecord.adminId, 150) || String(adminRecord._id),
+    role,
+    email: cleanString(adminRecord.email, 254).toLowerCase() || email || undefined,
   };
 }
 
 function parsePagination(request: Request) {
-
   const { searchParams } = new URL(request.url);
-
   const rawPage = Number(searchParams.get("page") || "1");
-
   const rawLimit = Number(searchParams.get("limit") || "50");
 
   const page =
-
-    Number.isFinite(rawPage) && rawPage > 0 ? Math.floor(rawPage) : 1;
+    Number.isSafeInteger(rawPage) && rawPage > 0
+      ? Math.min(rawPage, MAX_PAGE_NUMBER)
+      : 1;
 
   const limit =
-
-    Number.isFinite(rawLimit) && rawLimit > 0
-
-      ? Math.min(Math.floor(rawLimit), 100)
-
+    Number.isSafeInteger(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, MAX_PAGE_SIZE)
       : 50;
 
-  return { page, limit };
-
+  return { page, limit, searchParams };
 }
 
-export async function GET(request: Request) {
+function parseStatus(value: string): CertificateStatus | null {
+  if (!value || value === "all") return "all";
 
+  if (
+    value === "issued" ||
+    value === "pending" ||
+    value === "revoked" ||
+    value === "expired" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildSearchFilter(search: string): JsonRecord {
+  if (!search) return {};
+
+  const regex = new RegExp(escapeRegex(search), "i");
+
+  return {
+    $or: [
+      { certificateId: regex },
+      { fullName: regex },
+      { studentId: regex },
+      { dashboardStudentId: regex },
+      { email: regex },
+      { internshipTrack: regex },
+      { applicationId: regex },
+      { mainStudentId: regex },
+    ],
+  };
+}
+
+function buildStatusFilter(status: CertificateStatus): JsonRecord {
+  if (status === "all") {
+    return {
+      certificateStatus: {
+        $in: ["generated", "eligible", "revoked"],
+      },
+    };
+  }
+
+  if (status === "issued") {
+    return { certificateStatus: "generated" };
+  }
+
+  if (status === "pending") {
+    return { certificateStatus: "eligible" };
+  }
+
+  if (status === "revoked") {
+    return { certificateStatus: "revoked" };
+  }
+
+  if (status === "expired" || status === "unknown") {
+    return { _id: { $exists: false } };
+  }
+
+  return { _id: { $exists: false } };
+}
+
+function buildFilter(search: string, status: CertificateStatus): JsonRecord {
+  const statusFilter = buildStatusFilter(status);
+  const searchFilter = buildSearchFilter(search);
+
+  if (!Object.keys(searchFilter).length) return statusFilter;
+
+  return {
+    $and: [statusFilter, searchFilter],
+  };
+}
+
+function toIsoString(value: unknown): string | undefined {
+  if (!value) return undefined;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function mapCertificateStatus(value: unknown): Exclude<CertificateStatus, "all"> {
+  const status = cleanString(value, 40).toLowerCase();
+
+  if (status === "generated" || status === "issued") return "issued";
+  if (status === "eligible" || status === "pending") return "pending";
+  if (status === "revoked") return "revoked";
+  if (status === "expired") return "expired";
+
+  return "unknown";
+}
+
+function serializeCertificate(record: StudentOperationsCertificateRecord) {
+  const status = mapCertificateStatus(record.certificateStatus);
+
+  return {
+    id: String(record._id),
+    certificateId: cleanString(record.certificateId, 100) || "—",
+    studentName: cleanString(record.fullName, 150) || "Unknown Student",
+    studentId:
+      cleanString(record.dashboardStudentId, 60) ||
+      cleanString(record.studentId, 50) ||
+      cleanString(record.applicationId, 50) ||
+      "—",
+    email: cleanString(record.email, 254).toLowerCase() || "—",
+    internship: cleanString(record.internshipTrack, 150) || "—",
+    course: "",
+    issueDate: toIsoString(record.certificateGeneratedAt),
+    expiryDate: undefined,
+    status,
+    verificationUrl: undefined,
+    pdfUrl: undefined,
+    issuedBy: "Student Operations Admin",
+    source: "Student Operations",
+    createdAt: toIsoString(record.createdAt),
+    updatedAt: toIsoString(record.updatedAt),
+    revocationReason: "",
+  };
+}
+
+function getErrorDetails(error: unknown) {
+  const value = error as
+    | {
+        name?: unknown;
+        code?: unknown;
+        codeName?: unknown;
+        message?: unknown;
+      }
+    | null
+    | undefined;
+
+  return {
+    name: typeof value?.name === "string" ? value.name : "Error",
+    code:
+      typeof value?.code === "string" || typeof value?.code === "number"
+        ? String(value.code)
+        : undefined,
+    codeName:
+      typeof value?.codeName === "string" ? value.codeName : undefined,
+    message:
+      typeof value?.message === "string"
+        ? value.message.slice(0, 400)
+        : "Unknown error",
+  };
+}
+
+function handleError(error: unknown, operation: string): NextResponse {
+  if (error instanceof RouteError) {
+    return json(
+      {
+        success: false,
+        message: error.message,
+        code: error.code,
+      },
+      error.status,
+    );
+  }
+
+  const details = getErrorDetails(error);
+  const isStudentDatabaseError =
+    details.name === "MongoDBConnectionError" ||
+    details.message.toLowerCase().includes("student operations database") ||
+    details.name.toLowerCase().includes("serverselection");
+
+  console.error(`[ADMIN CERTIFICATES ${operation}]`, {
+    ...details,
+    database: isStudentDatabaseError ? "student_operations" : "main_or_api",
+  });
+
+  if (isStudentDatabaseError) {
+    return json(
+      {
+        success: false,
+        message:
+          "Student Operations database is temporarily unavailable. Check its MongoDB connection, credentials, network access list and cluster status, then retry.",
+        code: "STUDENT_OPERATIONS_DATABASE_UNAVAILABLE",
+      },
+      503,
+    );
+  }
+
+  return json(
+    {
+      success: false,
+      message:
+        operation === "load"
+          ? "Failed to load certificate records. Please retry."
+          : "Certificate request failed.",
+      code: `CERTIFICATES_${operation.toUpperCase()}_FAILED`,
+    },
+    500,
+  );
+}
+
+export async function GET(request: Request): Promise<NextResponse> {
   try {
-
     await requireAdmin(request);
 
-    const { searchParams } = new URL(request.url);
+    const { page, limit, searchParams } = parsePagination(request);
+    const search = cleanString(
+      searchParams.get("search"),
+      MAX_SEARCH_LENGTH,
+    );
+    const requestedStatus = cleanString(
+      searchParams.get("status"),
+      30,
+    ).toLowerCase();
+    const status = parseStatus(requestedStatus);
 
-    const search = cleanString(searchParams.get("search"));
-
-    const status = cleanString(searchParams.get("status")).toLowerCase();
-
-    const { page, limit } = parsePagination(request);
-
-    const filter: Record<string, unknown> = {
-
-      ...buildSearchFilter(search),
-
-    };
-
-    if (status && status !== "all") {
-
-      if (!isValidStatus(status)) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "Invalid certificate status filter.",
-
-            code: "INVALID_STATUS_FILTER",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      filter.status = status;
-
+    if (!status) {
+      return json(
+        {
+          success: false,
+          message: "Invalid certificate status filter.",
+          code: "INVALID_STATUS_FILTER",
+        },
+        400,
+      );
     }
 
+    await connectStudentDB();
+
+    const StudentOperations = await getStudentOperationsModel();
+    const filter = buildFilter(search, status);
     const skip = (page - 1) * limit;
 
     const [
-
       documents,
-
       total,
-
       allTotal,
-
       issued,
-
       pending,
-
       revoked,
-
-      expired,
-
     ] = await Promise.all([
-
-      Certificate.find(filter)
-
-        .sort({ createdAt: -1, _id: -1 })
-
+      StudentOperations.find(filter)
+        .select(
+          "_id mainStudentId applicationId studentId dashboardStudentId fullName email internshipTrack internshipPlan internshipDurationDays certificateStatus certificateId certificateGeneratedAt createdAt updatedAt",
+        )
+        .sort({ certificateGeneratedAt: -1, updatedAt: -1, _id: -1 })
         .skip(skip)
-
         .limit(limit)
-
-        .lean(),
-
-      Certificate.countDocuments(filter),
-
-      Certificate.countDocuments({}),
-
-      Certificate.countDocuments({ status: "issued" }),
-
-      Certificate.countDocuments({ status: "pending" }),
-
-      Certificate.countDocuments({ status: "revoked" }),
-
-      Certificate.countDocuments({ status: "expired" }),
-
+        .maxTimeMS(QUERY_TIMEOUT_MS)
+        .lean()
+        .exec(),
+      StudentOperations.countDocuments(filter)
+        .maxTimeMS(QUERY_TIMEOUT_MS)
+        .exec(),
+      StudentOperations.countDocuments({
+        certificateStatus: { $in: ["generated", "eligible", "revoked"] },
+      })
+        .maxTimeMS(QUERY_TIMEOUT_MS)
+        .exec(),
+      StudentOperations.countDocuments({ certificateStatus: "generated" })
+        .maxTimeMS(QUERY_TIMEOUT_MS)
+        .exec(),
+      StudentOperations.countDocuments({ certificateStatus: "eligible" })
+        .maxTimeMS(QUERY_TIMEOUT_MS)
+        .exec(),
+      StudentOperations.countDocuments({ certificateStatus: "revoked" })
+        .maxTimeMS(QUERY_TIMEOUT_MS)
+        .exec(),
     ]);
 
-    const data = documents.map((certificate) => ({
+    const data = documents.map((document) =>
+      serializeCertificate(
+        document as unknown as StudentOperationsCertificateRecord,
+      ),
+    );
 
-      id: String(certificate._id),
-
-      certificateId: certificate.certificateId,
-
-      studentName: certificate.studentName,
-
-      studentId: certificate.studentId,
-
-      email: certificate.email,
-
-      internship: certificate.internship,
-
-      course: certificate.course,
-
-      issueDate: certificate.issueDate?.toISOString(),
-
-      expiryDate: certificate.expiryDate?.toISOString(),
-
-      status: certificate.status,
-
-      verificationUrl: certificate.verificationUrl,
-
-      createdAt: certificate.createdAt?.toISOString(),
-
-      updatedAt: certificate.updatedAt?.toISOString(),
-
-    }));
+    const totalPages = Math.ceil(total / limit);
 
     return json({
-
       success: true,
-
-      message: "Certificates loaded successfully.",
-
+      message: "Student Operations certificate records loaded successfully.",
       data,
-
       total,
-
       page,
-
       limit,
-
-      pages: Math.ceil(total / limit),
-
+      pages: totalPages,
       pagination: {
-
         page,
-
         limit,
-
         total,
-
-        totalPages: Math.ceil(total / limit),
-
-        hasNextPage: page * limit < total,
-
+        totalPages,
+        hasNextPage: page < totalPages,
         hasPreviousPage: page > 1,
-
       },
-
       stats: {
-
         total: allTotal,
-
         issued,
-
         pending,
-
+        eligible: pending,
         revoked,
-
-        expired,
-
+        expired: 0,
       },
-
       meta: {
-
         generatedAt: new Date().toISOString(),
-
         authenticated: true,
-
+        source: "student_operations",
+        readOnly: true,
+        database: "student_operations",
       },
-
     });
-
   } catch (error) {
-
     return handleError(error, "load");
-
   }
-
 }
 
-export async function POST(request: Request) {
-
+export async function HEAD(request: Request): Promise<NextResponse> {
   try {
-
-    const admin = await requireAdmin(request);
-
-    let body: Record<string, unknown>;
-
-    try {
-
-      body = (await request.json()) as Record<string, unknown>;
-
-    } catch {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Invalid JSON request body.",
-
-          code: "INVALID_REQUEST_BODY",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    const certificateId = cleanString(body.certificateId).toUpperCase();
-
-    const studentName = cleanString(body.studentName);
-
-    const studentId = cleanString(body.studentId);
-
-    const email = cleanString(body.email).toLowerCase();
-
-    const internship = cleanString(body.internship);
-
-    const course = optionalString(body.course);
-
-    const issueDateProvided = body.issueDate !== undefined;
-
-    const expiryDateProvided = body.expiryDate !== undefined;
-
-    const issueDate = parseDate(body.issueDate);
-
-    const expiryDate = parseDate(body.expiryDate);
-
-    const verificationUrl = optionalString(body.verificationUrl);
-
-    const requestedStatus = cleanString(body.status).toLowerCase();
-
-    const status: CertificateStatus =
-
-      requestedStatus && isValidStatus(requestedStatus)
-
-        ? requestedStatus
-
-        : "issued";
-
-    if (
-
-      !certificateId ||
-
-      !studentName ||
-
-      !studentId ||
-
-      !email ||
-
-      !internship
-
-    ) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message:
-
-            "certificateId, studentName, studentId, email and internship are required.",
-
-          code: "VALIDATION_ERROR",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    if (!isValidEmail(email)) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Please provide a valid email address.",
-
-          code: "INVALID_EMAIL",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    if (issueDateProvided && !issueDate) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Invalid issueDate.",
-
-          code: "INVALID_ISSUE_DATE",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    if (expiryDateProvided && body.expiryDate !== "" && !expiryDate) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Invalid expiryDate.",
-
-          code: "INVALID_EXPIRY_DATE",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    if (issueDate && expiryDate && expiryDate <= issueDate) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Expiry date must be after issue date.",
-
-          code: "INVALID_DATE_RANGE",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    if (body.status !== undefined && !isValidStatus(requestedStatus)) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Invalid certificate status.",
-
-          code: "INVALID_STATUS",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    const existing = await Certificate.exists({ certificateId });
-
-    if (existing) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "A certificate with this certificate ID already exists.",
-
-          code: "CERTIFICATE_ALREADY_EXISTS",
-
-        },
-
-        409,
-
-      );
-
-    }
-
-    const certificate = await Certificate.create({
-
-      certificateId,
-
-      studentName,
-
-      studentId,
-
-      email,
-
-      internship,
-
-      course,
-
-      issueDate: issueDate ?? (status === "issued" ? new Date() : undefined),
-
-      expiryDate,
-
-      status,
-
-      verificationUrl,
-
-    });
-
-    return json(
-
-      {
-
-        success: true,
-
-        message: "Certificate created successfully.",
-
-        data: serializeCertificate(certificate),
-
-        meta: {
-
-          createdBy: admin.userId,
-
-          generatedAt: new Date().toISOString(),
-
-        },
-
-      },
-
-      201,
-
-    );
-
-  } catch (error) {
-
-    return handleError(error, "create");
-
-  }
-
-}
-
-export async function PUT(request: Request) {
-
-  try {
-
-    const admin = await requireAdmin(request);
-
-    let body: Record<string, unknown>;
-
-    try {
-
-      body = (await request.json()) as Record<string, unknown>;
-
-    } catch {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Invalid JSON request body.",
-
-          code: "INVALID_REQUEST_BODY",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    const id = cleanString(body.id);
-
-    const certificateIdInput = cleanString(body.certificateId).toUpperCase();
-
-    if (!id && !certificateIdInput) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Certificate id or certificateId is required.",
-
-          code: "IDENTIFIER_REQUIRED",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    let existing: ICertificate | null = null;
-
-    if (id && isValidObjectId(id)) {
-
-      existing = await Certificate.findById(id);
-
-    }
-
-    if (!existing && certificateIdInput) {
-
-      existing = await Certificate.findOne({
-
-        certificateId: certificateIdInput,
-
-      });
-
-    }
-
-    if (!existing) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Certificate not found.",
-
-          code: "CERTIFICATE_NOT_FOUND",
-
-        },
-
-        404,
-
-      );
-
-    }
-
-    const updates: Record<string, unknown> = {};
-
-    if (body.studentName !== undefined) {
-
-      const value = cleanString(body.studentName);
-
-      if (!value) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "studentName cannot be empty.",
-
-            code: "VALIDATION_ERROR",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.studentName = value;
-
-    }
-
-    if (body.studentId !== undefined) {
-
-      const value = cleanString(body.studentId);
-
-      if (!value) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "studentId cannot be empty.",
-
-            code: "VALIDATION_ERROR",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.studentId = value;
-
-    }
-
-    if (body.email !== undefined) {
-
-      const value = cleanString(body.email).toLowerCase();
-
-      if (!isValidEmail(value)) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "Please provide a valid email address.",
-
-            code: "INVALID_EMAIL",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.email = value;
-
-    }
-
-    if (body.internship !== undefined) {
-
-      const value = cleanString(body.internship);
-
-      if (!value) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "internship cannot be empty.",
-
-            code: "VALIDATION_ERROR",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.internship = value;
-
-    }
-
-    if (body.course !== undefined) {
-
-      updates.course = optionalString(body.course);
-
-    }
-
-    if (body.status !== undefined) {
-
-      const value = cleanString(body.status).toLowerCase();
-
-      if (!isValidStatus(value)) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "Invalid certificate status.",
-
-            code: "INVALID_STATUS",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.status = value;
-
-    }
-
-    if (body.issueDate !== undefined) {
-
-      const value = parseDate(body.issueDate);
-
-      if (!value) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "Invalid issueDate.",
-
-            code: "INVALID_ISSUE_DATE",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.issueDate = value;
-
-    }
-
-    if (body.expiryDate !== undefined) {
-
-      const value = parseDate(body.expiryDate);
-
-      if (body.expiryDate !== "" && !value) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "Invalid expiryDate.",
-
-            code: "INVALID_EXPIRY_DATE",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      updates.expiryDate = value;
-
-    }
-
-    if (body.verificationUrl !== undefined) {
-
-      updates.verificationUrl = optionalString(body.verificationUrl);
-
-    }
-
-    if (body.certificateId !== undefined) {
-
-      const newCertificateId = cleanString(body.certificateId).toUpperCase();
-
-      if (!newCertificateId) {
-
-        return json(
-
-          {
-
-            success: false,
-
-            message: "certificateId cannot be empty.",
-
-            code: "VALIDATION_ERROR",
-
-          },
-
-          400,
-
-        );
-
-      }
-
-      if (newCertificateId !== existing.certificateId) {
-
-        const duplicate = await Certificate.exists({
-
-          certificateId: newCertificateId,
-
-          _id: { $ne: existing._id },
-
-        });
-
-        if (duplicate) {
-
-          return json(
-
-            {
-
-              success: false,
-
-              message: "Another certificate already uses this certificate ID.",
-
-              code: "CERTIFICATE_ID_EXISTS",
-
-            },
-
-            409,
-
-          );
-
-        }
-
-      }
-
-      updates.certificateId = newCertificateId;
-
-    }
-
-    const nextIssueDate =
-
-      (updates.issueDate as Date | undefined) ?? existing.issueDate;
-
-    const nextExpiryDate =
-
-      updates.expiryDate === undefined
-
-        ? existing.expiryDate
-
-        : (updates.expiryDate as Date | undefined);
-
-    if (nextIssueDate && nextExpiryDate && nextExpiryDate <= nextIssueDate) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Expiry date must be after issue date.",
-
-          code: "INVALID_DATE_RANGE",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    if (Object.keys(updates).length === 0) {
-
-      return json({
-
-        success: true,
-
-        message: "No certificate changes were requested.",
-
-        data: serializeCertificate(existing),
-
-      });
-
-    }
-
-    const updated = await Certificate.findByIdAndUpdate(
-
-      existing._id,
-
-      {
-
-        $set: updates,
-
-      },
-
-      {
-
-        new: true,
-
-        runValidators: true,
-
-      },
-
-    );
-
-    if (!updated) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Certificate could not be updated.",
-
-          code: "UPDATE_FAILED",
-
-        },
-
-        500,
-
-      );
-
-    }
-
-    return json({
-
-      success: true,
-
-      message: "Certificate updated successfully.",
-
-      data: serializeCertificate(updated),
-
-      meta: {
-
-        updatedBy: admin.userId,
-
-        generatedAt: new Date().toISOString(),
-
-      },
-
-    });
-
-  } catch (error) {
-
-    return handleError(error, "update");
-
-  }
-
-}
-
-export async function PATCH(request: Request) {
-
-  return PUT(request);
-
-}
-
-export async function DELETE(request: Request) {
-
-  try {
-
-    const admin = await requireAdmin(request);
-
-    const role = admin.role.toLowerCase();
-
-    if (role !== "super admin" && role !== "superadmin") {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Only Super Admin can permanently delete certificates.",
-
-          code: "SUPER_ADMIN_REQUIRED",
-
-        },
-
-        403,
-
-      );
-
-    }
-
-    const { searchParams } = new URL(request.url);
-
-    const id = cleanString(searchParams.get("id"));
-
-    const certificateId = cleanString(
-
-      searchParams.get("certificateId"),
-
-    ).toUpperCase();
-
-    if (!id && !certificateId) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "id or certificateId is required.",
-
-          code: "IDENTIFIER_REQUIRED",
-
-        },
-
-        400,
-
-      );
-
-    }
-
-    let deleted: ICertificate | null = null;
-
-    if (id && isValidObjectId(id)) {
-
-      deleted = await Certificate.findByIdAndDelete(id);
-
-    }
-
-    if (!deleted && certificateId) {
-
-      deleted = await Certificate.findOneAndDelete({
-
-        certificateId,
-
-      });
-
-    }
-
-    if (!deleted) {
-
-      return json(
-
-        {
-
-          success: false,
-
-          message: "Certificate not found.",
-
-          code: "CERTIFICATE_NOT_FOUND",
-
-        },
-
-        404,
-
-      );
-
-    }
-
-    return json({
-
-      success: true,
-
-      message: "Certificate deleted successfully.",
-
-      data: {
-
-        id: deleted._id.toString(),
-
-        certificateId: deleted.certificateId,
-
-      },
-
-      meta: {
-
-        deletedBy: admin.userId,
-
-        generatedAt: new Date().toISOString(),
-
-      },
-
-    });
-
-  } catch (error) {
-
-    return handleError(error, "delete");
-
-  }
-
-}
-
-export async function OPTIONS() {
-
-  return new NextResponse(null, {
-
-    status: 204,
-
-    headers: {
-
-      Allow: "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-
-      "Cache-Control": "no-store",
-
-    },
-
-  });
-
-}
-
-export async function HEAD(request: Request) {
-
-  try {
-
     await requireAdmin(request);
-
-    await connectDB();
+    await connectStudentDB();
+    await getStudentOperationsModel();
 
     return new NextResponse(null, {
-
       status: 204,
-
       headers: {
-
-        "Cache-Control": "no-store",
-
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
       },
-
     });
-
   } catch (error) {
-
-    if (error instanceof AuthError) {
-
+    if (error instanceof RouteError) {
       return new NextResponse(null, {
-
         status: error.status,
-
-        headers: {
-
-          "Cache-Control": "no-store",
-
-        },
-
+        headers: { "Cache-Control": "private, no-store" },
       });
-
     }
 
-    console.error("[ADMIN CERTIFICATES HEAD]", error);
+    const details = getErrorDetails(error);
+    console.error("[ADMIN CERTIFICATES HEAD]", details);
 
     return new NextResponse(null, {
-
-      status: 500,
-
+      status:
+        details.name === "MongoDBConnectionError" ||
+        details.name.toLowerCase().includes("serverselection")
+          ? 503
+          : 500,
       headers: {
-
-        "Cache-Control": "no-store",
-
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
       },
-
     });
-
   }
+}
 
+export async function OPTIONS(): Promise<NextResponse> {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      Allow: "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+export async function POST(): Promise<NextResponse> {
+  return json(
+    {
+      success: false,
+      message: "Certificate issuance is managed by Student Operations Admin.",
+      code: "METHOD_NOT_ALLOWED",
+    },
+    405,
+  );
+}
+
+export async function PUT(): Promise<NextResponse> {
+  return json(
+    { success: false, message: "Method not allowed.", code: "METHOD_NOT_ALLOWED" },
+    405,
+  );
+}
+
+export async function PATCH(): Promise<NextResponse> {
+  return json(
+    { success: false, message: "Method not allowed.", code: "METHOD_NOT_ALLOWED" },
+    405,
+  );
+}
+
+export async function DELETE(): Promise<NextResponse> {
+  return json(
+    { success: false, message: "Method not allowed.", code: "METHOD_NOT_ALLOWED" },
+    405,
+  );
 }

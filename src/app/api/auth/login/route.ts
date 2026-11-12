@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-
 import {
   login,
   loginStudentDashboard,
@@ -8,12 +7,13 @@ import {
   type LoginInput,
   type LoginResult,
 } from "@/services/auth.service";
-
 import {
   AUTH_COOKIE_NAME,
   AUTH_COOKIE_OPTIONS,
   ADMIN_AUTH_COOKIE_NAME,
   ADMIN_AUTH_COOKIE_OPTIONS,
+  STUDENT_ADMIN_AUTH_COOKIE_NAME,
+  STUDENT_ADMIN_AUTH_COOKIE_OPTIONS,
   STUDENT_AUTH_COOKIE_NAME,
   STUDENT_AUTH_COOKIE_OPTIONS,
   STUDENT_DASHBOARD_AUTH_COOKIE_NAME,
@@ -29,6 +29,15 @@ const MAX_IDENTIFIER_LENGTH = 254;
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 128;
 
+const SECURITY_HEADERS = {
+  "Cache-Control": "private, no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
+  Expires: "0",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+} as const;
+
 const LOGIN_MODES = [
   "auto",
   "admin",
@@ -41,30 +50,51 @@ type LoginMode = (typeof LOGIN_MODES)[number];
 type Portal = Exclude<LoginMode, "auto">;
 type JsonRecord = Record<string, unknown>;
 
+type CookieOptions =
+  | typeof AUTH_COOKIE_OPTIONS
+  | typeof ADMIN_AUTH_COOKIE_OPTIONS
+  | typeof STUDENT_ADMIN_AUTH_COOKIE_OPTIONS
+  | typeof STUDENT_AUTH_COOKIE_OPTIONS
+  | typeof STUDENT_DASHBOARD_AUTH_COOKIE_OPTIONS;
+
 function createRequestId(request: NextRequest): string {
   const supplied = request.headers.get("x-request-id")?.trim();
-  if (supplied && /^[a-zA-Z0-9._:-]{8,128}$/.test(supplied)) {
-    return supplied;
-  }
-  return randomUUID();
+
+  return supplied && /^[a-zA-Z0-9._:-]{8,128}$/.test(supplied)
+    ? supplied
+    : randomUUID();
 }
 
 function jsonResponse(
   body: JsonRecord,
   status: number,
-  id: string,
+  requestId: string,
 ): NextResponse {
   return NextResponse.json(body, {
     status,
     headers: {
-      "Cache-Control": "private, no-store, no-cache, must-revalidate",
-      Pragma: "no-cache",
-      Expires: "0",
-      "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY",
-      "Referrer-Policy": "strict-origin-when-cross-origin",
-      "X-Request-ID": id,
+      ...SECURITY_HEADERS,
+      "X-Request-ID": requestId,
     },
+  });
+}
+
+function logLoginApiFailure(requestId: string, error: unknown): void {
+  const details =
+    error !== null && typeof error === "object"
+      ? (error as { name?: unknown; code?: unknown })
+      : {};
+  const errorName =
+    typeof details.name === "string" ? details.name.slice(0, 80) : "UnknownError";
+  const errorCode =
+    typeof details.code === "string" || typeof details.code === "number"
+      ? String(details.code).slice(0, 40)
+      : undefined;
+
+  console.error("[CyberNet Careers] Login API failed.", {
+    requestId,
+    errorName,
+    ...(errorCode ? { errorCode } : {}),
   });
 }
 
@@ -73,69 +103,77 @@ function getLoginMode(value: unknown): LoginMode | null {
   if (typeof value !== "string") return null;
 
   const normalized = value.trim().toLowerCase();
+
   return (LOGIN_MODES as readonly string[]).includes(normalized)
     ? (normalized as LoginMode)
     : null;
 }
 
 function normalize(value: unknown): string {
-  return String(value ?? "").trim().toLowerCase().replace(/[\s_]+/g, "-");
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
 }
 
-function detectPortal(user: AuthUser, requestedMode: LoginMode): Portal | null {
+function detectPortal(user: AuthUser): Portal | null {
   const record = user as unknown as JsonRecord;
   const userType = normalize(record.userType ?? record.type);
   const role = normalize(record.role);
   const adminRole = normalize(record.adminRole);
-  const sessionType = normalize(record.sessionType);
   const authenticationMode = normalize(record.authenticationMode);
 
-  if (
-    requestedMode === "student-dashboard" ||
-    sessionType === "student-dashboard" ||
-    authenticationMode === "student-dashboard"
-  ) {
+  if (authenticationMode === "student-dashboard") {
     return "student-dashboard";
   }
 
+  if (authenticationMode === "student-admin") {
+    return "student-admin";
+  }
+
+  if (authenticationMode === "student") {
+    return "student";
+  }
+
+  if (authenticationMode === "admin") {
+    return "admin";
+  }
+
   if (
-    ["student-admin", "student-operations-admin", "studentadmin"].includes(userType) ||
-    ["student-admin", "student-operations-admin", "studentadmin"].includes(adminRole) ||
-    ["student-admin", "student-operations-admin", "studentadmin"].includes(role)
+    ["student-admin", "student-operations-admin", "studentadmin"].includes(role) ||
+    ["student-admin", "student-operations-admin", "studentadmin"].includes(adminRole)
   ) {
     return "student-admin";
   }
 
-  if (
-    ["admin", "super-admin"].includes(userType) ||
-    ["admin", "super-admin"].includes(role) ||
-    Boolean(adminRole)
-  ) {
+  if (userType === "admin" || ["admin", "super-admin"].includes(role) || Boolean(adminRole)) {
     return "admin";
   }
 
-  if (userType === "student" || role === "student" || sessionType === "student") {
+  if (userType === "student" || role === "student") {
     return "student";
   }
 
   return null;
 }
-
 function isModeAllowed(portal: Portal, mode: LoginMode): boolean {
-  if (mode === "auto") return true;
-  return portal === mode;
+  return mode === "auto" || portal === mode;
 }
 
 function getCookieConfig(portal: Portal): {
   name: string;
-  options: typeof AUTH_COOKIE_OPTIONS;
+  options: CookieOptions;
 } {
   switch (portal) {
     case "admin":
-    case "student-admin":
       return {
         name: ADMIN_AUTH_COOKIE_NAME,
         options: ADMIN_AUTH_COOKIE_OPTIONS,
+      };
+    case "student-admin":
+      return {
+        name: STUDENT_ADMIN_AUTH_COOKIE_NAME,
+        options: STUDENT_ADMIN_AUTH_COOKIE_OPTIONS,
       };
     case "student-dashboard":
       return {
@@ -151,10 +189,6 @@ function getCookieConfig(portal: Portal): {
   }
 }
 
-/**
- * Explicit allowlist: never serialize password hashes, tokens, lockout internals,
- * MFA secrets, recovery codes, or database documents wholesale.
- */
 function serializePublicUser(user: AuthUser): JsonRecord {
   const source = user as unknown as JsonRecord;
   const allowedKeys = [
@@ -165,6 +199,7 @@ function serializePublicUser(user: AuthUser): JsonRecord {
     "dashboardStudentId",
     "adminId",
     "email",
+    "phone",
     "fullName",
     "name",
     "role",
@@ -172,6 +207,7 @@ function serializePublicUser(user: AuthUser): JsonRecord {
     "userType",
     "type",
     "sessionType",
+    "authenticationMode",
     "emailVerified",
     "isEmailVerified",
     "isActive",
@@ -179,9 +215,14 @@ function serializePublicUser(user: AuthUser): JsonRecord {
     "applicationId",
     "applicationStatus",
     "assessmentStatus",
+    "assessmentScore",
     "resultStatus",
     "internshipStatus",
+    "internshipPlan",
+    "internshipTrack",
     "paymentStatus",
+    "paymentAmount",
+    "paymentCurrency",
     "adminApprovalStatus",
     "studentOpsApprovalStatus",
     "studentOpsStatus",
@@ -192,16 +233,21 @@ function serializePublicUser(user: AuthUser): JsonRecord {
   ] as const;
 
   const output: JsonRecord = {};
+
   for (const key of allowedKeys) {
     const value = source[key];
-    if (value !== undefined && value !== null) output[key] = value;
+
+    if (value !== undefined && value !== null) {
+      output[key] = value;
+    }
   }
+
   return output;
 }
 
 function getNextStep(user: AuthUser, portal: Portal): string {
   if (portal === "admin") return "admin-dashboard";
-  if (portal === "student-admin") return "student-admin-review";
+  if (portal === "student-admin") return "student-admin-dashboard";
   if (portal === "student-dashboard") return "student-dashboard";
 
   const record = user as unknown as JsonRecord;
@@ -267,6 +313,7 @@ function clearAuthenticationCookies(response: NextResponse): void {
   const names = [
     AUTH_COOKIE_NAME,
     ADMIN_AUTH_COOKIE_NAME,
+    STUDENT_ADMIN_AUTH_COOKIE_NAME,
     STUDENT_AUTH_COOKIE_NAME,
     STUDENT_DASHBOARD_AUTH_COOKIE_NAME,
   ];
@@ -286,7 +333,7 @@ function clearAuthenticationCookies(response: NextResponse): void {
 function setSessionCookie(
   response: NextResponse,
   name: string,
-  options: typeof AUTH_COOKIE_OPTIONS,
+  options: CookieOptions,
   token: string,
 ): void {
   response.cookies.set(name, token, {
@@ -301,10 +348,8 @@ function setSessionCookie(
 function isSameOriginRequest(request: NextRequest): boolean {
   const origin = request.headers.get("origin");
 
-  // Non-browser clients may omit Origin. If supplied, it must match exactly.
   if (!origin) {
-    const fetchSite = request.headers.get("sec-fetch-site");
-    return fetchSite !== "cross-site";
+    return request.headers.get("sec-fetch-site") !== "cross-site";
   }
 
   try {
@@ -314,7 +359,67 @@ function isSameOriginRequest(request: NextRequest): boolean {
   }
 }
 
+async function readRequestBody(
+  request: NextRequest,
+): Promise<{ body: string } | { tooLarge: true }> {
+  const declaredLengthHeader = request.headers.get("content-length");
+  const declaredLength =
+    declaredLengthHeader && /^\\d+$/.test(declaredLengthHeader)
+      ? Number(declaredLengthHeader)
+      : 0;
+
+  if (
+    Number.isSafeInteger(declaredLength) &&
+    declaredLength > MAX_BODY_BYTES
+  ) {
+    return { tooLarge: true };
+  }
+
+  if (!request.body) return { body: "" };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+
+      if (totalBytes > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return { tooLarge: true };
+      }
+
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return { body: new TextDecoder("utf-8", { fatal: true }).decode(combined) };
+  } catch {
+    return { body: "" };
+  }
+}
+
 function statusForError(code: string): number {
+  if (code === "INVALID_CONTENT_TYPE") return 415;
+  if (code === "REQUEST_TOO_LARGE") return 413;
+
   if (
     [
       "INVALID_INPUT",
@@ -337,6 +442,25 @@ function statusForError(code: string): number {
       "INVALID_ORIGIN",
       "AUTH_MODE_MISMATCH",
       "ACCOUNT_ROLE_NOT_CONFIGURED",
+      "REGISTRATION_NOT_ACTIVE",
+      "ACCOUNT_NOT_ACTIVE",
+      "EMAIL_NOT_VERIFIED",
+      "APPLICATION_PENDING",
+      "APPLICATION_REJECTED",
+      "APPLICATION_NOT_APPROVED",
+      "CREDENTIALS_NOT_GENERATED",
+      "CREDENTIALS_EXPIRED",
+      "LOGIN_DISABLED",
+      "ASSESSMENT_NOT_PASSED",
+      "INTERNSHIP_NOT_APPROVED",
+      "PAYMENT_NOT_VERIFIED",
+      "STUDENT_OPS_NOT_APPROVED",
+      "STUDENT_OPS_NOT_ACTIVE",
+      "DASHBOARD_NOT_ACTIVE",
+      "DASHBOARD_CREDENTIALS_NOT_GENERATED",
+      "DASHBOARD_CREDENTIALS_EXPIRED",
+      "ACCOUNT_DISABLED",
+      "DASHBOARD_LOGIN_NOT_ENABLED",
     ].includes(code)
   ) {
     return 403;
@@ -368,7 +492,7 @@ function statusForError(code: string): number {
 
 function failureResponse(
   result: Extract<LoginResult, { success: false }>,
-  id: string,
+  requestId: string,
 ): NextResponse {
   const status = statusForError(result.code);
   const response = jsonResponse(
@@ -379,10 +503,10 @@ function failureResponse(
       ...(typeof result.retryAfter === "number"
         ? { retryAfter: result.retryAfter }
         : {}),
-      requestId: id,
+      requestId,
     },
     status,
-    id,
+    requestId,
   );
 
   if (typeof result.retryAfter === "number" && result.retryAfter > 0) {
@@ -393,7 +517,7 @@ function failureResponse(
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const id = createRequestId(request);
+  const requestId = createRequestId(request);
 
   try {
     if (!isSameOriginRequest(request)) {
@@ -402,10 +526,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           success: false,
           message: "Cross-origin login requests are not allowed.",
           code: "INVALID_ORIGIN",
-          requestId: id,
+          requestId,
         },
         403,
-        id,
+        requestId,
       );
     }
 
@@ -420,54 +544,55 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           success: false,
           message: "Request must use application/json.",
           code: "INVALID_CONTENT_TYPE",
-          requestId: id,
+          requestId,
         },
         415,
-        id,
+        requestId,
       );
     }
 
-    const declaredLength = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    const bodyResult = await readRequestBody(request);
+
+    if ("tooLarge" in bodyResult) {
       return jsonResponse(
         {
           success: false,
           message: "Request body is too large.",
           code: "REQUEST_TOO_LARGE",
-          requestId: id,
+          requestId,
         },
         413,
-        id,
+        requestId,
       );
     }
 
-    const rawBody = await request.text();
-    if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
+    if (!bodyResult.body.trim()) {
       return jsonResponse(
         {
           success: false,
-          message: "Request body is too large.",
-          code: "REQUEST_TOO_LARGE",
-          requestId: id,
+          message: "Invalid JSON request body.",
+          code: "INVALID_JSON",
+          requestId,
         },
-        413,
-        id,
+        400,
+        requestId,
       );
     }
 
     let body: unknown;
+
     try {
-      body = JSON.parse(rawBody);
+      body = JSON.parse(bodyResult.body);
     } catch {
       return jsonResponse(
         {
           success: false,
           message: "Invalid JSON request body.",
           code: "INVALID_JSON",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
@@ -477,14 +602,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           success: false,
           message: "Invalid login request.",
           code: "INVALID_REQUEST",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
     const data = body as JsonRecord;
+    const allowedBodyKeys = new Set(["identifier", "password", "mode"]);
+    if (Object.keys(data).some((key) => !allowedBodyKeys.has(key))) {
+      return jsonResponse(
+        {
+          success: false,
+          message: "Login request contains unsupported fields.",
+          code: "INVALID_REQUEST",
+          requestId,
+        },
+        400,
+        requestId,
+      );
+    }
     const identifier =
       typeof data.identifier === "string" ? data.identifier.trim() : "";
     const password = typeof data.password === "string" ? data.password : "";
@@ -496,23 +634,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           success: false,
           message: "Email, Student ID, or Admin ID is required.",
           code: "IDENTIFIER_REQUIRED",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
-    if (identifier.length > MAX_IDENTIFIER_LENGTH) {
+    if (
+      identifier.length > MAX_IDENTIFIER_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(identifier)
+    ) {
       return jsonResponse(
         {
           success: false,
           message: "Invalid login identifier.",
           code: "INVALID_IDENTIFIER",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
@@ -522,26 +663,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           success: false,
           message: "Password is required.",
           code: "PASSWORD_REQUIRED",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
     if (
       password.length < MIN_PASSWORD_LENGTH ||
-      password.length > MAX_PASSWORD_LENGTH
+      password.length > MAX_PASSWORD_LENGTH ||
+      password.includes("\u0000")
     ) {
       return jsonResponse(
         {
           success: false,
           message: "Invalid password length.",
           code: "INVALID_PASSWORD",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
@@ -551,49 +693,52 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           success: false,
           message: "Invalid authentication mode.",
           code: "INVALID_AUTH_MODE",
-          requestId: id,
+          requestId,
         },
         400,
-        id,
+        requestId,
       );
     }
 
-    const input: LoginInput = { identifier, password };
+    const input: LoginInput = { identifier, password, mode };
     const result: LoginResult =
       mode === "student-dashboard"
         ? await loginStudentDashboard(input)
         : await login(input);
 
     if (!result.success) {
-      return failureResponse(result, id);
+      return failureResponse(result, requestId);
     }
 
-    const portal = detectPortal(result.user, mode);
+    const portal = detectPortal(result.user);
+
     if (!portal) {
-      return jsonResponse(
+      const response = jsonResponse(
         {
           success: false,
           message:
             "Account role is not configured. Please contact the administrator.",
           code: "ACCOUNT_ROLE_NOT_CONFIGURED",
-          requestId: id,
+          requestId,
         },
         403,
-        id,
+        requestId,
       );
+      return response;
     }
 
     if (!isModeAllowed(portal, mode)) {
-      return jsonResponse(
+      const response = jsonResponse(
         {
           success: false,
           message: "This account cannot sign in through the selected portal.",
           code: "AUTH_MODE_MISMATCH",
-          requestId: id,
+          requestId,
         },
         403,
-        id,
+        requestId,
       );
+      return response;
     }
 
     const cookie = getCookieConfig(portal);
@@ -606,56 +751,63 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         sessionType: portal,
         nextStep: getNextStep(result.user, portal),
         expiresIn: result.expiresIn,
-        requestId: id,
+        requestId,
       },
       200,
-      id,
+      requestId,
     );
 
     clearAuthenticationCookies(response);
     setSessionCookie(response, cookie.name, cookie.options, result.token);
 
-    // Keep the legacy cookie until all older protected routes have migrated.
-    setSessionCookie(
-      response,
-      AUTH_COOKIE_NAME,
-      AUTH_COOKIE_OPTIONS,
-      result.token,
-    );
+    if (portal === "student-admin") {
+      setSessionCookie(
+        response,
+        ADMIN_AUTH_COOKIE_NAME,
+        ADMIN_AUTH_COOKIE_OPTIONS,
+        result.token,
+      );
+    } else {
+      setSessionCookie(
+        response,
+        AUTH_COOKIE_NAME,
+        AUTH_COOKIE_OPTIONS,
+        result.token,
+      );
+    }
 
     response.headers.set("Vary", "Cookie");
     return response;
   } catch (error) {
-    console.error("[CyberNet Careers] Login API failed", {
-      requestId: id,
-      error,
-    });
+    logLoginApiFailure(requestId, error);
 
-    return jsonResponse(
+    const response = jsonResponse(
       {
         success: false,
         message: "Unable to process login right now. Please try again later.",
         code: "INTERNAL_SERVER_ERROR",
-        requestId: id,
+        requestId,
       },
       500,
-      id,
+      requestId,
     );
+    return response;
   }
 }
 
 function methodNotAllowed(request: NextRequest): NextResponse {
-  const id = createRequestId(request);
+  const requestId = createRequestId(request);
   const response = jsonResponse(
     {
       success: false,
       message: "Method not allowed.",
       code: "METHOD_NOT_ALLOWED",
-      requestId: id,
+      requestId,
     },
     405,
-    id,
+    requestId,
   );
+
   response.headers.set("Allow", "POST, OPTIONS");
   return response;
 }
@@ -677,12 +829,13 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
 }
 
 export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
-  const id = createRequestId(request);
+  const requestId = createRequestId(request);
+
   return new NextResponse(null, {
     status: 204,
     headers: {
-      "Cache-Control": "no-store",
-      "X-Request-ID": id,
+      ...SECURITY_HEADERS,
+      "X-Request-ID": requestId,
       Allow: "POST, OPTIONS",
     },
   });

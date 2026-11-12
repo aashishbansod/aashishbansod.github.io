@@ -2,6 +2,7 @@ import "server-only";
 
 import StudentModel from "@/models/Student";
 import AdminModel from "@/models/Admin";
+import { getStudentAdminModel } from "@/models/StudentAdmin";
 import connectDB from "@/lib/db";
 import {
   createAccessToken,
@@ -17,9 +18,14 @@ import {
 export interface LoginInput {
   identifier: string;
   password: string;
+  mode?: AuthenticationMode | "auto";
 }
 
-export type AuthenticationMode = "admin" | "student" | "student-dashboard";
+export type AuthenticationMode =
+  | "admin"
+  | "student-admin"
+  | "student"
+  | "student-dashboard";
 
 export interface AuthUser {
   id: string;
@@ -27,12 +33,14 @@ export interface AuthUser {
   identifier: string;
   fullName: string;
   email: string;
+  username?: string;
   role?: string;
   studentId?: string;
   dashboardStudentId?: string;
   adminId?: string;
   phone?: string;
   isEmailVerified?: boolean;
+  registrationStatus?: string;
   authenticationMode?: AuthenticationMode;
   applicationStatus?: string;
   assessmentStatus?: string;
@@ -47,6 +55,7 @@ export interface AuthUser {
   credentialsGenerated?: boolean;
   dashboardLoginEnabled?: boolean;
   dashboardCredentialsGenerated?: boolean;
+  permissions?: Record<string, boolean>;
 }
 
 export interface LoginSuccess {
@@ -77,7 +86,26 @@ const MAX_NAME_LENGTH = 120;
 const REQUIRE_EMAIL_VERIFICATION =
   process.env.REQUIRE_EMAIL_VERIFICATION === "true";
 
+function logAuthenticationFailure(context: string, error: unknown): void {
+  const candidate =
+    error !== null && typeof error === "object"
+      ? (error as { name?: unknown; code?: unknown })
+      : {};
+  const errorName =
+    typeof candidate.name === "string" ? candidate.name.slice(0, 80) : "UnknownError";
+  const errorCode =
+    typeof candidate.code === "string" || typeof candidate.code === "number"
+      ? String(candidate.code).slice(0, 40)
+      : undefined;
+
+  console.error(`[CyberNet Auth] ${context}.`, {
+    errorName,
+    ...(errorCode ? { errorCode } : {}),
+  });
+}
+
 type DatabaseRecord = Record<string, unknown>;
+type StudentAdminModel = Awaited<ReturnType<typeof getStudentAdminModel>>;
 
 const VALID_ADMIN_ROLES: readonly AdminRole[] = [
   "Super Admin",
@@ -152,7 +180,7 @@ function normalizeAdminRole(value: unknown): AdminRole {
 }
 
 function isStudentOperationsAdmin(value: unknown): boolean {
-  return normalizeAdminRole(value) === "Student Operations Admin";
+  return value === "Student Operations Admin";
 }
 
 export async function hashUserPassword(password: string): Promise<string> {
@@ -177,7 +205,8 @@ export async function verifyUserPassword(
     password.length < MIN_PASSWORD_LENGTH ||
     password.length > MAX_PASSWORD_LENGTH ||
     typeof storedPassword !== "string" ||
-    !storedPassword
+    !storedPassword ||
+    !storedPassword.startsWith("scrypt$")
   ) {
     return false;
   }
@@ -185,7 +214,6 @@ export async function verifyUserPassword(
   try {
     return await verifyPassword(password, storedPassword);
   } catch {
-    // Never log passwords, password hashes, or raw authentication input.
     return false;
   }
 }
@@ -197,7 +225,6 @@ function getAdminSecurity(admin: DatabaseRecord): DatabaseRecord {
 function isLocked(lockedFlag: unknown, lockedUntilValue: unknown): boolean {
   if (lockedFlag !== true) return false;
   const lockedUntil = dateValue(lockedUntilValue);
-  // A lock without a valid expiry remains locked until safely cleared.
   return !lockedUntil || lockedUntil.getTime() > Date.now();
 }
 
@@ -208,6 +235,11 @@ function lockRemaining(lockedUntilValue: unknown): number {
 }
 
 function adminIsLocked(admin: DatabaseRecord): boolean {
+  const security = getAdminSecurity(admin);
+  return isLocked(security.accountLocked, security.lockedUntil);
+}
+
+function studentAdminIsLocked(admin: DatabaseRecord): boolean {
   const security = getAdminSecurity(admin);
   return isLocked(security.accountLocked, security.lockedUntil);
 }
@@ -227,6 +259,28 @@ async function clearExpiredAdminLock(admin: DatabaseRecord): Promise<void> {
   if (until && until.getTime() > Date.now()) return;
 
   await AdminModel.updateOne(
+    { _id: admin._id, "security.accountLocked": true },
+    {
+      $set: {
+        "security.accountLocked": false,
+        "security.lockedUntil": null,
+        "security.loginAttempts": 0,
+      },
+    },
+    { runValidators: true },
+  ).exec();
+}
+
+async function clearExpiredStudentAdminLock(
+  admin: DatabaseRecord,
+  model: StudentAdminModel,
+): Promise<void> {
+  const security = getAdminSecurity(admin);
+  if (security.accountLocked !== true) return;
+  const until = dateValue(security.lockedUntil);
+  if (until && until.getTime() > Date.now()) return;
+
+  await model.updateOne(
     { _id: admin._id, "security.accountLocked": true },
     {
       $set: {
@@ -293,6 +347,52 @@ function sanitizeAdmin(admin: DatabaseRecord): AuthUser {
   };
 }
 
+function sanitizeStudentAdmin(admin: DatabaseRecord): AuthUser {
+  const adminId = normalizeAdminId(stringValue(admin.adminId));
+  const email = normalizeEmail(stringValue(admin.email));
+  const permissionsRecord = asRecord(admin.permissions);
+  const permissions: Record<string, boolean> = {};
+
+  for (const key of [
+    "dashboard",
+    "students",
+    "applications",
+    "internships",
+    "payments",
+    "certificates",
+    "reports",
+    "settings",
+  ]) {
+    if (typeof permissionsRecord[key] === "boolean") {
+      permissions[key] = permissionsRecord[key] as boolean;
+    }
+  }
+
+  return {
+    id: idString(admin._id),
+    userType: "admin",
+    identifier:
+      adminId ||
+      stringValue(admin.username).toLowerCase() ||
+      email,
+    fullName: safeString(admin.fullName, "Student Operations Admin").slice(
+      0,
+      MAX_NAME_LENGTH,
+    ),
+    email,
+    ...(stringValue(admin.username)
+      ? { username: stringValue(admin.username).toLowerCase() }
+      : {}),
+    adminId,
+    role: "Student Operations Admin",
+    ...(stringValue(admin.phone) ? { phone: stringValue(admin.phone) } : {}),
+    isEmailVerified: admin.isEmailVerified === true,
+    registrationStatus: stringValue(admin.registrationStatus),
+    authenticationMode: "student-admin",
+    permissions,
+  };
+}
+
 function sanitizeStudent(
   student: DatabaseRecord,
   mode: "student" | "student-dashboard",
@@ -346,6 +446,22 @@ async function findAdmin(identifier: string): Promise<DatabaseRecord | null> {
   return admin ? asRecord(admin) : null;
 }
 
+async function findStudentAdmin(
+  identifier: string,
+): Promise<{ admin: DatabaseRecord | null; model: StudentAdminModel }> {
+  const model = await getStudentAdminModel();
+  const email = normalizeEmail(identifier);
+  const adminId = normalizeAdminId(identifier);
+  const username = identifier.trim().toLowerCase();
+  const admin = await model
+    .findOne({ $or: [{ adminId }, { email }, { username }] })
+    .select("+password")
+    .lean()
+    .exec();
+
+  return { admin: admin ? asRecord(admin) : null, model };
+}
+
 async function findStudentForMainLogin(
   identifier: string,
 ): Promise<DatabaseRecord | null> {
@@ -384,9 +500,9 @@ function getStudentDashboardPasswordHash(student: DatabaseRecord): string {
   return stringValue(student.dashboardPasswordHash);
 }
 
-async function updateAdminLogin(admin: DatabaseRecord): Promise<void> {
-  await AdminModel.updateOne(
-    { _id: admin._id },
+async function updateAdminLogin(admin: DatabaseRecord): Promise<boolean> {
+  const result = await AdminModel.updateOne(
+    { _id: admin._id, isActive: { $ne: false } },
     {
       $set: {
         lastLogin: new Date(),
@@ -398,11 +514,45 @@ async function updateAdminLogin(admin: DatabaseRecord): Promise<void> {
     },
     { runValidators: true },
   ).exec();
+
+  return result.matchedCount === 1;
 }
 
-async function updateStudentMainLogin(student: DatabaseRecord): Promise<void> {
-  await StudentModel.updateOne(
-    { _id: student._id },
+async function updateStudentAdminLogin(
+  admin: DatabaseRecord,
+  model: StudentAdminModel,
+): Promise<boolean> {
+  const result = await model.updateOne(
+    {
+      _id: admin._id,
+      isActive: true,
+      isEmailVerified: true,
+      registrationStatus: "active",
+      role: "Student Operations Admin",
+    },
+    {
+      $set: {
+        lastLogin: new Date(),
+        "security.loginAttempts": 0,
+        "security.accountLocked": false,
+        "security.lockedUntil": null,
+      },
+      $inc: { loginCount: 1 },
+    },
+    { runValidators: true },
+  ).exec();
+
+  return result.matchedCount === 1;
+}
+
+async function updateStudentMainLogin(student: DatabaseRecord): Promise<boolean> {
+  const result = await StudentModel.updateOne(
+    {
+      _id: student._id,
+      isActive: { $ne: false },
+      loginEnabled: true,
+      credentialsGenerated: true,
+    },
     {
       $set: {
         lastLoginAt: new Date(),
@@ -413,13 +563,20 @@ async function updateStudentMainLogin(student: DatabaseRecord): Promise<void> {
     },
     { runValidators: true },
   ).exec();
+
+  return result.matchedCount === 1;
 }
 
 async function updateStudentDashboardLogin(
   student: DatabaseRecord,
-): Promise<void> {
-  await StudentModel.updateOne(
-    { _id: student._id },
+): Promise<boolean> {
+  const result = await StudentModel.updateOne(
+    {
+      _id: student._id,
+      isActive: { $ne: false },
+      dashboardLoginEnabled: true,
+      dashboardCredentialsGenerated: true,
+    },
     {
       $set: {
         dashboardLastLoginAt: new Date(),
@@ -430,6 +587,8 @@ async function updateStudentDashboardLogin(
     },
     { runValidators: true },
   ).exec();
+
+  return result.matchedCount === 1;
 }
 
 async function registerFailedLogin(
@@ -455,28 +614,102 @@ async function registerFailedLogin(
         ? "dashboardLockedUntil"
         : "lockedUntil";
 
-  const security = getAdminSecurity(record);
-  const currentAttempts = numberValue(
-    kind === "admin" ? security.loginAttempts : record[attemptsField],
-  );
-  const nextAttempts = Math.max(0, Math.floor(currentAttempts)) + 1;
-  const locked = nextAttempts >= MAX_LOGIN_ATTEMPTS;
-  const update = {
-    $set: {
-      [attemptsField]: nextAttempts,
-      ...(locked
-        ? {
-            [lockField]: true,
-            [untilField]: new Date(Date.now() + LOCK_TIME_MS),
-          }
-        : {}),
-    },
-  };
+  const filter = { _id: record._id };
+  const update = { $inc: { [attemptsField]: 1 } };
 
   if (kind === "admin") {
-    await AdminModel.updateOne({ _id: record._id }, update).exec();
+    await AdminModel.updateOne(filter, update).exec();
   } else {
-    await StudentModel.updateOne({ _id: record._id }, update).exec();
+    await StudentModel.updateOne(filter, update).exec();
+  }
+
+  const updatedRecord =
+    kind === "admin"
+      ? asRecord(
+          await AdminModel.findById(record._id)
+            .select("security.loginAttempts")
+            .lean()
+            .exec(),
+        )
+      : asRecord(
+          await StudentModel.findById(record._id)
+            .select("loginAttempts dashboardLoginAttempts")
+            .lean()
+            .exec(),
+        );
+
+  const updatedSecurity = getAdminSecurity(updatedRecord);
+  const attempts = Math.max(
+    0,
+    Math.floor(
+      numberValue(
+        kind === "admin"
+          ? updatedSecurity.loginAttempts
+          : updatedRecord[attemptsField],
+      ),
+    ),
+  );
+  const locked = attempts >= MAX_LOGIN_ATTEMPTS;
+
+  if (locked) {
+    const lockUpdate = {
+      $set: {
+        [lockField]: true,
+        [untilField]: new Date(Date.now() + LOCK_TIME_MS),
+      },
+    };
+    const lockFilter = { ...filter, [lockField]: { $ne: true } };
+
+    if (kind === "admin") {
+      await AdminModel.updateOne(lockFilter, lockUpdate).exec();
+    } else {
+      await StudentModel.updateOne(lockFilter, lockUpdate).exec();
+    }
+  }
+
+  return {
+    locked,
+    retryAfter: locked ? Math.ceil(LOCK_TIME_MS / 1000) : 0,
+  };
+}
+
+async function registerFailedStudentAdminLogin(
+  admin: DatabaseRecord,
+  model: StudentAdminModel,
+): Promise<{ locked: boolean; retryAfter: number }> {
+  const filter = { _id: admin._id };
+
+  await model.updateOne(
+    filter,
+    { $inc: { "security.loginAttempts": 1 } },
+    { runValidators: true },
+  ).exec();
+
+  const updatedAdmin = asRecord(
+    await model
+      .findById(admin._id)
+      .select("security.loginAttempts")
+      .lean()
+      .exec(),
+  );
+  const updatedSecurity = getAdminSecurity(updatedAdmin);
+  const attempts = Math.max(
+    0,
+    Math.floor(numberValue(updatedSecurity.loginAttempts)),
+  );
+  const locked = attempts >= MAX_LOGIN_ATTEMPTS;
+
+  if (locked) {
+    await model.updateOne(
+      { ...filter, "security.accountLocked": { $ne: true } },
+      {
+        $set: {
+          "security.accountLocked": true,
+          "security.lockedUntil": new Date(Date.now() + LOCK_TIME_MS),
+        },
+      },
+      { runValidators: true },
+    ).exec();
   }
 
   return {
@@ -513,7 +746,11 @@ function validateLoginInput(
     };
   }
 
-  if (identifier.length > MAX_IDENTIFIER_LENGTH) {
+  if (
+    identifier.length > MAX_IDENTIFIER_LENGTH ||
+    !identifier.trim() ||
+    /[\u0000-\u001f\u007f]/.test(identifier)
+  ) {
     return {
       valid: false,
       result: {
@@ -526,7 +763,8 @@ function validateLoginInput(
 
   if (
     password.length < MIN_PASSWORD_LENGTH ||
-    password.length > MAX_PASSWORD_LENGTH
+    password.length > MAX_PASSWORD_LENGTH ||
+    password.includes("\u0000")
   ) {
     return {
       valid: false,
@@ -546,6 +784,7 @@ function failure(message: string, code: string): LoginFailure {
 }
 
 function getSessionTypeForUser(user: AuthUser): AuthSessionType {
+  if (user.authenticationMode === "student-admin") return "student-admin";
   if (user.userType === "admin") return "admin";
   return user.authenticationMode === "student-dashboard"
     ? "student-dashboard"
@@ -557,14 +796,15 @@ function createUserToken(user: AuthUser): string {
     throw new Error("Cannot create a session without a user ID and identifier.");
   }
 
+  const sessionType = getSessionTypeForUser(user);
+  const role = user.userType;
+
   const coreUser: CoreAuthUser = {
     id: user.id,
     identifier: user.identifier,
-    role: user.userType,
-    ...(user.userType === "admin"
-      ? { adminRole: normalizeAdminRole(user.role) }
-      : {}),
-    sessionType: getSessionTypeForUser(user),
+    role,
+    ...(role === "admin" ? { adminRole: normalizeAdminRole(user.role) } : {}),
+    sessionType,
   };
 
   return createAccessToken(coreUser);
@@ -575,6 +815,10 @@ async function authenticateAdmin(
   password: string,
 ): Promise<LoginResult> {
   await clearExpiredAdminLock(admin);
+
+  if (!VALID_ADMIN_ROLES.includes(stringValue(admin.role) as AdminRole) || isStudentOperationsAdmin(admin.role)) {
+    return failure("Admin account role is not configured correctly.", "AUTHENTICATION_ERROR");
+  }
 
   if (admin.isActive === false) {
     return failure("This admin account is inactive.", "ACCOUNT_DISABLED");
@@ -616,12 +860,93 @@ async function authenticateAdmin(
     return failure("Admin account is not configured correctly.", "AUTHENTICATION_ERROR");
   }
 
-  await updateAdminLogin(admin);
+  const accountStillActive = await updateAdminLogin(admin);
+  if (!accountStillActive) {
+    return failure(
+      "This admin account is no longer active. Please contact the administrator.",
+      "ACCOUNT_DISABLED",
+    );
+  }
+
   return {
     success: true,
-    message: isStudentOperationsAdmin(user.role)
-      ? "Student Operations Admin login successful."
-      : "Admin login successful.",
+    message: "Admin login successful.",
+    user,
+    token: createUserToken(user),
+    expiresIn: AUTH_SESSION_MAX_AGE,
+  };
+}
+
+async function authenticateStudentAdmin(
+  admin: DatabaseRecord,
+  password: string,
+  model: StudentAdminModel,
+): Promise<LoginResult> {
+  await clearExpiredStudentAdminLock(admin, model);
+
+  if (admin.role !== "Student Operations Admin") {
+    return failure("Student Admin role is not configured correctly.", "AUTHENTICATION_ERROR");
+  }
+
+  if (admin.isEmailVerified !== true) {
+    return failure("Please verify your Student Operations Admin email before signing in.", "EMAIL_NOT_VERIFIED");
+  }
+
+  if (admin.registrationStatus !== "active") {
+    return failure("Student Operations Admin registration is not active yet.", "REGISTRATION_NOT_ACTIVE");
+  }
+
+  if (admin.isActive !== true) {
+    return failure("This Student Operations Admin account is inactive.", "ACCOUNT_DISABLED");
+  }
+
+  if (studentAdminIsLocked(admin)) {
+    const security = getAdminSecurity(admin);
+    return {
+      success: false,
+      message: "Student Operations Admin account is temporarily locked.",
+      code: "ACCOUNT_TEMPORARILY_LOCKED",
+      retryAfter: lockRemaining(security.lockedUntil),
+    };
+  }
+
+  const storedPassword = stringValue(admin.password);
+  if (!storedPassword) {
+    return failure(
+      "Student Admin credentials are not configured correctly.",
+      "AUTHENTICATION_ERROR",
+    );
+  }
+
+  if (!(await verifyUserPassword(password, storedPassword))) {
+    const failed = await registerFailedStudentAdminLogin(admin, model);
+    if (failed.locked) {
+      return {
+        success: false,
+        message: "Student Operations Admin account locked after multiple failed attempts.",
+        code: "ACCOUNT_TEMPORARILY_LOCKED",
+        retryAfter: failed.retryAfter,
+      };
+    }
+    return invalidCredentials();
+  }
+
+  const user = sanitizeStudentAdmin(admin);
+  if (!user.id || !user.identifier || !user.email) {
+    return failure("Student Admin account is not configured correctly.", "AUTHENTICATION_ERROR");
+  }
+
+  const accountStillActive = await updateStudentAdminLogin(admin, model);
+  if (!accountStillActive) {
+    return failure(
+      "Student Operations Admin account is no longer active. Please contact the administrator.",
+      "ACCOUNT_DISABLED",
+    );
+  }
+
+  return {
+    success: true,
+    message: "Student Operations Admin login successful.",
     user,
     token: createUserToken(user),
     expiresIn: AUTH_SESSION_MAX_AGE,
@@ -660,6 +985,7 @@ function validateMainStudentWorkflow(student: DatabaseRecord): LoginFailure | nu
       "CREDENTIALS_EXPIRED",
     );
   }
+
   return null;
 }
 
@@ -672,6 +998,7 @@ async function authenticateStudentMain(
   if (student.isActive === false) {
     return failure("This student account is inactive.", "ACCOUNT_DISABLED");
   }
+
   if (studentMainIsLocked(student)) {
     return {
       success: false,
@@ -699,7 +1026,6 @@ async function authenticateStudentMain(
     return invalidCredentials();
   }
 
-  // Check workflow only after password verification to avoid exposing account state.
   const workflowError = validateMainStudentWorkflow(student);
   if (workflowError) return workflowError;
 
@@ -708,7 +1034,14 @@ async function authenticateStudentMain(
     return failure("Student account is not configured correctly.", "AUTHENTICATION_ERROR");
   }
 
-  await updateStudentMainLogin(student);
+  const accountStillEligible = await updateStudentMainLogin(student);
+  if (!accountStillEligible) {
+    return failure(
+      "Student login is no longer enabled for this account.",
+      "LOGIN_DISABLED",
+    );
+  }
+
   return {
     success: true,
     message: "Student login successful.",
@@ -765,6 +1098,7 @@ async function validateDashboardWorkflow(
       "DASHBOARD_CREDENTIALS_EXPIRED",
     );
   }
+
   return null;
 }
 
@@ -810,7 +1144,6 @@ export async function loginStudentDashboard(
       return invalidCredentials();
     }
 
-    // Only reveal workflow-specific status after the password is proven.
     const workflowError = await validateDashboardWorkflow(student);
     if (workflowError) return workflowError;
 
@@ -819,7 +1152,14 @@ export async function loginStudentDashboard(
       return failure("Student dashboard account is not configured correctly.", "AUTHENTICATION_ERROR");
     }
 
-    await updateStudentDashboardLogin(student);
+    const accountStillEligible = await updateStudentDashboardLogin(student);
+    if (!accountStillEligible) {
+      return failure(
+        "Student dashboard access is no longer enabled for this account.",
+        "DASHBOARD_LOGIN_NOT_ENABLED",
+      );
+    }
+
     return {
       success: true,
       message: "Student dashboard login successful.",
@@ -828,7 +1168,7 @@ export async function loginStudentDashboard(
       expiresIn: AUTH_SESSION_MAX_AGE,
     };
   } catch (error) {
-    console.error("[CyberNet Auth] Dashboard login failed.", error);
+    logAuthenticationFailure("Dashboard login failed", error);
     return failure("Unable to complete dashboard login.", "INTERNAL_SERVER_ERROR");
   }
 }
@@ -838,71 +1178,148 @@ export async function login(input: LoginInput): Promise<LoginResult> {
     const validation = validateLoginInput(input);
     if (!validation.valid) return validation.result;
 
-    await connectDB();
+    const identifier = validation.identifier;
+    const mode = input.mode ?? "auto";
 
-    // Admin identities (including Student Operations Admin) are resolved first.
-    const admin = await findAdmin(validation.identifier);
-    if (admin) return authenticateAdmin(admin, validation.password);
-
-    const student = await findStudentForMainLogin(validation.identifier);
-    if (student) {
-      const mainHash = getStudentMainPasswordHash(student);
-      if (mainHash && (await verifyUserPassword(validation.password, mainHash))) {
-        // The password is verified here; authenticateStudentMain re-verifies to
-        // keep one self-contained code path and avoid accepting an unverified flag.
-        return authenticateStudentMain(student, validation.password);
-      }
-
-      // If the main credential didn't match, try the separate dashboard credential.
-      // The dashboard service only returns workflow status after password verification.
-      const dashboardResult = await loginStudentDashboard(validation);
-      if (dashboardResult.success) return dashboardResult;
-
-      await clearExpiredStudentMainLock(student);
-      if (studentMainIsLocked(student)) {
-        return {
-          success: false,
-          message: "Student account is temporarily locked.",
-          code: "ACCOUNT_TEMPORARILY_LOCKED",
-          retryAfter: lockRemaining(student.lockedUntil),
-        };
-      }
-
-      // Only these results are emitted after the dashboard password has been
-      // verified. Other failures (for example, a missing dashboard hash) do not
-      // prove that the submitted password was valid for either account.
-      const verifiedDashboardWorkflowCodes = new Set([
-        "EMAIL_NOT_VERIFIED",
-        "APPLICATION_NOT_APPROVED",
-        "ASSESSMENT_NOT_PASSED",
-        "INTERNSHIP_NOT_APPROVED",
-        "PAYMENT_NOT_VERIFIED",
-        "STUDENT_OPS_NOT_APPROVED",
-        "STUDENT_OPS_NOT_ACTIVE",
-        "DASHBOARD_NOT_ACTIVE",
-        "DASHBOARD_LOGIN_NOT_ENABLED",
-        "DASHBOARD_CREDENTIALS_NOT_GENERATED",
-        "DASHBOARD_CREDENTIALS_EXPIRED",
-      ]);
-      if (verifiedDashboardWorkflowCodes.has(dashboardResult.code)) {
-        return dashboardResult;
-      }
-
-      const failed = await registerFailedLogin("student", student);
-      if (failed.locked) {
-        return {
-          success: false,
-          message: "Student account locked after multiple failed attempts.",
-          code: "ACCOUNT_TEMPORARILY_LOCKED",
-          retryAfter: failed.retryAfter,
-        };
-      }
-      return invalidCredentials();
+    if (
+      mode !== "auto" &&
+      mode !== "admin" &&
+      mode !== "student-admin" &&
+      mode !== "student" &&
+      mode !== "student-dashboard"
+    ) {
+      return failure("Invalid authentication mode.", "INVALID_AUTH_MODE");
     }
 
-    return loginStudentDashboard(validation);
+    if (mode === "student-dashboard") {
+      return loginStudentDashboard(validation);
+    }
+
+    let studentAdminDatabaseUnavailable = false;
+
+    if (mode === "student-admin" || mode === "auto") {
+      try {
+        const { admin, model } = await findStudentAdmin(identifier);
+
+        if (admin) {
+          return authenticateStudentAdmin(admin, validation.password, model);
+        }
+
+        if (mode === "student-admin") {
+          return invalidCredentials();
+        }
+      } catch (error) {
+        studentAdminDatabaseUnavailable = true;
+        logAuthenticationFailure("Student Operations authentication lookup failed", error);
+
+        if (mode === "student-admin") {
+          return failure(
+            "Student Operations authentication is temporarily unavailable. Check the Student Operations MongoDB connection and network access list.",
+            "INTERNAL_SERVER_ERROR",
+          );
+        }
+      }
+    }
+
+    await connectDB();
+
+    if (mode === "admin" || mode === "auto") {
+      const admin = await findAdmin(identifier);
+      if (admin) {
+        if (isStudentOperationsAdmin(admin.role)) return invalidCredentials();
+        return authenticateAdmin(admin, validation.password);
+      }
+      if (mode === "admin") return invalidCredentials();
+    }
+
+    if (mode === "student" || mode === "auto") {
+      const student = await findStudentForMainLogin(identifier);
+
+      if (student) {
+        const mainHash = getStudentMainPasswordHash(student);
+
+        if (mainHash && (await verifyUserPassword(validation.password, mainHash))) {
+          return authenticateStudentMain(student, validation.password);
+        }
+
+        if (mode === "student") {
+          await clearExpiredStudentMainLock(student);
+
+          if (studentMainIsLocked(student)) {
+            return {
+              success: false,
+              message: "Student account is temporarily locked.",
+              code: "ACCOUNT_TEMPORARILY_LOCKED",
+              retryAfter: lockRemaining(student.lockedUntil),
+            };
+          }
+
+          const failed = await registerFailedLogin("student", student);
+          if (failed.locked) {
+            return {
+              success: false,
+              message: "Student account locked after multiple failed attempts.",
+              code: "ACCOUNT_TEMPORARILY_LOCKED",
+              retryAfter: failed.retryAfter,
+            };
+          }
+
+          return invalidCredentials();
+        }
+
+        const dashboardResult = await loginStudentDashboard(validation);
+        if (dashboardResult.success) return dashboardResult;
+
+        await clearExpiredStudentMainLock(student);
+
+        if (studentMainIsLocked(student)) {
+          return {
+            success: false,
+            message: "Student account is temporarily locked.",
+            code: "ACCOUNT_TEMPORARILY_LOCKED",
+            retryAfter: lockRemaining(student.lockedUntil),
+          };
+        }
+
+        const verifiedDashboardFailureCodes = new Set([
+          "EMAIL_NOT_VERIFIED",
+          "APPLICATION_NOT_APPROVED",
+          "ASSESSMENT_NOT_PASSED",
+          "INTERNSHIP_NOT_APPROVED",
+          "PAYMENT_NOT_VERIFIED",
+          "STUDENT_OPS_NOT_APPROVED",
+          "STUDENT_OPS_NOT_ACTIVE",
+          "DASHBOARD_NOT_ACTIVE",
+          "DASHBOARD_LOGIN_NOT_ENABLED",
+          "DASHBOARD_CREDENTIALS_NOT_GENERATED",
+          "DASHBOARD_CREDENTIALS_EXPIRED",
+          "DASHBOARD_ACCOUNT_TEMPORARILY_LOCKED",
+        ]);
+
+        if (verifiedDashboardFailureCodes.has(dashboardResult.code)) {
+          return dashboardResult;
+        }
+
+        return invalidCredentials();
+      }
+
+      if (mode === "student") return invalidCredentials();
+    }
+
+    if (mode === "auto") {
+      if (studentAdminDatabaseUnavailable) {
+        return failure(
+          "Main database was reachable, but Student Operations authentication could not be checked. Student Admin login is temporarily unavailable; Main Admin accounts can still sign in if their Main database record is valid.",
+          "INTERNAL_SERVER_ERROR",
+        );
+      }
+
+      return loginStudentDashboard(validation);
+    }
+
+    return invalidCredentials();
   } catch (error) {
-    console.error("[CyberNet Auth] Login failed.", error);
+    logAuthenticationFailure("Login failed", error);
     return failure("Unable to complete login.", "INTERNAL_SERVER_ERROR");
   }
 }
@@ -957,7 +1374,7 @@ export async function canAccessStudentDashboard(
       message: "Student dashboard access granted.",
     };
   } catch (error) {
-    console.error("[CyberNet Auth] Dashboard access check failed.", error);
+    logAuthenticationFailure("Dashboard access check failed", error);
     return {
       allowed: false,
       code: "INTERNAL_SERVER_ERROR",

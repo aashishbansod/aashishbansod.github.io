@@ -1,16 +1,10 @@
-import {
-  NextRequest,
-  NextResponse,
-} from "next/server";
-
+import { NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
-
 import {
   ADMIN_AUTH_COOKIE_NAME,
   AUTH_COOKIE_NAME,
   verifyAccessToken,
 } from "@/lib/auth";
-
 import {
   approveStudentOperations,
   generateDashboardCredentials,
@@ -18,88 +12,9 @@ import {
   type StudentActor,
 } from "@/services/student.service";
 
-/* ============================================================
-   CYBERNET CAREERS
-   STUDENT OPERATIONS / STUDENT ADMIN
-   STUDENTS API
-   ============================================================
-
-   GET
-   ------------------------------------------------------------
-   /api/student-admin/students
-
-   Features:
-   - secure admin authentication
-   - pagination
-   - search
-   - application filters
-   - assessment filters
-   - internship filters
-   - payment filters
-   - Student Operations filters
-   - dashboard filters
-   - pending review queue
-
-   POST
-   ------------------------------------------------------------
-   approve
-   reject
-   generate-credentials
-   resend-credentials
-
-   IMPORTANT WORKFLOW
-   ------------------------------------------------------------
-
-   Application
-        ↓
-   Main Admin Approval
-        ↓
-   Main Student Login
-        ↓
-   Assessment
-        ↓
-   Assessment Passed
-        ↓
-   Internship Selection
-        ↓
-   Razorpay Payment
-        ↓
-   Server Payment Verification
-        ↓
-   Student Operations Review
-        ↓
-   Student Operations Approval
-        ↓
-   Dashboard Credentials
-        ↓
-   Dashboard Active
-        ↓
-   Internship
-        ↓
-   Project
-        ↓
-   Certificate
-
-   SECURITY
-   ------------------------------------------------------------
-   - Admin session required.
-   - Student session rejected.
-   - Dashboard session rejected.
-   - Student Operations roles only.
-   - Passwords never returned.
-   - Password hashes never returned.
-   - Payment cannot be manually marked paid.
-   - Dashboard activation is handled by student.service.ts.
-   - All lifecycle mutations go through student.service.ts.
-   ============================================================ */
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-/* ============================================================
-   CONFIG
-   ============================================================ */
 
 const MAX_BODY_BYTES = 20_000;
 const MAX_SEARCH_LENGTH = 120;
@@ -108,38 +23,30 @@ const DEFAULT_PAGE_SIZE = 25;
 const MAX_REASON_LENGTH = 1_000;
 const MAX_STUDENT_ID_LENGTH = 100;
 
-const AUTHORIZED_ROLES = new Set<string>([
-  "Super Admin",
-  "Admin",
-  "Student Operations Admin",
+const AUTHORIZED_ROLES = new Set([
+  "super admin",
+  "admin",
+  "student operations admin",
 ]);
 
-const SUPPORTED_ACTIONS = new Set<string>([
+const SUPPORTED_ACTIONS = new Set([
   "approve",
   "reject",
   "generate-credentials",
   "resend-credentials",
 ]);
 
-/* ============================================================
-   TYPES
-   ============================================================ */
+const ALLOWED_QUERY_FILTERS = new Set([
+  "applicationStatus",
+  "assessmentStatus",
+  "internshipStatus",
+  "paymentStatus",
+  "studentOpsApprovalStatus",
+  "studentOpsStatus",
+  "dashboardStatus",
+]);
 
 type JsonObject = Record<string, unknown>;
-
-type AdminTokenPayload = {
-  userId?: unknown;
-  id?: unknown;
-  identifier?: unknown;
-
-  role?: unknown;
-  adminRole?: unknown;
-
-  sessionType?: unknown;
-  authenticationMode?: unknown;
-
-  [key: string]: unknown;
-};
 
 type AuthenticatedAdmin = {
   id: string;
@@ -153,14 +60,21 @@ type PostAction =
   | "generate-credentials"
   | "resend-credentials";
 
-/* ============================================================
-   BASIC HELPERS
-   ============================================================ */
+type ParsedPostBody =
+  | {
+      success: true;
+      action: PostAction;
+      studentId: string;
+      reason?: string;
+      sendCredentials?: boolean;
+    }
+  | {
+      success: false;
+      response: NextResponse;
+    };
 
 function cleanString(value: unknown): string {
-  return typeof value === "string"
-    ? value.trim()
-    : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function lowerString(value: unknown): string {
@@ -168,41 +82,40 @@ function lowerString(value: unknown): string {
 }
 
 function isObject(value: unknown): value is JsonObject {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  );
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/* ============================================================
-   REQUEST ID
-   ============================================================ */
+function normalizeRole(value: unknown): string {
+  const role = lowerString(value);
 
-function getRequestId(request: NextRequest): string {
-  const incoming = cleanString(
-    request.headers.get("x-request-id"),
-  );
+  if (role === "super admin" || role === "super_admin" || role === "super-admin") {
+    return "Super Admin";
+  }
 
   if (
-    incoming &&
-    /^[a-zA-Z0-9._:-]{8,128}$/.test(incoming)
+    role === "student operations admin" ||
+    role === "student_operations_admin" ||
+    role === "student-operations-admin"
   ) {
+    return "Student Operations Admin";
+  }
+
+  if (role === "admin") {
+    return "Admin";
+  }
+
+  return cleanString(value);
+}
+
+function getRequestId(request: NextRequest): string {
+  const incoming = cleanString(request.headers.get("x-request-id"));
+
+  if (incoming && /^[a-zA-Z0-9._:-]{8,128}$/.test(incoming)) {
     return incoming;
   }
 
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `student-admin-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
-  }
+  return crypto.randomUUID();
 }
-
-/* ============================================================
-   SECURITY HEADERS
-   ============================================================ */
 
 function applySecurityHeaders(
   response: NextResponse,
@@ -210,58 +123,25 @@ function applySecurityHeaders(
 ): NextResponse {
   response.headers.set(
     "Cache-Control",
-    "private, no-store, no-cache, must-revalidate, proxy-revalidate",
+    "private, no-store, no-cache, must-revalidate",
   );
-
-  response.headers.set(
-    "Pragma",
-    "no-cache",
-  );
-
-  response.headers.set(
-    "Expires",
-    "0",
-  );
-
-  response.headers.set(
-    "X-Content-Type-Options",
-    "nosniff",
-  );
-
-  response.headers.set(
-    "X-Frame-Options",
-    "DENY",
-  );
-
-  response.headers.set(
-    "Referrer-Policy",
-    "strict-origin-when-cross-origin",
-  );
-
-  response.headers.set(
-    "X-Request-Id",
-    requestId,
-  );
-
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("Expires", "0");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.headers.set("X-Request-Id", requestId);
+  response.headers.set("Vary", "Cookie, Origin");
   return response;
 }
 
-/* ============================================================
-   RESPONSE HELPERS
-   ============================================================ */
-
-function response(
+function jsonResponse(
   body: unknown,
   status: number,
   requestId: string,
 ): NextResponse {
   return applySecurityHeaders(
-    NextResponse.json(
-      body,
-      {
-        status,
-      },
-    ),
+    NextResponse.json(body, { status }),
     requestId,
   );
 }
@@ -278,24 +158,12 @@ function successResponse(
     message: string;
     code?: string;
     data?: unknown;
-  } = {
-    success: true,
-    message,
-  };
+  } = { success: true, message };
 
-  if (code) {
-    body.code = code;
-  }
+  if (code) body.code = code;
+  if (typeof data !== "undefined") body.data = data;
 
-  if (typeof data !== "undefined") {
-    body.data = data;
-  }
-
-  return response(
-    body,
-    status,
-    requestId,
-  );
+  return jsonResponse(body, status, requestId);
 }
 
 function errorResponse(
@@ -304,7 +172,7 @@ function errorResponse(
   code: string,
   status: number,
 ): NextResponse {
-  return response(
+  return jsonResponse(
     {
       success: false,
       message,
@@ -316,99 +184,126 @@ function errorResponse(
   );
 }
 
-/* ============================================================
-   SAME ORIGIN
-   ============================================================ */
+function getExpectedRequestOrigin(request: NextRequest): string | null {
+  const forwardedHost = cleanString(request.headers.get("x-forwarded-host"));
+  const host = forwardedHost || cleanString(request.headers.get("host"));
+  const forwardedProto = cleanString(
+    request.headers.get("x-forwarded-proto"),
+  ).split(",")[0]?.trim();
+  const protocol = forwardedProto || new URL(request.url).protocol.replace(":", "");
 
-function validateOrigin(
-  request: NextRequest,
-): boolean {
-  const origin = cleanString(
-    request.headers.get("origin"),
-  );
+  if (!host || !["http", "https"].includes(protocol)) {
+    return null;
+  }
 
-  /*
-   * Browser requests without Origin can be legitimate.
-   */
+  return `${protocol}://${host}`;
+}
+
+function validateOrigin(request: NextRequest): boolean {
+  const origin = cleanString(request.headers.get("origin"));
+
   if (!origin) {
-    return true;
+    return false;
   }
 
   try {
-    const requestUrl = new URL(
-      request.url,
-    );
+    const originUrl = new URL(origin);
+    const expectedOrigin = getExpectedRequestOrigin(request);
 
-    const originUrl = new URL(
-      origin,
-    );
+    if (!expectedOrigin) {
+      return false;
+    }
+
+    const expectedUrl = new URL(expectedOrigin);
 
     return (
-      requestUrl.protocol ===
-        originUrl.protocol &&
-      requestUrl.host ===
-        originUrl.host
+      originUrl.origin === expectedUrl.origin &&
+      (originUrl.protocol === "https:" || originUrl.hostname === "localhost" || originUrl.hostname === "127.0.0.1")
     );
   } catch {
     return false;
   }
 }
 
-/* ============================================================
-   CONTENT LENGTH
-   ============================================================ */
-
-function validateContentLength(
-  request: NextRequest,
-): boolean {
-  const value = request.headers.get(
-    "content-length",
-  );
-
-  if (!value) {
-    return true;
-  }
-
-  const length = Number(value);
-
-  if (!Number.isFinite(length)) {
-    return false;
-  }
-
-  return length <= MAX_BODY_BYTES;
+function validateContentType(request: NextRequest): boolean {
+  const contentType = lowerString(request.headers.get("content-type"));
+  return /^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType);
 }
 
-/* ============================================================
-   ADMIN AUTHENTICATION
-   ============================================================ */
+function validateContentLength(request: NextRequest): boolean {
+  const value = request.headers.get("content-length");
+
+  if (!value) return true;
+
+  if (!/^\d+$/.test(value)) return false;
+
+  const length = Number(value);
+  return Number.isSafeInteger(length) && length >= 0 && length <= MAX_BODY_BYTES;
+}
+
+async function readBoundedBody(
+  request: NextRequest,
+): Promise<
+  | { success: true; body: string }
+  | { success: false; reason: "too-large" | "unreadable" }
+> {
+  if (!request.body) {
+    return { success: true, body: "" };
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+
+      if (totalBytes > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return { success: false, reason: "too-large" };
+      }
+
+      chunks.push(value);
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return { success: false, reason: "unreadable" };
+  }
+
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return {
+      success: true,
+      body: new TextDecoder("utf-8", { fatal: true }).decode(combined),
+    };
+  } catch {
+    return { success: false, reason: "unreadable" };
+  }
+}
 
 async function authenticateAdmin(
   request: NextRequest,
   requestId: string,
 ): Promise<
-  | {
-      success: true;
-      admin: AuthenticatedAdmin;
-    }
-  | {
-      success: false;
-      response: NextResponse;
-    }
+  | { success: true; admin: AuthenticatedAdmin }
+  | { success: false; response: NextResponse }
 > {
-  /*
-   * Student Operations uses the dedicated admin cookie.
-   *
-   * Legacy AUTH cookie remains supported because the
-   * project still has legacy authentication compatibility.
-   */
-  const token =
-    request.cookies.get(
-      ADMIN_AUTH_COOKIE_NAME,
-    )?.value ||
-    request.cookies.get(
-      AUTH_COOKIE_NAME,
-    )?.value ||
-    "";
+  const adminCookie = request.cookies.get(ADMIN_AUTH_COOKIE_NAME)?.value;
+  const legacyCookie = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const token = adminCookie || legacyCookie || "";
 
   if (!token) {
     return {
@@ -423,12 +318,9 @@ async function authenticateAdmin(
   }
 
   try {
-    const payload =
-      await verifyAccessToken(
-        token,
-      );
+    const payload = await verifyAccessToken(token);
 
-    if (!payload) {
+    if (!isObject(payload)) {
       return {
         success: false,
         response: errorResponse(
@@ -440,31 +332,34 @@ async function authenticateAdmin(
       };
     }
 
-    /*
-     * verifyAccessToken may return a generic/empty object
-     * depending on the current auth implementation.
-     *
-     * Convert it to a controlled runtime object first.
-     */
-    const payloadObject =
-      isObject(payload)
-        ? (payload as AdminTokenPayload)
-        : {};
+    const sessionType = lowerString(
+      payload.sessionType ?? payload.authenticationMode,
+    );
+
+    if (
+      sessionType &&
+      sessionType !== "admin" &&
+      sessionType !== "student-admin"
+    ) {
+      return {
+        success: false,
+        response: errorResponse(
+          requestId,
+          "This session cannot access Student Operations.",
+          "INVALID_SESSION_TYPE",
+          403,
+        ),
+      };
+    }
 
     const userId = cleanString(
-      payloadObject.userId ??
-        payloadObject.id ??
-        payloadObject.identifier,
+      payload.userId ?? payload.id ?? payload.identifier,
     );
 
-    const role = cleanString(
-      payloadObject.role ??
-        payloadObject.adminRole,
-    );
-
-    const sessionType = lowerString(
-      payloadObject.sessionType ??
-        payloadObject.authenticationMode,
+    const effectiveRole = normalizeRole(
+      sessionType === "student-admin"
+        ? payload.adminRole ?? payload.role
+        : payload.role ?? payload.adminRole,
     );
 
     if (!userId) {
@@ -479,40 +374,7 @@ async function authenticateAdmin(
       };
     }
 
-    /*
-     * Student and student-dashboard sessions
-     * must never access this endpoint.
-     */
-    if (
-      sessionType &&
-      sessionType !== "admin"
-    ) {
-      return {
-        success: false,
-        response: errorResponse(
-          requestId,
-          "This session cannot access Student Operations.",
-          "INVALID_SESSION_TYPE",
-          403,
-        ),
-      };
-    }
-
-    if (!role) {
-      return {
-        success: false,
-        response: errorResponse(
-          requestId,
-          "Administrator role information is missing.",
-          "ADMIN_ROLE_MISSING",
-          403,
-        ),
-      };
-    }
-
-    if (
-      !AUTHORIZED_ROLES.has(role)
-    ) {
+    if (!AUTHORIZED_ROLES.has(effectiveRole.toLowerCase())) {
       return {
         success: false,
         response: errorResponse(
@@ -528,19 +390,15 @@ async function authenticateAdmin(
       success: true,
       admin: {
         id: userId,
-        role,
-        sessionType:
-          sessionType || "admin",
+        role: effectiveRole,
+        sessionType: sessionType || "admin",
       },
     };
   } catch (error) {
-    console.error(
-      "[StudentAdminStudents] Authentication error.",
-      {
-        requestId,
-        error,
-      },
-    );
+    console.error("[StudentAdminStudents] Authentication failed.", {
+      requestId,
+      error,
+    });
 
     return {
       success: false,
@@ -554,32 +412,15 @@ async function authenticateAdmin(
   }
 }
 
-/* ============================================================
-   ACTOR
-   ============================================================ */
-
-function createActor(
-  admin: AuthenticatedAdmin,
-): StudentActor {
+function createActor(admin: AuthenticatedAdmin): StudentActor {
   return {
     id: admin.id,
     role: admin.role,
   };
 }
 
-/* ============================================================
-   QUERY HELPERS
-   ============================================================ */
-
-function queryString(
-  request: NextRequest,
-  key: string,
-): string {
-  return cleanString(
-    request.nextUrl.searchParams.get(
-      key,
-    ),
-  );
+function queryString(request: NextRequest, key: string): string {
+  return cleanString(request.nextUrl.searchParams.get(key));
 }
 
 function positiveInteger(
@@ -587,28 +428,16 @@ function positiveInteger(
   fallback: number,
   maximum: number,
 ): number {
+  if (!/^\d+$/.test(value)) return fallback;
+
   const parsed = Number(value);
 
-  if (
-    !Number.isInteger(parsed) ||
-    parsed < 1
-  ) {
-    return fallback;
-  }
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
 
-  return Math.min(
-    parsed,
-    maximum,
-  );
+  return Math.min(parsed, maximum);
 }
 
-/* ============================================================
-   STUDENT LIST QUERY
-   ============================================================ */
-
-function buildListQuery(
-  request: NextRequest,
-): {
+function buildListQuery(request: NextRequest): {
   applicationStatus?: string;
   assessmentStatus?: string;
   internshipStatus?: string;
@@ -620,96 +449,34 @@ function buildListQuery(
   page: number;
   limit: number;
 } {
-  const search = queryString(
-    request,
-    "search",
-  ).slice(
-    0,
-    MAX_SEARCH_LENGTH,
-  );
+  const search = queryString(request, "search").slice(0, MAX_SEARCH_LENGTH);
+  const query: Record<string, string | undefined> = {};
 
-  const page = positiveInteger(
-    queryString(
-      request,
-      "page",
-    ),
-    1,
-    10_000,
-  );
-
-  const limit = positiveInteger(
-    queryString(
-      request,
-      "limit",
-    ),
-    DEFAULT_PAGE_SIZE,
-    MAX_PAGE_SIZE,
-  );
+  for (const key of ALLOWED_QUERY_FILTERS) {
+    const value = queryString(request, key).slice(0, 80);
+    if (value) query[key] = value;
+  }
 
   return {
-    applicationStatus:
-      queryString(
-        request,
-        "applicationStatus",
-      ) || undefined,
-
-    assessmentStatus:
-      queryString(
-        request,
-        "assessmentStatus",
-      ) || undefined,
-
-    internshipStatus:
-      queryString(
-        request,
-        "internshipStatus",
-      ) || undefined,
-
-    paymentStatus:
-      queryString(
-        request,
-        "paymentStatus",
-      ) || undefined,
-
-    studentOpsApprovalStatus:
-      queryString(
-        request,
-        "studentOpsApprovalStatus",
-      ) || undefined,
-
-    studentOpsStatus:
-      queryString(
-        request,
-        "studentOpsStatus",
-      ) || undefined,
-
-    dashboardStatus:
-      queryString(
-        request,
-        "dashboardStatus",
-      ) || undefined,
-
-    search:
-      search || undefined,
-
-    page,
-    limit,
+    applicationStatus: query.applicationStatus,
+    assessmentStatus: query.assessmentStatus,
+    internshipStatus: query.internshipStatus,
+    paymentStatus: query.paymentStatus,
+    studentOpsApprovalStatus: query.studentOpsApprovalStatus,
+    studentOpsStatus: query.studentOpsStatus,
+    dashboardStatus: query.dashboardStatus,
+    search: search || undefined,
+    page: positiveInteger(queryString(request, "page"), 1, 10_000),
+    limit: positiveInteger(
+      queryString(request, "limit"),
+      DEFAULT_PAGE_SIZE,
+      MAX_PAGE_SIZE,
+    ),
   };
 }
 
-/* ============================================================
-   PENDING REVIEW QUEUE
-   ============================================================ */
-
-function isPendingQueue(
-  request: NextRequest,
-): boolean {
-  const queue = lowerString(
-    request.nextUrl.searchParams.get(
-      "queue",
-    ),
-  );
-
+function isPendingQueue(request: NextRequest): boolean {
+  const queue = lowerString(request.nextUrl.searchParams.get("queue"));
   return (
     queue === "pending" ||
     queue === "review" ||
@@ -717,41 +484,29 @@ function isPendingQueue(
   );
 }
 
-/* ============================================================
-   POST BODY
-   ============================================================ */
-
 async function parsePostBody(
   request: NextRequest,
   requestId: string,
-): Promise<
-  | {
-      success: true;
-      action: PostAction;
-      studentId: string;
-      reason?: string;
-      sendCredentials?: boolean;
-    }
-  | {
-      success: false;
-      response: NextResponse;
-    }
-> {
-  let rawBody: string;
+): Promise<ParsedPostBody> {
+  const readResult = await readBoundedBody(request);
 
-  try {
-    rawBody = await request.text();
-  } catch {
+  if (!readResult.success) {
     return {
       success: false,
       response: errorResponse(
         requestId,
-        "Unable to read request body.",
-        "INVALID_REQUEST_BODY",
-        400,
+        readResult.reason === "too-large"
+          ? "Request payload is too large."
+          : "Unable to read request body.",
+        readResult.reason === "too-large"
+          ? "PAYLOAD_TOO_LARGE"
+          : "INVALID_REQUEST_BODY",
+        readResult.reason === "too-large" ? 413 : 400,
       ),
     };
   }
+
+  const rawBody = readResult.body;
 
   if (!rawBody.trim()) {
     return {
@@ -765,29 +520,10 @@ async function parsePostBody(
     };
   }
 
-  if (
-    Buffer.byteLength(
-      rawBody,
-      "utf8",
-    ) > MAX_BODY_BYTES
-  ) {
-    return {
-      success: false,
-      response: errorResponse(
-        requestId,
-        "Request payload is too large.",
-        "PAYLOAD_TOO_LARGE",
-        413,
-      ),
-    };
-  }
-
   let parsed: unknown;
 
   try {
-    parsed = JSON.parse(
-      rawBody,
-    );
+    parsed = JSON.parse(rawBody);
   } catch {
     return {
       success: false,
@@ -812,13 +548,28 @@ async function parsePostBody(
     };
   }
 
-  const action = lowerString(
-    parsed.action,
-  );
+  const allowedKeys = new Set([
+    "action",
+    "studentId",
+    "reason",
+    "sendCredentials",
+  ]);
 
-  if (
-    !SUPPORTED_ACTIONS.has(action)
-  ) {
+  if (Object.keys(parsed).some((key) => !allowedKeys.has(key))) {
+    return {
+      success: false,
+      response: errorResponse(
+        requestId,
+        "Request contains unsupported fields.",
+        "UNKNOWN_FIELDS",
+        400,
+      ),
+    };
+  }
+
+  const action = lowerString(parsed.action);
+
+  if (!SUPPORTED_ACTIONS.has(action)) {
     return {
       success: false,
       response: errorResponse(
@@ -830,45 +581,27 @@ async function parsePostBody(
     };
   }
 
-  const studentId = cleanString(
-    parsed.studentId,
-  );
-
-  if (!studentId) {
-    return {
-      success: false,
-      response: errorResponse(
-        requestId,
-        "Student ID is required.",
-        "STUDENT_ID_REQUIRED",
-        400,
-      ),
-    };
-  }
+  const studentId = cleanString(parsed.studentId);
 
   if (
-    studentId.length >
-    MAX_STUDENT_ID_LENGTH
+    !studentId ||
+    studentId.length > MAX_STUDENT_ID_LENGTH ||
+    !/^[a-zA-Z0-9_-]+$/.test(studentId)
   ) {
     return {
       success: false,
       response: errorResponse(
         requestId,
-        "Student ID is invalid.",
+        "A valid student ID is required.",
         "INVALID_STUDENT_ID",
         400,
       ),
     };
   }
 
-  const reason = cleanString(
-    parsed.reason,
-  );
+  const reason = cleanString(parsed.reason);
 
-  if (
-    action === "reject" &&
-    !reason
-  ) {
+  if (action === "reject" && !reason) {
     return {
       success: false,
       response: errorResponse(
@@ -880,10 +613,7 @@ async function parsePostBody(
     };
   }
 
-  if (
-    reason.length >
-    MAX_REASON_LENGTH
-  ) {
+  if (reason.length > MAX_REASON_LENGTH) {
     return {
       success: false,
       response: errorResponse(
@@ -895,62 +625,55 @@ async function parsePostBody(
     };
   }
 
-  const normalizedAction =
-    action as PostAction;
+  if (
+    typeof parsed.sendCredentials !== "undefined" &&
+    typeof parsed.sendCredentials !== "boolean"
+  ) {
+    return {
+      success: false,
+      response: errorResponse(
+        requestId,
+        "sendCredentials must be a boolean.",
+        "INVALID_CREDENTIALS_OPTION",
+        400,
+      ),
+    };
+  }
 
   return {
     success: true,
-    action:
-      normalizedAction,
+    action: action as PostAction,
     studentId,
-    ...(reason
-      ? {
-          reason,
-        }
-      : {}),
-    ...(typeof parsed.sendCredentials ===
-    "boolean"
-      ? {
-          sendCredentials:
-            parsed.sendCredentials,
-        }
+    ...(reason ? { reason } : {}),
+    ...(typeof parsed.sendCredentials === "boolean"
+      ? { sendCredentials: parsed.sendCredentials }
       : {}),
   };
 }
 
-/* ============================================================
-   SERVICE ERROR STATUS
-   ============================================================ */
-
-function getServiceStatus(
-  code: string,
-): number {
-  switch (
-    lowerString(code)
-  ) {
+function getServiceStatus(code: string): number {
+  switch (lowerString(code)) {
     case "unauthorized":
     case "invalid_session":
     case "authentication_required":
       return 401;
-
     case "forbidden":
       return 403;
-
     case "student_not_found":
       return 404;
-
     case "already_exists":
     case "duplicate":
+    case "invalid_transition":
       return 409;
-
+    case "payment_not_verified":
+    case "internship_not_approved":
+    case "student_ops_not_approved":
+    case "invalid_status":
+      return 422;
     default:
       return 400;
   }
 }
-
-/* ============================================================
-   SERVICE RESULT HANDLER
-   ============================================================ */
 
 function handleServiceResult(
   result: {
@@ -970,88 +693,39 @@ function handleServiceResult(
     );
   }
 
-  const code =
-    cleanString(result.code) ||
-    "STUDENT_OPERATION_FAILED";
+  const code = cleanString(result.code) || "STUDENT_OPERATION_FAILED";
 
   return errorResponse(
     requestId,
-    result.message ||
-      "Student operation failed.",
+    result.message || "Student operation failed.",
     code,
     getServiceStatus(code),
   );
 }
 
-/* ============================================================
-   GET
-   ============================================================ */
-
-export async function GET(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const requestId = getRequestId(request);
 
   try {
-    /*
-     * Admin authentication.
-     */
-    const authentication =
-      await authenticateAdmin(
-        request,
-        requestId,
-      );
+    const authentication = await authenticateAdmin(request, requestId);
 
-    if (!authentication.success) {
-      return authentication.response;
+    if (!authentication.success) return authentication.response;
+
+    const query = buildListQuery(request);
+
+    if (isPendingQueue(request)) {
+      query.paymentStatus = "paid";
+      query.studentOpsApprovalStatus = "pending";
+      query.studentOpsStatus = "pending-review";
     }
 
-    /*
-     * Build safe query.
-     */
-    const query =
-      buildListQuery(request);
-
-    /*
-     * Dedicated Student Operations queue.
-     *
-     * This queue represents:
-     *
-     * Payment Verified
-     *       ↓
-     * Student Operations Pending Review
-     */
-    if (
-      isPendingQueue(request)
-    ) {
-      query.paymentStatus =
-        "paid";
-
-      query.studentOpsApprovalStatus =
-        "pending";
-
-      query.studentOpsStatus =
-        "pending-review";
-    }
-
-    const result =
-      await listStudents(
-        query,
-      );
-
-    return handleServiceResult(
-      result,
-      requestId,
-    );
+    const result = await listStudents(query);
+    return handleServiceResult(result, requestId);
   } catch (error) {
-    console.error(
-      "[StudentAdminStudents][GET] Unexpected error.",
-      {
-        requestId,
-        error,
-      },
-    );
+    console.error("[StudentAdminStudents][GET] Request failed.", {
+      requestId,
+      error,
+    });
 
     return errorResponse(
       requestId,
@@ -1062,46 +736,20 @@ export async function GET(
   }
 }
 
-/* ============================================================
-   POST
-   ============================================================ */
-
-export async function POST(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const requestId = getRequestId(request);
 
   try {
-    /*
-     * CSRF / same-origin protection.
-     */
-    if (
-      !validateOrigin(request)
-    ) {
+    if (!validateOrigin(request)) {
       return errorResponse(
         requestId,
-        "Cross-origin requests are not allowed.",
+        "A valid same-origin request is required.",
         "INVALID_ORIGIN",
         403,
       );
     }
 
-    /*
-     * JSON only.
-     */
-    const contentType =
-      lowerString(
-        request.headers.get(
-          "content-type",
-        ),
-      );
-
-    if (
-      !contentType.startsWith(
-        "application/json",
-      )
-    ) {
+    if (!validateContentType(request)) {
       return errorResponse(
         requestId,
         "Content-Type must be application/json.",
@@ -1110,12 +758,7 @@ export async function POST(
       );
     }
 
-    /*
-     * Request size protection.
-     */
-    if (
-      !validateContentLength(request)
-    ) {
+    if (!validateContentLength(request)) {
       return errorResponse(
         requestId,
         "Request payload is too large or invalid.",
@@ -1124,157 +767,55 @@ export async function POST(
       );
     }
 
-    /*
-     * Authenticate Student Operations admin.
-     */
-    const authentication =
-      await authenticateAdmin(
-        request,
-        requestId,
-      );
+    const authentication = await authenticateAdmin(request, requestId);
 
-    if (!authentication.success) {
-      return authentication.response;
+    if (!authentication.success) return authentication.response;
+
+    const body = await parsePostBody(request, requestId);
+
+    if (!body.success) return body.response;
+
+    const actor = createActor(authentication.admin);
+
+    if (body.action === "approve") {
+      const result = await approveStudentOperations({
+        studentId: body.studentId,
+        actor,
+        approved: true,
+      });
+
+      return handleServiceResult(result, requestId);
     }
 
-    const actor =
-      createActor(
-        authentication.admin,
-      );
+    if (body.action === "reject") {
+      const result = await approveStudentOperations({
+        studentId: body.studentId,
+        actor,
+        approved: false,
+        reason: body.reason,
+      });
 
-    /*
-     * Parse and validate action.
-     */
-    const body =
-      await parsePostBody(
-        request,
-        requestId,
-      );
-
-    if (!body.success) {
-      return body.response;
+      return handleServiceResult(result, requestId);
     }
 
-    const {
-      action,
-      studentId,
-      reason,
-      sendCredentials,
-    } = body;
+    if (body.action === "generate-credentials") {
+      const result = await generateDashboardCredentials({
+        studentId: body.studentId,
+        actor,
+        sendCredentials: body.sendCredentials !== false,
+      });
 
-    /* ========================================================
-       APPROVE
-       ======================================================== */
-
-    if (
-      action === "approve"
-    ) {
-      /*
-       * IMPORTANT:
-       *
-       * approveStudentOperations() is the authoritative
-       * lifecycle mutation.
-       *
-       * It validates:
-       * - verified payment
-       * - approved internship
-       * - Student Operations approval
-       * - dashboard credentials
-       * - dashboard activation
-       * - credential email
-       *
-       * Do NOT manually update Student here.
-       */
-      const result =
-        await approveStudentOperations(
-          {
-            studentId,
-            actor,
-            approved: true,
-          },
-        );
-
-      return handleServiceResult(
-        result,
-        requestId,
-      );
+      return handleServiceResult(result, requestId);
     }
 
-    /* ========================================================
-       REJECT
-       ======================================================== */
+    if (body.action === "resend-credentials") {
+      const result = await generateDashboardCredentials({
+        studentId: body.studentId,
+        actor,
+        sendCredentials: true,
+      });
 
-    if (
-      action === "reject"
-    ) {
-      const result =
-        await approveStudentOperations(
-          {
-            studentId,
-            actor,
-            approved: false,
-            reason,
-          },
-        );
-
-      return handleServiceResult(
-        result,
-        requestId,
-      );
-    }
-
-    /* ========================================================
-       GENERATE CREDENTIALS
-       ======================================================== */
-
-    if (
-      action ===
-      "generate-credentials"
-    ) {
-      const result =
-        await generateDashboardCredentials(
-          {
-            studentId,
-            actor,
-            sendCredentials:
-              sendCredentials !==
-              false,
-          },
-        );
-
-      return handleServiceResult(
-        result,
-        requestId,
-      );
-    }
-
-    /* ========================================================
-       RESEND CREDENTIALS
-       ======================================================== */
-
-    if (
-      action ===
-      "resend-credentials"
-    ) {
-      /*
-       * The service intentionally generates a new secure
-       * temporary password and sends it to the student.
-       *
-       * The password itself is NEVER returned by this API.
-       */
-      const result =
-        await generateDashboardCredentials(
-          {
-            studentId,
-            actor,
-            sendCredentials: true,
-          },
-        );
-
-      return handleServiceResult(
-        result,
-        requestId,
-      );
+      return handleServiceResult(result, requestId);
     }
 
     return errorResponse(
@@ -1284,13 +825,10 @@ export async function POST(
       400,
     );
   } catch (error) {
-    console.error(
-      "[StudentAdminStudents][POST] Unexpected error.",
-      {
-        requestId,
-        error,
-      },
-    );
+    console.error("[StudentAdminStudents][POST] Request failed.", {
+      requestId,
+      error,
+    });
 
     return errorResponse(
       requestId,
@@ -1301,111 +839,27 @@ export async function POST(
   }
 }
 
-/* ============================================================
-   PATCH
-   ============================================================ */
+export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
+  const requestId = getRequestId(request);
 
-export async function PATCH(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
-    "PATCH is not supported. Use the supported Student Operations action.",
-    "METHOD_NOT_ALLOWED",
-    405,
-  );
-}
-
-/* ============================================================
-   PUT
-   ============================================================ */
-
-export async function PUT(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
-    "PUT is not supported for Student Operations.",
-    "METHOD_NOT_ALLOWED",
-    405,
-  );
-}
-
-/* ============================================================
-   DELETE
-   ============================================================ */
-
-export async function DELETE(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
-    "DELETE is not supported for Student Operations.",
-    "METHOD_NOT_ALLOWED",
-    405,
-  );
-}
-
-/* ============================================================
-   HEAD
-   ============================================================ */
-
-export async function HEAD(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
-    "HEAD is not supported.",
-    "METHOD_NOT_ALLOWED",
-    405,
-  );
-}
-
-/* ============================================================
-   OPTIONS
-   ============================================================ */
-
-export async function OPTIONS(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  const result =
-    new NextResponse(
-      null,
-      {
-        status: 204,
-        headers: {
-          Allow:
-            "GET, POST, OPTIONS",
-
-          "Access-Control-Allow-Methods":
-            "GET, POST, OPTIONS",
-
-          "Access-Control-Allow-Headers":
-            "Content-Type, Authorization, X-Requested-With, X-Request-Id",
-
-          "Cache-Control":
-            "no-store",
-        },
-      },
+  if (!validateOrigin(request)) {
+    return errorResponse(
+      requestId,
+      "Cross-origin requests are not allowed.",
+      "INVALID_ORIGIN",
+      403,
     );
+  }
 
-  return applySecurityHeaders(
-    result,
-    requestId,
-  );
+  const response = new NextResponse(null, {
+    status: 204,
+    headers: {
+      Allow: "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, X-Requested-With, X-Request-Id",
+    },
+  });
+
+  return applySecurityHeaders(response, requestId);
 }

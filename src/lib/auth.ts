@@ -7,16 +7,6 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 
-/**
- * CyberNet Careers authentication core.
- *
- * Server-only primitives for password hashing, signed access tokens,
- * session separation, cookie configuration, and authorization helpers.
- *
- * Route handlers must still authorize each request and validate the
- * session type appropriate for the requested portal.
- */
-
 export const runtime = "nodejs";
 
 export type AuthRole = "student" | "admin";
@@ -32,6 +22,7 @@ export type AdminRole =
 export type AuthSessionType =
   | "legacy"
   | "admin"
+  | "student-admin"
   | "student"
   | "student-dashboard";
 
@@ -102,8 +93,21 @@ const VALID_ADMIN_ROLES: readonly AdminRole[] = [
 const VALID_SESSION_TYPES: readonly AuthSessionType[] = [
   "legacy",
   "admin",
+  "student-admin",
   "student",
   "student-dashboard",
+];
+
+const VALID_TOKEN_PAYLOAD_KEYS: readonly string[] = [
+  "sub",
+  "userId",
+  "role",
+  "identifier",
+  "adminRole",
+  "sessionType",
+  "iat",
+  "exp",
+  "jti",
 ];
 
 function getAuthSecret(): string {
@@ -111,7 +115,7 @@ function getAuthSecret(): string {
     throw new Error("AUTH_SECRET is missing. Add AUTH_SECRET to .env.local.");
   }
 
-  if (AUTH_SECRET.length < 32) {
+  if (Buffer.byteLength(AUTH_SECRET, "utf8") < 32) {
     throw new Error("AUTH_SECRET must contain at least 32 characters.");
   }
 
@@ -155,6 +159,7 @@ function base64UrlDecode(value: string): Buffer {
 
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const remainder = normalized.length % 4;
+
   if (remainder === 1) {
     throw new Error("Invalid base64url length.");
   }
@@ -162,7 +167,6 @@ function base64UrlDecode(value: string): Buffer {
   const padding = remainder === 0 ? "" : "=".repeat(4 - remainder);
   const decoded = Buffer.from(normalized + padding, "base64");
 
-  // Reject non-canonical encodings and Node's permissive base64 parsing.
   if (base64UrlEncode(decoded) !== value) {
     throw new Error("Invalid base64url encoding.");
   }
@@ -179,7 +183,7 @@ function createTokenId(): string {
 }
 
 function validatePasswordInput(password: string): void {
-  if (typeof password !== "string" || password.length === 0) {
+  if (typeof password !== "string" || password.length === 0 || password.includes("\u0000")) {
     throw new Error("Password is required.");
   }
   if (password.length < PASSWORD_MIN_LENGTH) {
@@ -212,10 +216,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-/**
- * Produces a salted scrypt hash in the format:
- * scrypt$N$r$p$salt$key
- */
 export async function hashPassword(password: string): Promise<string> {
   validatePasswordInput(password);
 
@@ -237,10 +237,6 @@ export async function hashPassword(password: string): Promise<string> {
   ].join("$");
 }
 
-/**
- * Verifies supported scrypt hashes without throwing for malformed hashes.
- * Passwords are never trimmed or normalized.
- */
 export async function verifyPassword(
   password: string,
   storedHash: string,
@@ -248,7 +244,8 @@ export async function verifyPassword(
   if (
     typeof password !== "string" ||
     password.length === 0 ||
-    password.length > 1024 ||
+    password.length > PASSWORD_MAX_LENGTH ||
+    password.includes("\u0000") ||
     typeof storedHash !== "string" ||
     storedHash.length > 4096
   ) {
@@ -259,7 +256,9 @@ export async function verifyPassword(
     const parts = storedHash.split("$");
     if (parts.length !== 6) return false;
 
-    const [algorithm, nString, rString, pString, saltEncoded, hashEncoded] = parts;
+    const [algorithm, nString, rString, pString, saltEncoded, hashEncoded] =
+      parts;
+
     if (algorithm !== "scrypt") return false;
 
     const N = Number(nString);
@@ -284,12 +283,14 @@ export async function verifyPassword(
     const salt = base64UrlDecode(saltEncoded);
     const storedKey = base64UrlDecode(hashEncoded);
 
-    if (salt.length < 16 || salt.length > 128) return false;
-    if (storedKey.length < 16 || storedKey.length > 128) return false;
+    if (salt.length !== 32) return false;
+    if (storedKey.length !== PASSWORD_KEY_LENGTH) return false;
 
-    // Refuse parameters whose estimated memory cost exceeds our configured cap.
     const estimatedMemory = 128 * N * r + 256 * r * p;
-    if (!Number.isSafeInteger(estimatedMemory) || estimatedMemory > SCRYPT_MAXMEM) {
+    if (
+      !Number.isSafeInteger(estimatedMemory) ||
+      estimatedMemory > SCRYPT_MAXMEM
+    ) {
       return false;
     }
 
@@ -324,10 +325,14 @@ export function createAccessToken(input: {
   const identifier =
     typeof input.identifier === "string" ? input.identifier.trim() : "";
 
-  if (!id || id.length > MAX_ID_LENGTH) {
+  if (!id || id.length > MAX_ID_LENGTH || /[\u0000-\u001f\u007f]/.test(id)) {
     throw new Error("A valid authentication user ID is required.");
   }
-  if (!identifier || identifier.length > MAX_IDENTIFIER_LENGTH) {
+  if (
+    !identifier ||
+    identifier.length > MAX_IDENTIFIER_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(identifier)
+  ) {
     throw new Error("A valid authentication identifier is required.");
   }
   if (input.role !== "student" && input.role !== "admin") {
@@ -348,11 +353,37 @@ export function createAccessToken(input: {
   if (!isValidSessionType(sessionType)) {
     throw new Error("Invalid authentication session type.");
   }
-  if (input.role === "admin" && sessionType !== "admin" && sessionType !== "legacy") {
+
+  if (
+    input.role === "admin" &&
+    sessionType !== "admin" &&
+    sessionType !== "student-admin" &&
+    sessionType !== "legacy"
+  ) {
     throw new Error("Admin authentication must use an admin session.");
   }
-  if (input.role === "student" && sessionType === "admin") {
+
+  if (
+    input.role === "student" &&
+    (sessionType === "admin" ||
+      sessionType === "student-admin" ||
+      sessionType === "legacy")
+  ) {
     throw new Error("Student authentication cannot use an admin session.");
+  }
+
+  if (
+    sessionType === "student-admin" &&
+    input.adminRole !== "Student Operations Admin"
+  ) {
+    throw new Error("Student Admin sessions require the Student Operations Admin role.");
+  }
+
+  if (
+    input.adminRole === "Student Operations Admin" &&
+    sessionType !== "student-admin"
+  ) {
+    throw new Error("Student Operations Admin must use a dedicated session.");
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -376,10 +407,6 @@ export function createAccessToken(input: {
   return `${unsignedToken}.${signature}`;
 }
 
-/**
- * Validates token structure, signature, claims, session type and expiry.
- * Returns null for invalid tokens.
- */
 export function verifyAccessToken(token: string): AuthPayload | null {
   try {
     if (
@@ -394,6 +421,7 @@ export function verifyAccessToken(token: string): AuthPayload | null {
     if (parts.length !== 3) return null;
 
     const [encodedHeader, encodedPayload, providedSignature] = parts;
+
     if (
       !isBase64Url(encodedHeader) ||
       !isBase64Url(encodedPayload) ||
@@ -416,13 +444,23 @@ export function verifyAccessToken(token: string): AuthPayload | null {
     const headerValue: unknown = JSON.parse(
       base64UrlDecode(encodedHeader).toString("utf8"),
     );
+
     if (!isPlainObject(headerValue)) return null;
+    if (Object.keys(headerValue).length !== 2) return null;
     if (headerValue.alg !== "HS256" || headerValue.typ !== "JWT") return null;
 
     const payloadValue: unknown = JSON.parse(
       base64UrlDecode(encodedPayload).toString("utf8"),
     );
+
     if (!isPlainObject(payloadValue)) return null;
+    if (
+      Object.keys(payloadValue).some(
+        (key) => !VALID_TOKEN_PAYLOAD_KEYS.includes(key),
+      )
+    ) {
+      return null;
+    }
 
     const payload = payloadValue;
     const sub = payload.sub;
@@ -439,6 +477,7 @@ export function verifyAccessToken(token: string): AuthPayload | null {
       typeof sub !== "string" ||
       !sub ||
       sub.length > MAX_ID_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(sub) ||
       typeof userId !== "string" ||
       userId !== sub ||
       typeof identifier !== "string" ||
@@ -449,6 +488,7 @@ export function verifyAccessToken(token: string): AuthPayload | null {
     }
 
     if (role !== "student" && role !== "admin") return null;
+
     if (
       typeof iat !== "number" ||
       !Number.isSafeInteger(iat) ||
@@ -466,7 +506,6 @@ export function verifyAccessToken(token: string): AuthPayload | null {
       return null;
     }
 
-    // Legacy tokens without sessionType remain readable during migration.
     const sessionType: AuthSessionType =
       sessionTypeValue === undefined
         ? role === "admin"
@@ -477,15 +516,55 @@ export function verifyAccessToken(token: string): AuthPayload | null {
           : (null as never);
 
     if (!sessionType) return null;
-    if (role === "admin" && sessionType !== "admin" && sessionType !== "legacy") {
+
+    if (
+      role === "admin" &&
+      sessionType !== "admin" &&
+      sessionType !== "student-admin" &&
+      sessionType !== "legacy"
+    ) {
       return null;
     }
-    if (role === "student" && sessionType === "admin") return null;
+
+    if (
+      role === "student" &&
+      (sessionType === "admin" ||
+        sessionType === "student-admin" ||
+        sessionType === "legacy")
+    ) {
+      return null;
+    }
+
+    if (
+      sessionType === "student-admin" &&
+      (role !== "admin" || adminRole !== "Student Operations Admin")
+    ) {
+      return null;
+    }
+
+    if (
+      role === "admin" &&
+      adminRole === "Student Operations Admin" &&
+      sessionType !== "student-admin"
+    ) {
+      return null;
+    }
+
+    if (
+      typeof sub !== "string" ||
+      /[\u0000-\u001f\u007f]/.test(sub) ||
+      typeof identifier !== "string" ||
+      /[\u0000-\u001f\u007f]/.test(identifier)
+    ) {
+      return null;
+    }
 
     const now = Math.floor(Date.now() / 1000);
+
     if (
       exp <= now ||
       iat > now + CLOCK_SKEW_SECONDS ||
+      iat <= 0 ||
       exp <= iat ||
       exp - iat > TOKEN_EXPIRES_IN_SECONDS
     ) {
@@ -541,11 +620,10 @@ export function getTokenExpiryDate(token: string): Date | null {
   return payload ? new Date(payload.exp * 1000) : null;
 }
 
-/** Legacy cookie retained for routes that have not yet migrated. */
 export const AUTH_COOKIE_NAME = "cybernet_auth_token";
-
-/** Dedicated cookies prevent the portals from overwriting each other's sessions. */
 export const ADMIN_AUTH_COOKIE_NAME = "cybernet_admin_auth_token";
+export const STUDENT_ADMIN_AUTH_COOKIE_NAME =
+  "cybernet_student_admin_auth_token";
 export const STUDENT_AUTH_COOKIE_NAME = "cybernet_student_auth_token";
 export const STUDENT_DASHBOARD_AUTH_COOKIE_NAME =
   "cybernet_student_dashboard_token";
@@ -554,6 +632,8 @@ export function getAuthCookieName(sessionType: AuthSessionType): string {
   switch (sessionType) {
     case "admin":
       return ADMIN_AUTH_COOKIE_NAME;
+    case "student-admin":
+      return STUDENT_ADMIN_AUTH_COOKIE_NAME;
     case "student":
       return STUDENT_AUTH_COOKIE_NAME;
     case "student-dashboard":
@@ -570,6 +650,8 @@ export function getSessionTypeFromCookieName(
   switch (cookieName) {
     case ADMIN_AUTH_COOKIE_NAME:
       return "admin";
+    case STUDENT_ADMIN_AUTH_COOKIE_NAME:
+      return "student-admin";
     case STUDENT_AUTH_COOKIE_NAME:
       return "student";
     case STUDENT_DASHBOARD_AUTH_COOKIE_NAME:
@@ -593,6 +675,7 @@ function buildCookieOptions(): CookieOptions {
 
 export const AUTH_COOKIE_OPTIONS = buildCookieOptions();
 export const ADMIN_AUTH_COOKIE_OPTIONS = buildCookieOptions();
+export const STUDENT_ADMIN_AUTH_COOKIE_OPTIONS = buildCookieOptions();
 export const STUDENT_AUTH_COOKIE_OPTIONS = buildCookieOptions();
 export const STUDENT_DASHBOARD_AUTH_COOKIE_OPTIONS = buildCookieOptions();
 
@@ -602,6 +685,8 @@ export function getAuthCookieOptions(
   switch (sessionType) {
     case "admin":
       return ADMIN_AUTH_COOKIE_OPTIONS;
+    case "student-admin":
+      return STUDENT_ADMIN_AUTH_COOKIE_OPTIONS;
     case "student":
       return STUDENT_AUTH_COOKIE_OPTIONS;
     case "student-dashboard":
@@ -634,7 +719,19 @@ export function isStudentDashboardSession(user: AuthUser | null): boolean {
 }
 
 export function isAdminSession(user: AuthUser | null): boolean {
-  return user?.role === "admin" && user.sessionType === "admin";
+  return (
+    user?.role === "admin" &&
+    user.sessionType === "admin" &&
+    user.adminRole !== "Student Operations Admin"
+  );
+}
+
+export function isStudentAdminSession(user: AuthUser | null): boolean {
+  return (
+    user?.role === "admin" &&
+    user.adminRole === "Student Operations Admin" &&
+    user.sessionType === "student-admin"
+  );
 }
 
 export function hasSessionType(
@@ -673,6 +770,14 @@ export function shouldRefreshToken(token: string): boolean {
 }
 
 export function getAuthErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (
+      message === "AUTH_SECRET is missing. Add AUTH_SECRET to .env.local." ||
+      message === "AUTH_SECRET must contain at least 32 characters."
+    ) {
+      return message;
+    }
+  }
   return "Authentication failed.";
 }

@@ -4,8 +4,8 @@ import mongoose, {
 
 import crypto from "node:crypto";
 
-import StudentModel from "@/models/Student";
-import ApplicationModel from "@/models/Application";
+import StudentModelSource from "@/models/Student";
+import ApplicationModelSource from "@/models/Application";
 import { getStudentOperationsModel } from "@/models/StudentOperations";
 
 import connectDB from "@/lib/db";
@@ -18,78 +18,10 @@ import {
   sendStudentCredentialsEmail,
 } from "@/lib/email";
 
-/* ============================================================
-   CYBERNET CAREERS
-   STUDENT SERVICE
-   ============================================================
 
-   FINAL BUSINESS FLOW
+const StudentModel: any = StudentModelSource;
+const ApplicationModel: any = ApplicationModelSource;
 
-   APPLICATION
-        ↓
-   EMAIL VERIFIED
-        ↓
-   MAIN ADMIN APPROVAL
-        ↓
-   MAIN STUDENT CREDENTIALS
-        ↓
-   CREDENTIAL EMAIL
-        ↓
-   STUDENT LOGIN
-        ↓
-   MAIN ASSESSMENT
-        ↓
-   ASSESSMENT PASSED
-        ↓
-   INTERNSHIP SELECTION
-        ↓
-   RAZORPAY PAYMENT
-        ↓
-   SERVER-SIDE PAYMENT VERIFICATION
-        ↓
-   PAYMENT RECEIPT EMAIL
-        ↓
-   STUDENT ADMIN / OPERATIONS QUEUE
-        ↓
-   STUDENT ADMIN APPROVAL
-        ↓
-   DASHBOARD CREDENTIALS GENERATED
-        ↓
-   NEW DASHBOARD CREDENTIAL EMAIL
-        ↓
-   STUDENT DASHBOARD
-        ↓
-   INTERNSHIP
-        ↓
-   DAILY TASK
-        +
-   DAILY CODING
-        ↓
-   WEEKLY / SATURDAY ASSESSMENT
-        ↓
-   PROJECT
-        ↓
-   COMPLETION
-        ↓
-   CERTIFICATE
-
-   SECURITY RULES
-
-   - No plaintext passwords are stored.
-   - Main and dashboard credentials are separate.
-   - Main Admin approval does not activate dashboard.
-   - Payment does not activate dashboard.
-   - Student Operations approval is mandatory.
-   - Dashboard credentials are generated only after
-     Student Operations approval.
-   - Payment signature verification belongs to payment layer.
-   - Email failure never rolls back an already committed state.
-   ============================================================ */
-
-
-/* ============================================================
-   CONSTANTS
-   ============================================================ */
 
 const STUDENT_ID_PREFIX = "CN";
 
@@ -103,19 +35,14 @@ const DASHBOARD_PASSWORD_LENGTH = 16;
 
 const MAIN_CREDENTIAL_EXPIRY_DAYS = 30;
 
-const DASHBOARD_CREDENTIAL_EXPIRY_DAYS = 30;
 
-// The internship selection/payment window starts when the assessment is first passed.
+
 const INTERNSHIP_SELECTION_WINDOW_HOURS = 72;
 
 const DEFAULT_PASSING_SCORE = 60;
 
 const MAX_ID_ATTEMPTS = 30;
 
-
-/* ============================================================
-   INTERNSHIP PLANS
-   ============================================================ */
 
 export const INTERNSHIP_PLANS = {
   "1 month": {
@@ -146,10 +73,32 @@ export const INTERNSHIP_PLANS = {
 export type InternshipPlan =
   keyof typeof INTERNSHIP_PLANS;
 
+function normalizeInternshipPlan(value: unknown): InternshipPlan | null {
+  const normalized = cleanString(value)
+    .toLowerCase()
+    .replace(/[\\s_-]+/g, " ")
+    .trim();
 
-/* ============================================================
-   TYPES
-   ============================================================ */
+  const aliases: Record<string, InternshipPlan> = {
+    "1 month": "1 month",
+    "one month": "1 month",
+    "1": "1 month",
+    "one month plan": "1 month",
+    "3 months": "3 months",
+    "three months": "3 months",
+    "3 month": "3 months",
+    "3": "3 months",
+    "three month plan": "3 months",
+    "6 months": "6 months",
+    "six months": "6 months",
+    "6 month": "6 months",
+    "6": "6 months",
+    "six month plan": "6 months",
+  };
+
+  return aliases[normalized] ?? null;
+}
+
 
 export interface ServiceResult<
   T = unknown,
@@ -283,28 +232,12 @@ export interface StudentSummary {
 }
 
 
-/* ============================================================
-   INTERNAL TYPES
-   ============================================================ */
-
 type DatabaseRecord =
   Record<string, unknown>;
 
 
-/*
- * Mongoose's inferred schema type can vary depending on the
- * installed Mongoose/TypeScript version.
- *
- * The service deliberately keeps workflow mutation code
- * runtime-safe instead of coupling every operation to a
- * generated document interface.
- */
 type StudentDocument = any;
 
-
-/* ============================================================
-   SERVICE ERROR
-   ============================================================ */
 
 export class StudentServiceError
   extends Error {
@@ -331,10 +264,6 @@ export class StudentServiceError
   }
 }
 
-
-/* ============================================================
-   BASIC HELPERS
-   ============================================================ */
 
 function cleanString(
   value: unknown,
@@ -438,15 +367,12 @@ function isStatus(
   value: unknown,
   ...allowed: string[]
 ): boolean {
-  return allowed.includes(
-    normalizedStatus(value),
+  const normalizedValue = normalizedStatus(value);
+  return allowed.some(
+    (status) => normalizedStatus(status) === normalizedValue,
   );
 }
 
-
-/* ============================================================
-   VALIDATION
-   ============================================================ */
 
 function assertNonEmpty(
   value: unknown,
@@ -508,10 +434,6 @@ function assertReason(
   );
 }
 
-
-/* ============================================================
-   AUTHORIZATION
-   ============================================================ */
 
 const MAIN_ADMIN_ROLES =
   new Set([
@@ -587,81 +509,204 @@ function assertStudentOperationsRole(
 }
 
 
-/* ============================================================
-   DATABASE
-   ============================================================ */
-
 async function ensureDatabase(): Promise<void> {
   await connectDB();
 }
 
 
-/**
- * Mirrors lifecycle/account fields into the dedicated Student Operations DB.
- *
- * The Careers DB remains canonical for application, assessment, selected plan,
- * and verified payment. This mirror is intentionally idempotent. The model
- * getter owns connection/model registration for the separate database.
- *
- * Cross-database writes cannot share a MongoDB transaction; failures are
- * logged for operational reconciliation and never undo a committed payment
- * or student lifecycle transition.
- */
 async function syncStudentOperationsRecord(
   student: Record<string, any>,
 ): Promise<void> {
-  const studentId = normalizeId(student.studentId);
-  const applicationId = normalizeId(student.applicationId);
+  const mainStudentId = objectIdString(student._id);
 
-  if (!studentId && !applicationId) {
+  if (!mainStudentId) {
     throw new StudentServiceError(
       "STUDENT_OPERATIONS_ID_MISSING",
-      "Student ID or application ID is required to sync Student Operations.",
+      "A valid Main DB student ID is required to sync Student Operations.",
       500,
     );
   }
 
+  const studentId = normalizeId(student.studentId);
+  const applicationId = normalizeId(student.applicationId);
+
   const OperationsModel = await getStudentOperationsModel();
-  const filter: Record<string, unknown> = studentId
-    ? { studentId }
-    : { applicationId };
+  const now = new Date();
+  const rawProjectStatus = cleanString(student.projectStatus);
+  const projectStatus =
+    rawProjectStatus === "locked" || rawProjectStatus === "available"
+      ? "not-started"
+      : rawProjectStatus === "review"
+        ? "under-review"
+        : rawProjectStatus || "not-started";
 
   const fields: Record<string, unknown> = {
+    mainStudentId,
     studentId,
     applicationId,
     dashboardStudentId: normalizeId(student.dashboardStudentId),
+    dashboardStudentIdNormalized: normalizeId(student.dashboardStudentId),
     fullName: cleanString(student.fullName),
     email: normalizeEmail(student.email),
     phone: cleanString(student.phone),
-    internshipPlan: cleanString(student.internshipPlan),
+    applicationStatus: cleanString(student.applicationStatus) || "pending",
+    adminApprovalStatus: cleanString(student.adminApprovalStatus) || "pending",
+    assessmentStatus: cleanString(student.assessmentStatus) || "not-started",
+    assessmentScore:
+      student.assessmentScore == null
+        ? null
+        : numberValue(student.assessmentScore),
+    resultStatus: cleanString(student.resultStatus) || "not-declared",
+    internshipStatus: cleanString(student.internshipStatus) || "not-started",
     internshipTrack: cleanString(student.internshipTrack),
-    internshipDurationMonths: numberValue(student.internshipDurationMonths),
-    paymentStatus: cleanString(student.paymentStatus),
+    internshipPlan: cleanString(student.internshipPlan),
+    internshipDurationMonths: numberValue(
+      student.internshipDurationMonths,
+      numberValue(student.internshipDurationDays) / 30,
+    ),
+    internshipDurationDays: numberValue(student.internshipDurationDays),
+    internshipStartedAt: dateOrNull(student.internshipStartedAt),
+    internshipEndsAt: dateOrNull(student.internshipEndsAt),
+    paymentStatus: cleanString(student.paymentStatus) || "unpaid",
     paymentAmount: numberValue(student.paymentAmount),
-    paymentCurrency: cleanString(student.paymentCurrency) || "INR",
-    studentOpsApprovalStatus: cleanString(student.studentOpsApprovalStatus) || "pending",
+    paymentCurrency: cleanString(student.paymentCurrency).toUpperCase() || "INR",
+    studentOpsApprovalStatus:
+      cleanString(student.studentOpsApprovalStatus) || "pending",
+    operationsApprovalStatus:
+      cleanString(student.studentOpsApprovalStatus) || "pending",
+    operationsApprovedBy: cleanString(student.studentOpsApprovedBy),
+    operationsApprovedAt: dateOrNull(student.studentOpsApprovedAt),
+    operationsReviewedAt: dateOrNull(student.studentOpsReviewedAt),
+    operationsRejectionReason: cleanString(student.studentOpsRejectionReason),
     studentOpsStatus: cleanString(student.studentOpsStatus) || "not-ready",
+    operationsStatus: cleanString(student.studentOpsStatus) || "not-ready",
     dashboardStatus: cleanString(student.dashboardStatus) || "locked",
     dashboardLoginEnabled: student.dashboardLoginEnabled === true,
-    dashboardCredentialsGenerated: student.dashboardCredentialsGenerated === true,
-    dashboardCredentialsGeneratedAt: student.dashboardCredentialsGeneratedAt ?? null,
-    dashboardLoginEnabledAt: student.dashboardLoginEnabledAt ?? null,
-    updatedAt: new Date(),
+    dashboardLoginEnabledAt: dateOrNull(student.dashboardLoginEnabledAt),
+    dashboardCredentialsGenerated:
+      student.dashboardCredentialsGenerated === true,
+    dashboardCredentialsGeneratedAt:
+      dateOrNull(student.dashboardCredentialsGeneratedAt),
+    dashboardCredentialsExpiresAt:
+      dateOrNull(student.dashboardCredentialsExpiresAt),
+    dashboardPasswordChangedAt:
+      dateOrNull(student.dashboardPasswordChangedAt),
+    dashboardMustChangePassword:
+      student.dashboardMustChangePassword !== false,
+    dashboardLastLoginAt: dateOrNull(student.dashboardLastLoginAt),
+    dashboardLoginAttempts: numberValue(student.dashboardLoginAttempts),
+    dashboardAccountLocked: student.dashboardAccountLocked === true,
+    dashboardLockedUntil: dateOrNull(student.dashboardLockedUntil),
+    dashboardDeactivatedAt: dateOrNull(student.dashboardDeactivatedAt),
+    dashboardDeactivationReason: cleanString(
+      student.dashboardDeactivationReason,
+    ),
+    learningStatus: cleanString(student.learningStatus) || "not-started",
+    currentLearningDay: numberValue(student.currentLearningDay),
+    completedLearningDays: numberValue(student.completedLearningDays),
+    taskCompletionPercentage: numberValue(student.taskCompletionPercentage),
+    learningProgressPercentage: numberValue(
+      student.learningProgressPercentage,
+    ),
+    attendancePercentage: numberValue(student.attendancePercentage),
+    currentTaskId: cleanString(student.currentTaskId),
+    lastTaskAssignedAt: dateOrNull(student.lastTaskAssignedAt),
+    lastTaskSubmittedAt: dateOrNull(student.lastTaskSubmittedAt),
+    totalTasksAssigned: numberValue(student.totalTasksAssigned),
+    totalTasksSubmitted: numberValue(student.totalTasksSubmitted),
+    totalTasksApproved: numberValue(student.totalTasksApproved),
+    weeklyAssessmentStatus:
+      cleanString(student.weeklyAssessmentStatus) || "locked",
+    weeklyAssessmentScore:
+      student.weeklyAssessmentScore == null
+        ? null
+        : numberValue(student.weeklyAssessmentScore),
+    weeklyAssessmentSubmittedAt:
+      dateOrNull(student.weeklyAssessmentSubmittedAt),
+    saturdayAssessmentStatus:
+      cleanString(student.saturdayAssessmentStatus) || "locked",
+    saturdayAssessmentScore:
+      student.saturdayAssessmentScore == null
+        ? null
+        : numberValue(student.saturdayAssessmentScore),
+    saturdayAssessmentSubmittedAt:
+      dateOrNull(student.saturdayAssessmentSubmittedAt),
+    attendanceDaysPresent: numberValue(student.attendanceDaysPresent),
+    attendanceDaysAbsent: numberValue(student.attendanceDaysAbsent),
+    lastAttendanceAt: dateOrNull(student.lastAttendanceAt),
+    projectStatus,
+    projectFolderReference: cleanString(student.projectFolderReference),
+    projectSubmittedAt: dateOrNull(student.projectSubmittedAt),
+    projectReviewedAt: dateOrNull(student.projectReviewedAt),
+    projectReviewNotes: cleanString(student.projectReviewNotes),
+    certificateStatus:
+      cleanString(student.certificateStatus) || "not-eligible",
+    certificateId: cleanString(student.certificateId),
+    certificateGeneratedAt: dateOrNull(student.certificateGeneratedAt),
+    notes: cleanString(student.notes),
+    sourceVersion: Math.max(1, numberValue(student.__v, 1) + 1),
+    sourceUpdatedAt: dateOrNull(student.updatedAt) || now,
+    lastSyncedAt: now,
+    syncStatus: "synced",
+    syncError: "",
+    updatedAt: now,
   };
 
-  // `strict: false` supports schema versions where optional mirror fields
-  // are added gradually; all values still originate from the canonical record.
-  await OperationsModel.updateOne(
-    filter,
-    { $set: fields, $setOnInsert: { createdAt: new Date() } },
-    { upsert: true, strict: false, runValidators: false },
-  ).exec();
+  try {
+    await OperationsModel.updateOne(
+      { mainStudentId },
+      {
+        $set: fields,
+        $unset: {
+          dashboardPasswordHash: 1,
+          passwordHash: 1,
+          loginPasswordHash: 1,
+        },
+        $setOnInsert: { createdAt: dateOrNull(student.createdAt) || now },
+      },
+      {
+        upsert: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      },
+    ).exec();
+
+    await StudentModel.updateOne(
+      { _id: student._id },
+      {
+        $set: {
+          operationsSyncStatus: "synced",
+          operationsStudentRef: mainStudentId,
+          operationsLastSyncedAt: now,
+          operationsSyncError: "",
+        },
+      },
+    ).exec();
+  } catch (error) {
+    const syncError =
+      error instanceof Error ? error.message.slice(0, 500) : "Unknown sync error";
+
+    try {
+      await StudentModel.updateOne(
+        { _id: student._id },
+        {
+          $set: {
+            operationsSyncStatus: "failed",
+            operationsStudentRef: mainStudentId,
+            operationsSyncError: syncError,
+          },
+        },
+      ).exec();
+    } catch (statusError) {
+      console.error(
+        "[StudentService] Unable to persist Operations sync failure:",
+        statusError,
+      );
+    }
+
+    throw error;
+  }
 }
-
-
-/* ============================================================
-   SECURE PASSWORD
-   ============================================================ */
 
 function generateSecurePassword(
   length = MAIN_PASSWORD_LENGTH,
@@ -738,10 +783,6 @@ function generateSecurePassword(
   return output.join("");
 }
 
-
-/* ============================================================
-   ID GENERATORS
-   ============================================================ */
 
 function generateStudentId(): string {
   const year =
@@ -868,15 +909,20 @@ async function generateUniqueCertificateId(): Promise<string> {
 }
 
 
-/* ============================================================
-   EXPIRY
-   ============================================================ */
-
 function createExpiryDate(
   days: number,
+  from = new Date(),
 ): Date {
+  if (!Number.isInteger(days) || days < 1 || days > 366) {
+    throw new StudentServiceError(
+      "INVALID_INTERNSHIP_DURATION",
+      "A valid internship duration is required.",
+      400,
+    );
+  }
+
   return new Date(
-    Date.now() +
+    from.getTime() +
       days *
         24 *
         60 *
@@ -885,15 +931,36 @@ function createExpiryDate(
   );
 }
 
+function getVerifiedInternshipDurationDays(student: StudentDocument): number {
+  const plan = normalizeInternshipPlan(student.internshipPlan);
+  const configuredDays = plan ? INTERNSHIP_PLANS[plan].durationDays : 0;
+  const storedDays = numberValue(student.internshipDurationDays, 0);
+  const durationDays = configuredDays || storedDays;
+
+  if (![30, 90, 180].includes(durationDays)) {
+    throw new StudentServiceError(
+      "INVALID_INTERNSHIP_DURATION",
+      "The selected internship plan must be 1, 3, or 6 months before dashboard activation.",
+      409,
+    );
+  }
+
+  if (configuredDays && storedDays && configuredDays !== storedDays) {
+    throw new StudentServiceError(
+      "INTERNSHIP_DURATION_MISMATCH",
+      "The saved internship duration does not match the selected plan. Contact an administrator.",
+      409,
+    );
+  }
+
+  return durationDays;
+}
+
 function createHoursExpiryDate(hours: number, from = new Date()): Date {
   return new Date(from.getTime() + hours * 60 * 60 * 1000);
 }
 
-/**
- * Establish a persistent 72-hour selection deadline exactly once.
- * For older records, use the assessment result timestamp when available;
- * if legacy timestamps are absent, start the window when first checked.
- */
+
 function ensureInternshipSelectionDeadline(student: StudentDocument): Date {
   const existingDeadline = dateOrNull(student.internshipSelectionDeadlineAt);
   if (existingDeadline) {
@@ -920,10 +987,7 @@ function ensureInternshipSelectionDeadline(student: StudentDocument): Date {
   return deadline;
 }
 
-/**
- * Expire only unpaid initial selection journeys. Never deactivate a verified
- * paid student's Operations review or final dashboard because of this window.
- */
+
 function expireUnpaidSelectionJourney(student: StudentDocument, now = new Date()): void {
   if (isStatus(student.paymentStatus, "paid")) {
     return;
@@ -938,14 +1002,9 @@ function expireUnpaidSelectionJourney(student: StudentDocument, now = new Date()
   student.loginEnabled = false;
   student.internshipApplicationAllowed = false;
   student.internshipStatus = "expired";
-  // Keep the student record and the Operations/admin visibility intact.
+
 }
 
-
-
-/* ============================================================
-   EMAIL - MAIN CREDENTIALS
-   ============================================================ */
 
 async function sendMainCredentialsEmail(
   params: {
@@ -979,10 +1038,6 @@ async function sendMainCredentialsEmail(
 }
 
 
-/* ============================================================
-   EMAIL - DASHBOARD CREDENTIALS
-   ============================================================ */
-
 async function sendDashboardCredentialsEmail(
   params: {
     email: string;
@@ -1015,10 +1070,6 @@ async function sendDashboardCredentialsEmail(
 }
 
 
-/* ============================================================
-   STUDENT LOOKUP
-   ============================================================ */
-
 async function findStudentById(
   studentId: string,
   session?: ClientSession,
@@ -1026,17 +1077,21 @@ async function findStudentById(
   const id =
     normalizeId(studentId);
 
-  const query =
-    StudentModel.findOne({
-      $or: [
-        {
-          studentId: id,
-        },
-        {
-          dashboardStudentId: id,
-        },
-      ],
+  const lookupConditions: Record<string, unknown>[] = [
+    { studentId: id },
+    { dashboardStudentId: id },
+  ];
+
+
+  if (mongoose.Types.ObjectId.isValid(cleanString(studentId))) {
+    lookupConditions.push({
+      _id: new mongoose.Types.ObjectId(cleanString(studentId)),
     });
+  }
+
+  const query = StudentModel.findOne({
+    $or: lookupConditions,
+  });
 
   if (session) {
     query.session(session);
@@ -1060,10 +1115,6 @@ async function findStudentByObjectId(
   return query.exec();
 }
 
-
-/* ============================================================
-   SUMMARY
-   ============================================================ */
 
 function sanitizeStudentSummary(
   student: DatabaseRecord,
@@ -1237,10 +1288,6 @@ function sanitizeStudentSummary(
 }
 
 
-/* ============================================================
-   GET STUDENT
-   ============================================================ */
-
 export async function getStudent(
   studentId: string,
 ): Promise<
@@ -1285,10 +1332,6 @@ export async function getStudent(
   }
 }
 
-
-/* ============================================================
-   GET BY APPLICATION
-   ============================================================ */
 
 export async function getStudentByApplicationId(
   applicationId: string,
@@ -1337,10 +1380,6 @@ export async function getStudentByApplicationId(
   }
 }
 
-
-/* ============================================================
-   LIST STUDENTS
-   ============================================================ */
 
 export async function listStudents(
   input?: {
@@ -1489,7 +1528,7 @@ export async function listStudents(
       data: {
         students:
           students.map(
-            (student) =>
+            (student: DatabaseRecord) =>
               sanitizeStudentSummary(
                 student,
               ),
@@ -1515,10 +1554,6 @@ export async function listStudents(
   }
 }
 
-
-/* ============================================================
-   MAIN ADMIN APPROVAL
-   ============================================================ */
 
 export async function approveApplication(
   input: ApproveApplicationInput,
@@ -1895,6 +1930,21 @@ export async function approveApplication(
       },
     );
 
+    try {
+      const approvedStudent = await StudentModel.findOne({
+        studentId: createdStudentId,
+      }).exec();
+
+      if (approvedStudent) {
+        await syncStudentOperationsRecord(approvedStudent.toObject());
+      }
+    } catch (syncError) {
+      console.error(
+        "[StudentService] Initial Student Operations mirror sync failed:",
+        syncError,
+      );
+    }
+
     if (
       input.sendCredentials !==
       false
@@ -2006,10 +2056,6 @@ export async function approveApplication(
 }
 
 
-/* ============================================================
-   REJECT APPLICATION
-   ============================================================ */
-
 export async function rejectApplication(
   input: RejectApplicationInput,
 ): Promise<ServiceResult> {
@@ -2092,10 +2138,6 @@ export async function rejectApplication(
   }
 }
 
-
-/* ============================================================
-   RESEND MAIN CREDENTIALS
-   ============================================================ */
 
 export async function resendCredentials(
   input: ResendCredentialsInput,
@@ -2273,10 +2315,6 @@ export async function resendCredentials(
 }
 
 
-/* ============================================================
-   START MAIN ASSESSMENT
-   ============================================================ */
-
 export async function startAssessment(
   studentId: string,
 ): Promise<ServiceResult> {
@@ -2388,10 +2426,6 @@ export async function startAssessment(
 }
 
 
-/* ============================================================
-   ASSESSMENT RESULT
-   ============================================================ */
-
 export async function submitAssessmentResult(
   input: AssessmentResultInput,
 ): Promise<ServiceResult> {
@@ -2456,22 +2490,19 @@ export async function submitAssessmentResult(
       };
     }
 
-    const passingScore =
-      input.passingScore ??
-      numberValue(
-        student.assessmentPassingScore,
-        DEFAULT_PASSING_SCORE,
-      );
+    const passingScore = input.passingScore ??
+      numberValue(student.assessmentPassingScore, DEFAULT_PASSING_SCORE);
 
-    const passed =
-      input.resultStatus ===
-      "passed"
-        ? true
-        : input.resultStatus ===
-            "failed"
-          ? false
-          : score >=
-            passingScore;
+    if (!Number.isFinite(passingScore) || passingScore < 0 || passingScore > 100) {
+      return {
+        success: false,
+        message: "Passing score must be between 0 and 100.",
+        code: "INVALID_PASSING_SCORE",
+      };
+    }
+
+
+    const passed = score >= passingScore;
 
     student.assessmentScore =
       score;
@@ -2505,7 +2536,7 @@ export async function submitAssessmentResult(
       passed;
 
     if (passed) {
-      // Do not reset the 72-hour window on duplicate result submissions.
+
       if (!dateOrNull(student.internshipSelectionDeadlineAt)) {
         const now = new Date();
         student.internshipSelectionWindowStartedAt = now;
@@ -2570,10 +2601,6 @@ export async function submitAssessmentResult(
 }
 
 
-/* ============================================================
-   INTERNSHIP SELECTION
-   ============================================================ */
-
 export async function selectInternship(
   input: SelectInternshipInput,
 ): Promise<ServiceResult> {
@@ -2586,17 +2613,9 @@ export async function selectInternship(
         "Student ID",
       );
 
-    const plan =
-      cleanString(
-        input.plan,
-      ) as InternshipPlan;
+    const plan = normalizeInternshipPlan(input.plan);
 
-    if (
-      !Object.prototype.hasOwnProperty.call(
-        INTERNSHIP_PLANS,
-        plan,
-      )
-    ) {
+    if (!plan) {
       return {
         success: false,
         message:
@@ -2703,58 +2722,77 @@ export async function selectInternship(
       };
     }
 
-    const selectedPlan =
-      INTERNSHIP_PLANS[
-        plan
-      ];
+    const selectedPlan = INTERNSHIP_PLANS[plan];
+    const selectedAt = new Date();
+    const expectedVersion = Number(student.__v ?? 0);
+    const atomicFilter: Record<string, unknown> = {
+      _id: student._id,
+      __v: expectedVersion,
+      applicationStatus: student.applicationStatus,
+      assessmentStatus: student.assessmentStatus,
+      internshipApplicationAllowed: true,
+      paymentStatus: { $ne: "paid" },
+      $and: [
+        {
+          $or: [
+            { razorpayOrderId: { $exists: false } },
+            { razorpayOrderId: null },
+            { razorpayOrderId: "" },
+          ],
+        },
+        {
+          $or: [
+            { internshipSelectionDeadlineAt: { $gt: selectedAt } },
+            { internshipSelectionDeadlineAt: null },
+            { internshipSelectionDeadlineAt: { $exists: false } },
+          ],
+        },
+      ],
+      internshipSelectionWindowExpired: { $ne: true },
+    };
 
-    student.internshipTrack =
-      cleanString(
-        input.track,
-      );
+    const updatedStudent = await StudentModel.findOneAndUpdate(
+      atomicFilter,
+      {
+        $set: {
+          internshipTrack: cleanString(input.track),
+          internshipPlan: plan,
+          internshipDurationMonths: selectedPlan.durationMonths,
+          internshipDurationDays: selectedPlan.durationDays,
+          internshipSelectionAt: selectedAt,
+          internshipSelectionWindowStartedAt: student.internshipSelectionWindowStartedAt,
+          internshipSelectionDeadlineAt: selectionDeadline,
+          internshipSelectionWindowExpired: false,
+          internshipSelectionExpiredAt: null,
+          internshipStatus: "payment-pending",
+          startPreference: cleanString(input.startPreference),
+          paymentStatus: "pending",
+          paymentAmount: selectedPlan.amount,
+          paymentCurrency: selectedPlan.currency,
+          studentOpsStatus: "not-ready",
+          studentOpsApprovalStatus: "pending",
+          dashboardStatus: "locked",
+          dashboardLoginEnabled: false,
+        },
+        $inc: { __v: 1 },
+      },
+      {
+        new: true,
+        runValidators: true,
+        context: "query",
+      },
+    ).exec();
 
-    student.internshipPlan =
-      plan;
+    if (!updatedStudent) {
+      return {
+        success: false,
+        message: "The student record changed or the internship selection window is no longer valid. Refresh and try again.",
+        code: "INTERNSHIP_SELECTION_CONFLICT",
+      };
+    }
 
-    student.internshipDurationDays =
-      selectedPlan.durationDays;
-
-    student.internshipSelectionAt =
-      new Date();
-    student.internshipSelectionWindowExpired = false;
-
-    student.internshipStatus =
-      "payment-pending";
-
-    student.startPreference =
-      cleanString(
-        input.startPreference,
-      );
-
-    student.paymentStatus =
-      "pending";
-
-    student.paymentAmount =
-      selectedPlan.amount;
-
-    student.paymentCurrency =
-      selectedPlan.currency;
-
-    student.studentOpsStatus =
-      "not-ready";
-
-    student.studentOpsApprovalStatus =
-      "pending";
-
-    student.dashboardStatus =
-      "locked";
-
-    student.dashboardLoginEnabled =
-      false;
-
-    await student.save();
     try {
-      await syncStudentOperationsRecord(student.toObject());
+      await syncStudentOperationsRecord(updatedStudent.toObject());
     } catch (syncError) {
       console.error(
         "[StudentService] Student Operations mirror sync failed:",
@@ -2770,7 +2808,7 @@ export async function selectInternship(
         "INTERNSHIP_SELECTED",
       data: {
         studentId:
-          student.studentId,
+          updatedStudent.studentId,
 
         internshipPlan:
           selectedPlan.name,
@@ -2788,10 +2826,10 @@ export async function selectInternship(
           selectedPlan.currency,
 
         internshipStatus:
-          student.internshipStatus,
+          updatedStudent.internshipStatus,
 
         paymentStatus:
-          student.paymentStatus,
+          updatedStudent.paymentStatus,
       },
     };
   } catch (error) {
@@ -2802,10 +2840,6 @@ export async function selectInternship(
   }
 }
 
-
-/* ============================================================
-   PAYMENT ORDER
-   ============================================================ */
 
 export async function markPaymentPending(
   input: {
@@ -2866,6 +2900,29 @@ export async function markPaymentPending(
           "Student account was not found.",
         code:
           "STUDENT_NOT_FOUND",
+      };
+    }
+
+    const selectedPlan = normalizeInternshipPlan(student.internshipPlan);
+
+    if (!selectedPlan) {
+      return {
+        success: false,
+        message: "A valid internship plan must be selected before payment.",
+        code: "INTERNSHIP_PLAN_REQUIRED",
+      };
+    }
+
+    const officialPlan = INTERNSHIP_PLANS[selectedPlan];
+
+    if (
+      numberValue(student.paymentAmount, -1) !== officialPlan.amount ||
+      cleanString(student.paymentCurrency).toUpperCase() !== officialPlan.currency
+    ) {
+      return {
+        success: false,
+        message: "The saved payment amount or currency does not match the official internship plan. Please select the plan again.",
+        code: "PAYMENT_PLAN_MISMATCH",
       };
     }
 
@@ -2978,19 +3035,6 @@ export async function markPaymentPending(
 }
 
 
-/* ============================================================
-   VERIFIED PAYMENT
-   ============================================================
-
-   IMPORTANT:
-
-   This method is called ONLY after payment.service.ts /
-   payment route has successfully verified the Razorpay
-   signature.
-
-   This service never trusts a frontend "paid" flag.
-   ============================================================ */
-
 export async function recordVerifiedPayment(
   input: PaymentVerificationInput,
 ): Promise<ServiceResult> {
@@ -3085,11 +3129,7 @@ export async function recordVerifiedPayment(
       };
     }
 
-    /*
-     * Idempotency:
-     * If the exact payment has already been committed,
-     * return success without creating another state transition.
-     */
+
     if (
       isStatus(
         student.paymentStatus,
@@ -3140,8 +3180,7 @@ export async function recordVerifiedPayment(
       };
     }
 
-    // A late/unpaid account cannot be revived by posting a payment callback.
-    // This function must still only be called by the trusted verified-payment route.
+
     const selectionDeadline = ensureInternshipSelectionDeadline(student);
     const now = new Date();
     if (
@@ -3194,10 +3233,7 @@ export async function recordVerifiedPayment(
     student.paymentVerifiedAt =
       new Date();
 
-    /*
-     * Payment completed.
-     * Internship becomes eligible for Student Admin review.
-     */
+
     student.internshipStatus =
       "approved";
 
@@ -3280,28 +3316,6 @@ export async function recordVerifiedPayment(
   }
 }
 
-
-/* ============================================================
-   STUDENT OPERATIONS APPROVAL
-   ============================================================
-
-   IMPORTANT FINAL FLOW:
-
-   PAYMENT VERIFIED
-        ↓
-   STUDENT ADMIN REVIEW
-        ↓
-   APPROVE
-        ↓
-   DASHBOARD CREDENTIALS GENERATED
-        ↓
-   DASHBOARD CREDENTIAL EMAIL
-        ↓
-   DASHBOARD ACTIVE
-
-   So the Student Admin approval action itself completes
-   dashboard credential generation.
-   ============================================================ */
 
 export async function approveStudentOperations(
   input: StudentOperationsApprovalInput,
@@ -3408,8 +3422,7 @@ export async function approveStudentOperations(
 
       await student.save();
 
-      // Persist the canonical rejection first, then mirror it once.
-      // A mirror outage must not roll back the committed main-database state.
+
       try {
         await syncStudentOperationsRecord(student.toObject());
       } catch (syncError) {
@@ -3441,9 +3454,7 @@ export async function approveStudentOperations(
       };
     }
 
-    /*
-     * Approve Student Operations.
-     */
+
     student.studentOpsApprovalStatus =
       "approved";
 
@@ -3465,10 +3476,7 @@ export async function approveStudentOperations(
     student.studentOpsActivatedAt =
       now;
 
-    /*
-     * Dashboard credential generation happens
-     * as part of the approval workflow.
-     */
+
     const dashboardStudentId =
       student.dashboardStudentId ||
       await generateUniqueDashboardStudentId();
@@ -3498,10 +3506,29 @@ export async function approveStudentOperations(
     student.dashboardCredentialsGeneratedAt =
       now;
 
-    student.dashboardCredentialsExpiresAt =
+    const internshipDurationDays =
+      getVerifiedInternshipDurationDays(student);
+
+    const internshipStartedAt =
+      dateOrNull(student.internshipStartedAt) || now;
+
+    const internshipEndsAt =
       createExpiryDate(
-        DASHBOARD_CREDENTIAL_EXPIRY_DAYS,
+        internshipDurationDays,
+        internshipStartedAt,
       );
+
+    student.internshipDurationDays =
+      internshipDurationDays;
+
+    student.internshipStartedAt =
+      internshipStartedAt;
+
+    student.internshipEndsAt =
+      internshipEndsAt;
+
+    student.dashboardCredentialsExpiresAt =
+      internshipEndsAt;
 
     student.dashboardLoginEnabled =
       true;
@@ -3538,8 +3565,7 @@ export async function approveStudentOperations(
 
     await student.save();
 
-    // Mirror approval and activation immediately after the canonical write.
-    // Email delivery is a separate concern and must not control DB sync.
+
     try {
       await syncStudentOperationsRecord(student.toObject());
     } catch (syncError) {
@@ -3549,10 +3575,7 @@ export async function approveStudentOperations(
       );
     }
 
-    /*
-     * Send NEW dashboard credentials after the
-     * Student Admin approval has been committed.
-     */
+
     try {
       await sendDashboardCredentialsEmail({
         email:
@@ -3665,10 +3688,6 @@ export async function approveStudentOperations(
 }
 
 
-/* ============================================================
-   GENERATE / RESEND DASHBOARD CREDENTIALS
-   ============================================================ */
-
 export async function generateDashboardCredentials(
   input: GenerateDashboardCredentialsInput,
 ): Promise<ServiceResult> {
@@ -3771,19 +3790,45 @@ export async function generateDashboardCredentials(
     student.dashboardCredentialsEmailSentAt =
       null;
 
+    const credentialGeneratedAt = new Date();
+
     student.dashboardCredentialsGeneratedAt =
-      new Date();
+      credentialGeneratedAt;
+    const internshipDurationDays =
+      getVerifiedInternshipDurationDays(student);
+
+    const internshipStartedAt =
+      dateOrNull(student.internshipStartedAt) || credentialGeneratedAt;
+
+    const internshipEndsAt =
+      dateOrNull(student.internshipEndsAt) ||
+      createExpiryDate(internshipDurationDays, internshipStartedAt);
+
+    if (internshipEndsAt.getTime() <= credentialGeneratedAt.getTime()) {
+      return {
+        success: false,
+        message: "The internship period has expired. Dashboard credentials cannot be generated.",
+        code: "INTERNSHIP_PERIOD_EXPIRED",
+      };
+    }
+
+    student.internshipDurationDays =
+      internshipDurationDays;
+
+    student.internshipStartedAt =
+      internshipStartedAt;
+
+    student.internshipEndsAt =
+      internshipEndsAt;
 
     student.dashboardCredentialsExpiresAt =
-      createExpiryDate(
-        DASHBOARD_CREDENTIAL_EXPIRY_DAYS,
-      );
+      internshipEndsAt;
 
     student.dashboardLoginEnabled =
       true;
 
     student.dashboardLoginEnabledAt =
-      new Date();
+      credentialGeneratedAt;
 
     student.dashboardPasswordChangedAt =
       null;
@@ -3804,11 +3849,11 @@ export async function generateDashboardCredentials(
       "active";
 
     student.dashboardActivatedAt =
-      new Date();
+      credentialGeneratedAt;
 
     await student.save();
 
-    // Mirror credential/login state before attempting external email delivery.
+
     try {
       await syncStudentOperationsRecord(student.toObject());
     } catch (syncError) {
@@ -3915,10 +3960,6 @@ export async function generateDashboardCredentials(
   }
 }
 
-
-/* ============================================================
-   DASHBOARD STATUS
-   ============================================================ */
 
 export async function updateDashboardStatus(
   input: DashboardStatusInput,
@@ -4052,10 +4093,6 @@ export async function updateDashboardStatus(
   }
 }
 
-
-/* ============================================================
-   DASHBOARD ACCESS
-   ============================================================ */
 
 export async function canAccessDashboard(
   studentId: string,
@@ -4228,10 +4265,6 @@ export async function canAccessDashboard(
 }
 
 
-/* ============================================================
-   LEARNING PROGRESS
-   ============================================================ */
-
 export async function updateLearningProgress(
   input: {
     studentId: string;
@@ -4281,12 +4314,15 @@ export async function updateLearningProgress(
       const value =
         input[field];
 
-      if (
-        value !== undefined &&
-        value >= 0
-      ) {
-        student[field] =
-          Math.floor(value);
+      if (value !== undefined) {
+        if (!Number.isFinite(value) || value < 0) {
+          return {
+            success: false,
+            message: `${field} must be a non-negative number.`,
+            code: "INVALID_PROGRESS",
+          };
+        }
+        student[field] = Math.floor(value);
       }
     }
 
@@ -4344,6 +4380,12 @@ export async function updateLearningProgress(
 
     await student.save();
 
+    try {
+      await syncStudentOperationsRecord(student.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Learning progress mirror sync failed:", syncError);
+    }
+
     return {
       success: true,
       message:
@@ -4390,10 +4432,6 @@ export async function updateLearningProgress(
   }
 }
 
-
-/* ============================================================
-   WEEKLY / SATURDAY ASSESSMENT
-   ============================================================ */
 
 export async function recordWeeklyAssessment(
   input: {
@@ -4481,6 +4519,12 @@ export async function recordWeeklyAssessment(
 
     await student.save();
 
+    try {
+      await syncStudentOperationsRecord(student.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Weekly assessment mirror sync failed:", syncError);
+    }
+
     return {
       success: true,
       message:
@@ -4513,10 +4557,6 @@ export async function recordWeeklyAssessment(
   }
 }
 
-
-/* ============================================================
-   PROJECT
-   ============================================================ */
 
 export async function updateProjectStatus(
   input: {
@@ -4626,6 +4666,12 @@ export async function updateProjectStatus(
 
     await student.save();
 
+    try {
+      await syncStudentOperationsRecord(student.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Project status mirror sync failed:", syncError);
+    }
+
     return {
       success: true,
       message:
@@ -4654,10 +4700,6 @@ export async function updateProjectStatus(
   }
 }
 
-
-/* ============================================================
-   COMPLETE INTERNSHIP
-   ============================================================ */
 
 export async function completeInternship(
   input: CompleteInternshipInput,
@@ -4741,6 +4783,12 @@ export async function completeInternship(
 
     await student.save();
 
+    try {
+      await syncStudentOperationsRecord(student.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Internship completion mirror sync failed:", syncError);
+    }
+
     return {
       success: true,
       message:
@@ -4772,10 +4820,6 @@ export async function completeInternship(
   }
 }
 
-
-/* ============================================================
-   CERTIFICATE VERIFICATION
-   ============================================================ */
 
 export async function verifyCertificate(
   certificateId: string,
@@ -4863,10 +4907,6 @@ export async function verifyCertificate(
   }
 }
 
-
-/* ============================================================
-   CHANGE MAIN PASSWORD
-   ============================================================ */
 
 export async function changeMainPassword(
   input: {
@@ -4961,10 +5001,6 @@ export async function changeMainPassword(
   }
 }
 
-
-/* ============================================================
-   CHANGE DASHBOARD PASSWORD
-   ============================================================ */
 
 export async function changeDashboardPassword(
   input: {
@@ -5070,10 +5106,6 @@ export async function changeDashboardPassword(
 }
 
 
-/* ============================================================
-   SUSPEND STUDENT
-   ============================================================ */
-
 export async function suspendStudent(
   input: {
     studentId: string;
@@ -5128,6 +5160,12 @@ export async function suspendStudent(
 
     await student.save();
 
+    try {
+      await syncStudentOperationsRecord(student.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Suspension mirror sync failed:", syncError);
+    }
+
     return {
       success: true,
       message:
@@ -5153,10 +5191,6 @@ export async function suspendStudent(
   }
 }
 
-
-/* ============================================================
-   REACTIVATE STUDENT
-   ============================================================ */
 
 export async function reactivateStudent(
   input: {
@@ -5236,6 +5270,12 @@ export async function reactivateStudent(
 
     await student.save();
 
+    try {
+      await syncStudentOperationsRecord(student.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Reactivation mirror sync failed:", syncError);
+    }
+
     return {
       success: true,
       message:
@@ -5264,10 +5304,6 @@ export async function reactivateStudent(
   }
 }
 
-
-/* ============================================================
-   UNLOCK MAIN LOGIN
-   ============================================================ */
 
 export async function unlockMainLogin(
   input: {
@@ -5327,10 +5363,6 @@ export async function unlockMainLogin(
 }
 
 
-/* ============================================================
-   UNLOCK DASHBOARD LOGIN
-   ============================================================ */
-
 export async function unlockDashboardLogin(
   input: {
     studentId: string;
@@ -5388,10 +5420,6 @@ export async function unlockDashboardLogin(
   }
 }
 
-
-/* ============================================================
-   ERROR HANDLER
-   ============================================================ */
 
 function isDuplicateKeyError(
   error: unknown,
@@ -5461,14 +5489,298 @@ function handleServiceError<T = never>(
 }
 
 
-/* ============================================================
-   DEFAULT SERVICE
-   ============================================================ */
+
+
+export interface StudentOperationsDashboardQuery {
+  applicationStatus?: string;
+  assessmentStatus?: string;
+  internshipStatus?: string;
+  paymentStatus?: string;
+  studentOpsApprovalStatus?: string;
+  studentOpsStatus?: string;
+  dashboardStatus?: string;
+  search?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface StudentOperationsDashboardStudent {
+  id: string;
+  mainStudentId: string;
+  studentId: string;
+  dashboardStudentId: string;
+  applicationId: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  applicationStatus: string;
+  assessmentStatus: string;
+  internshipStatus: string;
+  internshipPlan: string;
+  internshipTrack: string;
+  paymentStatus: string;
+  paymentAmount: number;
+  paymentCurrency: string;
+  studentOpsApprovalStatus: string;
+  studentOpsStatus: string;
+  dashboardStatus: string;
+  dashboardLoginEnabled: boolean;
+  dashboardCredentialsGenerated: boolean;
+  learningStatus: string;
+  taskCompletionPercentage: number;
+  learningProgressPercentage: number;
+  attendancePercentage: number;
+  weeklyAssessmentStatus: string;
+  saturdayAssessmentStatus: string;
+  projectStatus: string;
+  certificateStatus: string;
+  certificateId: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+function sanitizeOperationsDashboardStudent(
+  value: Record<string, any>,
+): StudentOperationsDashboardStudent {
+  return {
+    id: objectIdString(value._id),
+    mainStudentId: cleanString(value.mainStudentId),
+    studentId: normalizeId(value.studentId),
+    dashboardStudentId: normalizeId(value.dashboardStudentId),
+    applicationId: normalizeId(value.applicationId),
+    fullName: cleanString(value.fullName),
+    email: normalizeEmail(value.email),
+    phone: cleanString(value.phone),
+    applicationStatus: cleanString(value.applicationStatus) || "unknown",
+    assessmentStatus: cleanString(value.assessmentStatus) || "not-started",
+    internshipStatus: cleanString(value.internshipStatus) || "not-started",
+    internshipPlan: cleanString(value.internshipPlan),
+    internshipTrack: cleanString(value.internshipTrack),
+    paymentStatus: cleanString(value.paymentStatus) || "unpaid",
+    paymentAmount: numberValue(value.paymentAmount),
+    paymentCurrency: cleanString(value.paymentCurrency).toUpperCase() || "INR",
+    studentOpsApprovalStatus:
+      cleanString(value.studentOpsApprovalStatus) ||
+      cleanString(value.operationsApprovalStatus) ||
+      "pending",
+    studentOpsStatus:
+      cleanString(value.studentOpsStatus) ||
+      cleanString(value.operationsStatus) ||
+      "not-ready",
+    dashboardStatus: cleanString(value.dashboardStatus) || "locked",
+    dashboardLoginEnabled: booleanValue(value.dashboardLoginEnabled),
+    dashboardCredentialsGenerated:
+      booleanValue(value.dashboardCredentialsGenerated),
+    learningStatus: cleanString(value.learningStatus) || "not-started",
+    taskCompletionPercentage: Math.min(
+      100,
+      Math.max(0, numberValue(value.taskCompletionPercentage)),
+    ),
+    learningProgressPercentage: Math.min(
+      100,
+      Math.max(0, numberValue(value.learningProgressPercentage)),
+    ),
+    attendancePercentage: Math.min(
+      100,
+      Math.max(0, numberValue(value.attendancePercentage)),
+    ),
+    weeklyAssessmentStatus:
+      cleanString(value.weeklyAssessmentStatus) || "locked",
+    saturdayAssessmentStatus:
+      cleanString(value.saturdayAssessmentStatus) || "locked",
+    projectStatus: cleanString(value.projectStatus) || "not-started",
+    certificateStatus:
+      cleanString(value.certificateStatus) || "not-eligible",
+    certificateId: cleanString(value.certificateId),
+    createdAt: dateOrNull(value.createdAt) || undefined,
+    updatedAt: dateOrNull(value.updatedAt) || undefined,
+  };
+}
+
+function buildOperationsDashboardFilter(
+  input: StudentOperationsDashboardQuery,
+): Record<string, unknown> {
+  const filter: Record<string, unknown> = {};
+  const statusFields = [
+    "applicationStatus",
+    "assessmentStatus",
+    "internshipStatus",
+    "paymentStatus",
+    "studentOpsApprovalStatus",
+    "studentOpsStatus",
+    "dashboardStatus",
+  ] as const;
+
+  for (const field of statusFields) {
+    const value = cleanString(input[field]).slice(0, 80);
+    if (value) {
+      if (field === "studentOpsApprovalStatus") {
+        filter.$and = [
+          ...((filter.$and as Record<string, unknown>[] | undefined) || []),
+          {
+            $or: [
+              { studentOpsApprovalStatus: value },
+              { operationsApprovalStatus: value },
+            ],
+          },
+        ];
+      } else if (field === "studentOpsStatus") {
+        filter.$and = [
+          ...((filter.$and as Record<string, unknown>[] | undefined) || []),
+          {
+            $or: [
+              { studentOpsStatus: value },
+              { operationsStatus: value },
+            ],
+          },
+        ];
+      } else {
+        filter[field] = value;
+      }
+    }
+  }
+
+  const search = cleanString(input.search).slice(0, 120);
+  if (search) {
+    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escaped, "i");
+    filter.$and = [
+      ...((filter.$and as Record<string, unknown>[] | undefined) || []),
+      {
+        $or: [
+          { fullName: regex },
+          { email: regex },
+          { phone: regex },
+          { studentId: regex },
+          { dashboardStudentId: regex },
+          { applicationId: regex },
+        ],
+      },
+    ];
+  }
+
+  return filter;
+}
+
+export async function getStudentOperationsDashboardRecord(
+  identifier: string,
+): Promise<ServiceResult<StudentOperationsDashboardStudent>> {
+  try {
+    const id = assertNonEmpty(identifier, "Student identifier").slice(0, 150);
+    const OperationsModel = await getStudentOperationsModel();
+    const normalized = normalizeId(id);
+    const query = mongoose.isValidObjectId(id)
+      ? {
+          $or: [
+            { _id: id },
+            { mainStudentId: id },
+            { studentId: normalized },
+            { dashboardStudentId: normalized },
+            { applicationId: normalized },
+          ],
+        }
+      : {
+          $or: [
+            { mainStudentId: id },
+            { studentId: normalized },
+            { dashboardStudentId: normalized },
+            { applicationId: normalized },
+          ],
+        };
+
+    const record = await OperationsModel.findOne(query)
+      .select(
+        "-dashboardPasswordHash -passwordHash -loginPasswordHash -__v",
+      )
+      .lean()
+      .exec();
+
+    if (!record) {
+      return {
+        success: false,
+        message: "Student Operations record was not found.",
+        code: "STUDENT_NOT_FOUND",
+      };
+    }
+
+    return {
+      success: true,
+      message: "Student Operations record loaded successfully.",
+      data: sanitizeOperationsDashboardStudent(record),
+    };
+  } catch (error) {
+    return handleServiceError(
+      "[StudentService] getStudentOperationsDashboardRecord",
+      error,
+    );
+  }
+}
+
+export async function listStudentOperationsDashboardRecords(
+  input: StudentOperationsDashboardQuery = {},
+): Promise<
+  ServiceResult<{
+    students: StudentOperationsDashboardStudent[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }>
+> {
+  try {
+    const OperationsModel = await getStudentOperationsModel();
+    const page = Math.min(
+      10000,
+      Math.max(1, Math.floor(numberValue(input.page, 1))),
+    );
+    const limit = Math.min(
+      100,
+      Math.max(1, Math.floor(numberValue(input.limit, 25))),
+    );
+    const filter = buildOperationsDashboardFilter(input);
+    const skip = (page - 1) * limit;
+
+    const [records, total] = await Promise.all([
+      OperationsModel.find(filter)
+        .select(
+          "-dashboardPasswordHash -passwordHash -loginPasswordHash -__v",
+        )
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
+      OperationsModel.countDocuments(filter).exec(),
+    ]);
+
+    return {
+      success: true,
+      message: "Student Operations records loaded successfully.",
+      data: {
+        students: records.map((record: Record<string, any>) =>
+          sanitizeOperationsDashboardStudent(record),
+        ),
+        total,
+        page,
+        limit,
+        totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+      },
+    };
+  } catch (error) {
+    return handleServiceError(
+      "[StudentService] listStudentOperationsDashboardRecords",
+      error,
+    );
+  }
+}
+
 
 const studentService = {
   getStudent,
   getStudentByApplicationId,
   listStudents,
+  getStudentOperationsDashboardRecord,
+  listStudentOperationsDashboardRecords,
 
   approveApplication,
   rejectApplication,
@@ -5507,3 +5819,4 @@ const studentService = {
 };
 
 export default studentService;
+

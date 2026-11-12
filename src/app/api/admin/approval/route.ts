@@ -1,1533 +1,1134 @@
+import "server-only";
+
 import { NextRequest, NextResponse } from "next/server";
-
 import mongoose, { type ClientSession } from "mongoose";
-
 import crypto from "node:crypto";
-
-
-
 import connectDB from "@/lib/db";
-
+import Admin from "@/models/Admin";
 import Application from "@/models/Application";
-
 import Student from "@/models/Student";
-
-import { hashPassword, verifyAuthToken, type AuthUser } from "@/lib/auth";
-
+import {
+  hashPassword,
+  verifyAuthToken,
+  type AuthUser,
+} from "@/lib/auth";
 import { sendStudentCredentialsEmail } from "@/lib/email";
 
-
-
 export const runtime = "nodejs";
-
 export const dynamic = "force-dynamic";
-
 export const revalidate = 0;
 
-
-
-const AUTH_COOKIE_NAME = "cybernet_auth_token";
-
+const ADMIN_COOKIE_NAME = "cybernet_admin_auth_token";
+const MAX_REQUEST_BODY_BYTES = 16 * 1024;
+const MAX_APPLICATION_ID_LENGTH = 50;
 const STUDENT_PASSWORD_LENGTH = 14;
-
+const MAX_REASON_LENGTH = 1000;
+const MAX_PAGE = 10000;
+const MAX_LIMIT = 100;
 const APPLICATION_STATUSES = ["pending", "under_review", "approved", "rejected"] as const;
+const APPROVAL_ROLES = new Set(["Super Admin", "Admin", "HR"]);
+const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+const SYMBOLS = "@#$%&*!";
 
 type ApplicationStatus = (typeof APPLICATION_STATUSES)[number];
+type ApprovalAction = "approve" | "reject" | "resend_credentials";
 
-const APPROVAL_ROLES = new Set(["Super Admin", "Admin", "HR"]);
-
-const MAX_REASON_LENGTH = 1000;
-
-
+type AuthenticatedAdmin = {
+  id: string;
+  role: string;
+  email: string;
+};
 
 class ApprovalRouteError extends Error {
-
   constructor(
-
     public readonly code: string,
-
     message: string,
-
     public readonly status: number,
-
   ) {
-
     super(message);
-
     this.name = "ApprovalRouteError";
-
   }
-
 }
-
-
 
 function apiResponse(data: unknown, status = 200): NextResponse {
-
   return NextResponse.json(data, {
-
     status,
-
     headers: {
-
       "Cache-Control": "private, no-store, no-cache, must-revalidate, proxy-revalidate",
-
       Pragma: "no-cache",
-
       Expires: "0",
-
       "X-Content-Type-Options": "nosniff",
-
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "X-Robots-Tag": "noindex, nofollow",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+      Vary: "Cookie",
     },
-
   });
-
 }
-
-
 
 function cleanString(value: unknown): string {
-
   return typeof value === "string" ? value.trim() : "";
-
 }
-
-
 
 function normalizeEmail(value: unknown): string {
-
   return cleanString(value).toLowerCase();
-
 }
-
-
 
 function isValidEmail(value: string): boolean {
-
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
-
+  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+function isValidApplicationId(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_APPLICATION_ID_LENGTH &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
 
+function hasValidMutationOrigin(request: NextRequest): boolean {
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite === "cross-site") return false;
+
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+
+  try {
+    return new URL(origin).origin === request.nextUrl.origin;
+  } catch {
+    return false;
+  }
+}
 
 function isDuplicateKeyError(error: unknown): boolean {
-
   return (
-
     typeof error === "object" &&
-
     error !== null &&
-
     "code" in error &&
-
     (error as { code?: unknown }).code === 11000
-
   );
-
 }
 
-
-
-async function getAuthenticatedAdmin(request: NextRequest): Promise<AuthUser | null> {
-
-  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-
+async function getAuthenticatedAdmin(
+  request: NextRequest,
+): Promise<AuthenticatedAdmin | null> {
+  const token = request.cookies.get(ADMIN_COOKIE_NAME)?.value;
   if (!token) return null;
 
-
-
   try {
-
-    const user = await verifyAuthToken(token);
-
-    if (!user || user.role !== "admin") return null;
-
-
-
-    // Keep compatibility with existing AuthUser payloads, but reject explicitly*
-
-    // assigned non-privileged admin roles.*
-
-    const adminRole = cleanString((user as AuthUser & { adminRole?: string }).adminRole);
-
-    if (adminRole && !APPROVAL_ROLES.has(adminRole)) return null;
-
-
-
-    return user;
-
-  } catch (error) {
-
-    console.error("[ADMIN APPROVAL] Authentication failed:", error);
-
-    return null;
-
-  }
-
-}
-
-
-
-function generateStudentId(): string {
-
-  return `CN-${new Date().getFullYear()}-${crypto.randomInt(100000, 1000000)}`;
-
-}
-
-
-
-async function generateUniqueStudentId(session: ClientSession): Promise<string> {
-
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-
-    const studentId = generateStudentId();
-
-    const existing = await Student.findOne({ studentId }, { _id: 1 })
-
-      .session(session)
-
-      .lean()
-
-      .exec();
-
-    if (!existing) return studentId;
-
-  }
-
-  throw new Error("Unable to generate a unique student ID.");
-
-}
-
-
-
-function generateTemporaryPassword(): string {
-
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-
-  const symbols = "@#$%&\*!";
-
-  const chars: string[] = [];
-
-
-
-  for (let i = 0; i < STUDENT_PASSWORD_LENGTH - 3; i += 1) {
-
-    chars.push(alphabet[crypto.randomInt(0, alphabet.length)]);
-
-  }
-
-  chars.push(symbols[crypto.randomInt(0, symbols.length)]);
-
-  chars.push(String(crypto.randomInt(0, 10)));
-
-  chars.push(alphabet[crypto.randomInt(0, alphabet.length)]);
-
-
-
-  for (let i = chars.length - 1; i > 0; i -= 1) {
-
-    const j = crypto.randomInt(0, i + 1);
-
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-
-  }
-
-  return chars.join("");
-
-}
-
-
-
-async function readJsonObject(request: NextRequest): Promise<Record<string, unknown> | null> {
-
-  let body: unknown;
-
-  try {
-
-    body = await request.json();
-
-  } catch {
-
-    return null;
-
-  }
-
-  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-
-  return body as Record<string, unknown>;
-
-}
-
-
-
-function validationError(code: string, message: string, status = 400): NextResponse {
-
-  return apiResponse({ success: false, code, message }, status);
-
-}
-
-
-
-function publicApplication(application: Record<string, unknown>): Record<string, unknown> {
-
-  // Preserve the existing admin UI's application fields while stripping secrets.*
-
-  const sensitiveKey = /(password|passwd|otp|token|secret|reset.?key|verification.?code|api.?key|credential)/i;
-
-  const sanitize = (value: unknown): unknown => {
-
-    if (Array.isArray(value)) return value.map(sanitize);
-
-    if (!value || typeof value !== "object" || value instanceof Date) return value;
-
-    const result: Record<string, unknown> = {};
-
-    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-
-      if (sensitiveKey.test(key)) continue;
-
-      result[key] = sanitize(nestedValue);
-
+    const session = await verifyAuthToken(token);
+    if (
+      !session ||
+      session.role !== "admin" ||
+      session.sessionType !== "admin" ||
+      !session.id ||
+      !mongoose.isValidObjectId(session.id)
+    ) {
+      return null;
     }
-
-    return result;
-
-  };
-
-  return sanitize(application) as Record<string, unknown>;
-
-}
-
-
-
-async function sendCredentialsEmail(params: {
-
-  studentEmail: string;
-
-  studentName: string;
-
-  studentId: string;
-
-  password: string;
-
-  internshipName: string;
-
-}): Promise<void> {
-
-  await sendStudentCredentialsEmail({
-
-    studentEmail: params.studentEmail,
-
-    studentName: params.studentName,
-
-    studentId: params.studentId,
-
-    password: params.password,
-
-    internshipName: params.internshipName,
-
-  });
-
-}
-
-
-
-function errorResponse(error: unknown, operation: string): NextResponse {
-
-  if (error instanceof ApprovalRouteError) {
-
-    return apiResponse(
-
-      { success: false, code: error.code, message: error.message },
-
-      error.status,
-
-    );
-
-  }
-
-
-
-  if (isDuplicateKeyError(error)) {
-
-    return apiResponse(
-
-      {
-
-        success: false,
-
-        code: "DUPLICATE_RECORD",
-
-        message: "A duplicate application or student account already exists.",
-
-      },
-
-      409,
-
-    );
-
-  }
-
-
-
-  console.error(`[ADMIN APPROVAL] ${operation} failed:`, error);
-
-  return apiResponse(
-
-    {
-
-      success: false,
-
-      code: "INTERNAL_SERVER_ERROR",
-
-      message: "Unable to process the request. Please try again.",
-
-    },
-
-    500,
-
-  );
-
-}
-
-
-
-/**
-
- * GET /api/admin/approval?status=pending&page=1&limit=50
-
- * Returns a paginated, allow-listed view of application data.
-
- */
-
-export async function GET(request: NextRequest): Promise<NextResponse> {
-
-  const admin = await getAuthenticatedAdmin(request);
-
-  if (!admin) {
-
-    return apiResponse(
-
-      { success: false, code: "UNAUTHORIZED", message: "Admin login required." },
-
-      401,
-
-    );
-
-  }
-
-
-
-  try {
 
     await connectDB();
 
+    const admin = await Admin.findById(session.id)
+      .select("email role isActive isEmailVerified security permissions")
+      .lean()
+      .exec();
 
-
-    const params = request.nextUrl.searchParams;
-
-    const requestedStatus = cleanString(params.get("status")).toLowerCase();
-
-    if (requestedStatus && !APPLICATION_STATUSES.includes(requestedStatus as ApplicationStatus)) {
-
-      return validationError("INVALID_STATUS", "Unsupported application status.");
-
+    if (
+      !admin ||
+      admin.isActive !== true ||
+      admin.isEmailVerified !== true ||
+      !APPROVAL_ROLES.has(admin.role) ||
+      session.adminRole !== admin.role ||
+      admin.permissions?.applications !== true
+    ) {
+      return null;
     }
 
+    const lockedUntil = admin.security?.lockedUntil
+      ? new Date(admin.security.lockedUntil)
+      : null;
+    const isLocked =
+      admin.security?.accountLocked === true &&
+      (!lockedUntil || lockedUntil.getTime() > Date.now());
 
+    if (isLocked) return null;
+
+    return {
+      id: String(admin._id),
+      role: admin.role,
+      email: admin.email,
+    };
+  } catch (error) {
+    console.error("[ADMIN_APPROVAL] Authentication check failed", {
+      name: error instanceof Error ? error.name : "UnknownError",
+    });
+    return null;
+  }
+}
+
+function generateStudentId(): string {
+  return `CN-${new Date().getFullYear()}-${crypto.randomInt(100000, 1000000)}`;
+}
+
+async function generateUniqueStudentId(session: ClientSession): Promise<string> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const studentId = generateStudentId();
+    const existing = await Student.findOne({ studentId })
+      .select({ _id: 1 })
+      .session(session)
+      .lean()
+      .exec();
+
+    if (!existing) return studentId;
+  }
+
+  throw new ApprovalRouteError(
+    "STUDENT_ID_GENERATION_FAILED",
+    "Unable to generate a unique student ID. Please try again.",
+    503,
+  );
+}
+
+function generateTemporaryPassword(): string {
+  const characters: string[] = [];
+
+  for (let index = 0; index < STUDENT_PASSWORD_LENGTH - 3; index += 1) {
+    characters.push(ALPHABET[crypto.randomInt(0, ALPHABET.length)]);
+  }
+
+  characters.push(SYMBOLS[crypto.randomInt(0, SYMBOLS.length)]);
+  characters.push(String(crypto.randomInt(0, 10)));
+  characters.push(ALPHABET[crypto.randomInt(0, ALPHABET.length)]);
+
+  for (let index = characters.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(0, index + 1);
+    [characters[index], characters[swapIndex]] = [
+      characters[swapIndex],
+      characters[index],
+    ];
+  }
+
+  return characters.join("");
+}
+
+async function readJsonObject(
+  request: NextRequest,
+): Promise<Record<string, unknown> | null> {
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_REQUEST_BODY_BYTES
+  ) {
+    return null;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await request.text();
+  } catch {
+    return null;
+  }
+
+  if (Buffer.byteLength(rawBody, "utf8") > MAX_REQUEST_BODY_BYTES) {
+    return null;
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return null;
+  }
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return null;
+  }
+
+  return body as Record<string, unknown>;
+}
+
+function validationError(
+  code: string,
+  message: string,
+  status = 400,
+): NextResponse {
+  return apiResponse({ success: false, code, message }, status);
+}
+
+function publicApplication(
+  application: Record<string, unknown>,
+): Record<string, unknown> {
+  const sensitiveKey =
+    /(password|passwd|otp|token|secret|reset.?key|verification.?code|api.?key|credential|signature)/i;
+
+  const sanitize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sanitize);
+    if (!value || typeof value !== "object" || value instanceof Date) {
+      return value;
+    }
+
+    const result: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
+      if (sensitiveKey.test(key)) continue;
+      result[key] = sanitize(nestedValue);
+    }
+    return result;
+  };
+
+  return sanitize(application) as Record<string, unknown>;
+}
+
+async function sendCredentialsEmail(params: {
+  studentEmail: string;
+  studentName: string;
+  studentId: string;
+  password: string;
+  internshipName: string;
+}): Promise<void> {
+  await sendStudentCredentialsEmail({
+    studentEmail: params.studentEmail,
+    studentName: params.studentName,
+    studentId: params.studentId,
+    password: params.password,
+    internshipName: params.internshipName,
+  });
+}
+
+function errorResponse(error: unknown, operation: string): NextResponse {
+  if (error instanceof ApprovalRouteError) {
+    return apiResponse(
+      {
+        success: false,
+        code: error.code,
+        message: error.message,
+      },
+      error.status,
+    );
+  }
+
+  if (isDuplicateKeyError(error)) {
+    return apiResponse(
+      {
+        success: false,
+        code: "DUPLICATE_RECORD",
+        message:
+          "A student account or application with this email or ID already exists.",
+      },
+      409,
+    );
+  }
+
+  const value = error as {
+    name?: unknown;
+    code?: unknown;
+    codeName?: unknown;
+    message?: unknown;
+  };
+
+  console.error(`[ADMIN_APPROVAL] ${operation} failed`, {
+    name: typeof value?.name === "string" ? value.name : "UnknownError",
+    code:
+      typeof value?.code === "string" || typeof value?.code === "number"
+        ? String(value.code)
+        : undefined,
+    codeName:
+      typeof value?.codeName === "string" ? value.codeName : undefined,
+  });
+
+  if (
+    value?.code === 20 ||
+    value?.codeName === "IllegalOperation" ||
+    (typeof value?.message === "string" &&
+      /transaction numbers are only allowed|replica set|mongos/i.test(value.message))
+  ) {
+    return apiResponse(
+      {
+        success: false,
+        code: "TRANSACTIONS_NOT_SUPPORTED",
+        message:
+          "The main MongoDB deployment must support transactions. Configure MongoDB Atlas or a replica set, then retry.",
+      },
+      503,
+    );
+  }
+
+  return apiResponse(
+    {
+      success: false,
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Unable to process the request. Please try again.",
+    },
+    500,
+  );
+}
+
+async function requireAdmin(
+  request: NextRequest,
+): Promise<AuthenticatedAdmin | NextResponse> {
+  const admin = await getAuthenticatedAdmin(request);
+  if (!admin) {
+    return apiResponse(
+      {
+        success: false,
+        code: "UNAUTHORIZED",
+        message:
+          "A valid, active, verified admin session with application permission is required.",
+      },
+      401,
+    );
+  }
+  return admin;
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    const admin = await requireAdmin(request);
+    if (admin instanceof NextResponse) return admin;
+
+    await connectDB();
+
+    const params = request.nextUrl.searchParams;
+    const requestedStatus = cleanString(params.get("status")).toLowerCase();
+
+    if (
+      requestedStatus &&
+      !APPLICATION_STATUSES.includes(requestedStatus as ApplicationStatus)
+    ) {
+      return validationError(
+        "INVALID_STATUS",
+        "Unsupported application status.",
+      );
+    }
 
     const requestedPage = Number(params.get("page") ?? 1);
-
     const requestedLimit = Number(params.get("limit") ?? 50);
 
     const page =
-
       Number.isSafeInteger(requestedPage) && requestedPage > 0
-
-        ? Math.min(requestedPage, 10000)
-
+        ? Math.min(requestedPage, MAX_PAGE)
         : 1;
-
     const limit =
-
       Number.isSafeInteger(requestedLimit) && requestedLimit > 0
-
-        ? Math.min(requestedLimit, 100)
-
+        ? Math.min(requestedLimit, MAX_LIMIT)
         : 50;
 
     const filter: Record<string, unknown> = {};
-
     if (requestedStatus) filter.status = requestedStatus;
 
-
-
     const skip = (page - 1) * limit;
-
     const [documents, total] = await Promise.all([
-
-      Application.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean().exec(),
-
+      Application.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
       Application.countDocuments(filter).exec(),
-
     ]);
 
-
-
-    const data = documents.map((item) =>
-
-      publicApplication(item as unknown as Record<string, unknown>),
-
+    const data = documents.map((document) =>
+      publicApplication(document as unknown as Record<string, unknown>),
     );
-
-
 
     return apiResponse({
-
       success: true,
-
       message: "Applications fetched successfully.",
-
       data,
-
       total,
-
       pagination: {
-
         page,
-
         limit,
-
         total,
-
         totalPages: total === 0 ? 0 : Math.ceil(total / limit),
-
         hasNextPage: page * limit < total,
-
         hasPreviousPage: page > 1,
-
       },
-
     });
-
   } catch (error) {
-
     return errorResponse(error, "GET");
-
   }
-
 }
 
-
-
-/**
-
- * POST /api/admin/approval
-
- * { action: "approve" | "reject" | "resend_credentials", applicationId, reason? }
-
- */
-
 export async function POST(request: NextRequest): Promise<NextResponse> {
-
-  const admin = await getAuthenticatedAdmin(request);
-
-  if (!admin) {
-
-    return apiResponse(
-
-      { success: false, code: "UNAUTHORIZED", message: "Admin login required." },
-
-      401,
-
+  if (!hasValidMutationOrigin(request)) {
+    return validationError(
+      "INVALID_ORIGIN",
+      "Request origin is not allowed.",
+      403,
     );
-
   }
 
-
-
   try {
+    const admin = await requireAdmin(request);
+    if (admin instanceof NextResponse) return admin;
 
     await connectDB();
 
     const body = await readJsonObject(request);
+    if (!body) {
+      return validationError(
+        "INVALID_BODY",
+        "Request body must be a valid JSON object within the allowed size.",
+      );
+    }
 
-    if (!body) return validationError("INVALID_BODY", "Request body must be a valid JSON object.");
-
-
-
-    const action = cleanString(body.action).toLowerCase();
-
+    const action = cleanString(body.action).toLowerCase() as ApprovalAction;
     const applicationId = cleanString(body.applicationId);
-
     const reason = cleanString(body.reason);
 
-
-
-    if (!applicationId) {
-
-      return validationError("APPLICATION_ID_REQUIRED", "Application ID is required.");
-
+    if (!isValidApplicationId(applicationId)) {
+      return validationError(
+        "APPLICATION_ID_INVALID",
+        "A valid application ID is required.",
+      );
     }
 
     if (!["approve", "reject", "resend_credentials"].includes(action)) {
-
       return validationError(
-
         "INVALID_ACTION",
-
         "Use approve, reject, or resend_credentials.",
-
       );
-
     }
 
     if (reason.length > MAX_REASON_LENGTH) {
-
-      return validationError("INVALID_REASON", "Reason cannot exceed 1000 characters.");
-
+      return validationError(
+        "INVALID_REASON",
+        "Reason cannot exceed 1000 characters.",
+      );
     }
-
-
 
     if (action === "reject") {
+      const rejectionUpdate: Record<string, unknown> = {
+        status: "rejected",
+      };
+      if (Application.schema.path("adminRejectionReason")) {
+        rejectionUpdate.adminRejectionReason = reason;
+      }
 
-      const application = await Application.findOne({ applicationId }).exec();
+      const application = await Application.findOneAndUpdate(
+        {
+          applicationId,
+          status: { $in: ["pending", "under_review"] },
+        },
+        { $set: rejectionUpdate },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+        .lean()
+        .exec();
 
       if (!application) {
+        const current = await Application.findOne({ applicationId })
+          .select("status")
+          .lean()
+          .exec();
+
+        if (!current) {
+          return apiResponse(
+            {
+              success: false,
+              code: "APPLICATION_NOT_FOUND",
+              message: "Application not found.",
+            },
+            404,
+          );
+        }
 
         return apiResponse(
-
-          { success: false, code: "APPLICATION_NOT_FOUND", message: "Application not found." },
-
-          404,
-
-        );
-
-      }
-
-      if (application.status === "approved") {
-
-        return apiResponse(
-
           {
-
             success: false,
-
-            code: "APPLICATION_ALREADY_APPROVED",
-
-            message: "An approved application cannot be rejected.",
-
+            code:
+              current.status === "approved"
+                ? "APPLICATION_ALREADY_APPROVED"
+                : "APPLICATION_STATUS_CONFLICT",
+            message:
+              current.status === "approved"
+                ? "An approved application cannot be rejected."
+                : "The application status changed. Refresh and try again.",
           },
-
           409,
-
         );
-
       }
-
-
-
-      application.status = "rejected";
-
-      // Persist the reason when the schema supports this field.*
-
-      if ("adminRejectionReason" in application) {
-
-        (application as typeof application & { adminRejectionReason?: string }).adminRejectionReason =
-
-          reason;
-
-      }
-
-      await application.save();
-
-
 
       return apiResponse({
-
         success: true,
-
         message: "Application rejected successfully.",
-
         data: {
-
           applicationId: application.applicationId,
-
           status: application.status,
-
           rejectionReason: reason || null,
-
           updatedBy: admin.id,
-
         },
-
       });
-
     }
 
-
-
     if (action === "resend_credentials") {
-
-      const application = await Application.findOne({ applicationId }).exec();
+      const application = await Application.findOne({
+        applicationId,
+        status: "approved",
+      })
+        .select("applicationId internshipTrack")
+        .lean()
+        .exec();
 
       if (!application) {
-
+        const exists = await Application.exists({ applicationId });
         return apiResponse(
-
-          { success: false, code: "APPLICATION_NOT_FOUND", message: "Application not found." },
-
-          404,
-
-        );
-
-      }
-
-      if (application.status !== "approved") {
-
-        return apiResponse(
-
           {
-
             success: false,
-
-            code: "APPLICATION_NOT_APPROVED",
-
-            message: "Credentials can only be sent for an approved application.",
-
+            code: exists
+              ? "APPLICATION_NOT_APPROVED"
+              : "APPLICATION_NOT_FOUND",
+            message: exists
+              ? "Credentials can only be sent for an approved application."
+              : "Application not found.",
           },
-
-          409,
-
+          exists ? 409 : 404,
         );
-
       }
 
-
-
-      const student = await Student.findOne({ applicationId: application.applicationId }).exec();
+      const student = await Student.findOne({
+        applicationId: application.applicationId,
+      })
+        .select("+loginPasswordHash")
+        .exec();
 
       if (!student) {
-
         return apiResponse(
-
           {
-
             success: false,
-
             code: "STUDENT_NOT_FOUND",
-
-            message: "Student account was not found for this application.",
-
+            message:
+              "Student account was not found for this approved application.",
           },
-
           404,
-
         );
-
       }
-
-
 
       const studentId = cleanString(student.studentId);
-
       const studentEmail = normalizeEmail(student.email);
-
       const studentName = cleanString(student.fullName);
 
-      if (!studentId || !isValidEmail(studentEmail) || !studentName) {
-
+      if (
+        !studentId ||
+        !isValidEmail(studentEmail) ||
+        !studentName ||
+        student.loginEnabled !== true
+      ) {
         return apiResponse(
-
           {
-
             success: false,
-
             code: "STUDENT_DATA_INCOMPLETE",
-
-            message: "Student account has incomplete credential information.",
-
+            message:
+              "Student account is incomplete or login is disabled. Review the student record before resending credentials.",
           },
-
-          500,
-
+          409,
         );
-
       }
 
-
-
       const temporaryPassword = generateTemporaryPassword();
+      const previousHash = student.loginPasswordHash;
+      const temporaryHash = await hashPassword(temporaryPassword);
+      const now = new Date();
 
-      student.loginPasswordHash = await hashPassword(temporaryPassword);
-
+      student.loginPasswordHash = temporaryHash;
       student.credentialsGenerated = true;
-
-      student.credentialsGeneratedAt = new Date();
-
+      student.credentialsGeneratedAt = now;
       student.credentialsExpiresAt = null;
-
-      student.loginEnabled = true;
-
-      student.loginEnabledAt = student.loginEnabledAt || new Date();
-
       student.mustChangePassword = true;
-
       student.passwordChangedAt = null;
-
       student.loginAttempts = 0;
-
       student.accountLocked = false;
-
       student.lockedUntil = null;
 
       await student.save();
 
-
-
       try {
-
         await sendCredentialsEmail({
-
           studentEmail,
-
           studentName,
-
           studentId,
-
           password: temporaryPassword,
-
           internshipName:
+            cleanString(application.internshipTrack) ||
+            "CyberNet Careers Internship",
+        });
+      } catch (emailError) {
+        try {
+          await Student.updateOne(
+            {
+              _id: student._id,
+              loginPasswordHash: temporaryHash,
+            },
+            {
+              $set: {
+                loginPasswordHash: previousHash || "",
+              },
+            },
+          );
+        } catch (rollbackError) {
+          console.error("[ADMIN_APPROVAL] Credential rollback failed", {
+            name:
+              rollbackError instanceof Error
+                ? rollbackError.name
+                : "UnknownError",
+          });
+        }
 
-            cleanString(application.internshipTrack) || "CyberNet Careers Internship",
-
+        console.error("[ADMIN_APPROVAL] Credential email failed", {
+          name:
+            emailError instanceof Error
+              ? emailError.name
+              : "EmailDeliveryError",
         });
 
-      } catch (emailError) {
-
-        // Never return a password, hash, or token in an API response.*
-
-        console.error("[ADMIN APPROVAL] Resend credential email failed:", emailError);
-
         return apiResponse(
-
           {
-
             success: false,
-
             code: "CREDENTIAL_EMAIL_FAILED",
-
             message:
-
-              "A new temporary password was generated, but email delivery failed. Retry Resend Credentials to generate and send another password.",
-
+              "Credential email could not be delivered. The previous password was preserved when rollback succeeded. Retry after checking email configuration.",
             data: {
-
               applicationId,
-
               studentId,
-
               email: studentEmail,
-
-              credentialsGenerated: true,
-
               credentialsSent: false,
-
             },
-
           },
-
           502,
-
         );
-
       }
 
-
-
       return apiResponse({
-
         success: true,
-
         message: "Student credentials regenerated and sent successfully.",
-
         data: {
-
           applicationId,
-
           studentId,
-
           email: studentEmail,
-
           credentialsGenerated: true,
-
           credentialsSent: true,
-
         },
-
       });
-
     }
-
-
-
-    // APPROVE: only application approval; never mark payment as paid or unlock dashboard.*
 
     const temporaryPassword = generateTemporaryPassword();
-
     const loginPasswordHash = await hashPassword(temporaryPassword);
-
     const session = await mongoose.startSession();
 
-
-
     let createdStudentId = "";
-
     let createdStudentEmail = "";
-
     let createdStudentName = "";
-
     let createdInternshipTrack = "";
 
-
-
     try {
+      await session.withTransaction(
+        async () => {
+          const application = await Application.findOne({ applicationId })
+            .session(session)
+            .exec();
 
-      await session.withTransaction(async () => {
+          if (!application) {
+            throw new ApprovalRouteError(
+              "APPLICATION_NOT_FOUND",
+              "Application not found.",
+              404,
+            );
+          }
 
-        const application = await Application.findOne({ applicationId })
+          if (application.status === "approved") {
+            throw new ApprovalRouteError(
+              "APPLICATION_ALREADY_APPROVED",
+              "Application is already approved. Use Resend Credentials if required.",
+              409,
+            );
+          }
 
-          .session(session)
+          if (application.status === "rejected") {
+            throw new ApprovalRouteError(
+              "APPLICATION_REJECTED",
+              "A rejected application cannot be approved directly.",
+              409,
+            );
+          }
 
-          .exec();
+          if (application.emailVerified !== true) {
+            throw new ApprovalRouteError(
+              "EMAIL_NOT_VERIFIED",
+              "Student email must be verified before approval.",
+              403,
+            );
+          }
 
+          const email = normalizeEmail(application.email);
+          const fullName = cleanString(application.fullName);
+          const phone = cleanString(application.phone);
+          const collegeUniversity = cleanString(
+            application.collegeUniversity,
+          );
+          const course = cleanString(application.course);
+          const branchStream = cleanString(application.branchStream);
+          const graduationYear = cleanString(application.graduationYear);
+          const internshipTrack = cleanString(application.internshipTrack);
+          const skills = Array.isArray(application.skills)
+            ? application.skills.map(cleanString).filter(Boolean)
+            : [];
 
+          if (!isValidEmail(email)) {
+            throw new ApprovalRouteError(
+              "APPLICATION_EMAIL_INVALID",
+              "A valid applicant email is required.",
+              400,
+            );
+          }
 
-        if (!application) {
+          if (
+            !fullName ||
+            !phone ||
+            !collegeUniversity ||
+            !course ||
+            !branchStream ||
+            !graduationYear ||
+            !internshipTrack ||
+            skills.length === 0
+          ) {
+            throw new ApprovalRouteError(
+              "APPLICATION_DATA_INCOMPLETE",
+              "Applicant profile is incomplete. Check name, phone, education, graduation year, internship domain, and skills.",
+              400,
+            );
+          }
 
-          throw new ApprovalRouteError("APPLICATION_NOT_FOUND", "Application not found.", 404);
+          if (
+            application.consentTerms !== true ||
+            application.consentPrivacy !== true ||
+            application.consentDeclaration !== true
+          ) {
+            throw new ApprovalRouteError(
+              "CONSENT_REQUIRED",
+              "Terms, privacy, and declaration consent are required.",
+              403,
+            );
+          }
 
-        }
+          const existingStudent = await Student.findOne({
+            $or: [
+              { email },
+              { applicationId: application.applicationId },
+            ],
+          })
+            .select({ _id: 1 })
+            .session(session)
+            .lean()
+            .exec();
 
-        if (application.status === "approved") {
+          if (existingStudent) {
+            throw new ApprovalRouteError(
+              "STUDENT_ALREADY_EXISTS",
+              "A student account already exists for this application or email address.",
+              409,
+            );
+          }
 
-          throw new ApprovalRouteError(
+          const studentId = await generateUniqueStudentId(session);
+          const now = new Date();
+          const adminObjectId = new mongoose.Types.ObjectId(admin.id);
 
-            "APPLICATION_ALREADY_APPROVED",
-
-            "Application is already approved. Use Resend Credentials if required.",
-
-            409,
-
+          await Student.create(
+            [
+              {
+                applicationId: application.applicationId,
+                fullName,
+                email,
+                emailVerified: true,
+                emailVerifiedAt: application.emailVerifiedAt || now,
+                phone,
+                collegeName: collegeUniversity,
+                university: collegeUniversity,
+                course,
+                branchStream,
+                year: "",
+                semester: "",
+                cgpa: "",
+                skills,
+                internshipTrack,
+                internshipPlan: "",
+                internshipSelectionAt: null,
+                internshipApplicationAllowed: false,
+                internshipStatus: "locked",
+                startPreference: "",
+                studentId,
+                loginPasswordHash,
+                credentialsGenerated: true,
+                credentialsGeneratedAt: now,
+                credentialsExpiresAt: null,
+                loginEnabled: true,
+                loginEnabledAt: now,
+                loginAttempts: 0,
+                accountLocked: false,
+                lockedUntil: null,
+                mustChangePassword: true,
+                passwordChangedAt: null,
+                applicationStatus: "approved",
+                submittedAt: application.createdAt,
+                assessmentStatus: "not-started",
+                assessmentScore: null,
+                assessmentStartedAt: null,
+                assessmentSubmittedAt: null,
+                assessmentEvaluatedAt: null,
+                resultDeclaredAt: null,
+                resultVisibleAt: null,
+                resultStatus: "pending",
+                paymentStatus: "unpaid",
+                paymentAmount: 0,
+                paymentCurrency: "INR",
+                razorpayOrderId: "",
+                razorpayPaymentId: "",
+                razorpaySignature: "",
+                paymentCompletedAt: null,
+                receiptEmailSent: false,
+                adminApprovalStatus: "approved",
+                adminApprovedBy: adminObjectId,
+                adminApprovedAt: now,
+                adminRejectionReason: "",
+                approvedAt: now,
+                dashboardStatus: "locked",
+                dashboardActivatedAt: null,
+                certificateStatus: "not-eligible",
+                certificateId: "",
+                whatsappJoined: false,
+                consentTerms: application.consentTerms,
+                consentPrivacy: application.consentPrivacy,
+                consentDeclaration: application.consentDeclaration,
+                consentUpdates: false,
+                consentAcceptedAt: now,
+                notes: "",
+              },
+            ],
+            { session },
           );
 
-        }
-
-        if (application.status === "rejected") {
-
-          throw new ApprovalRouteError(
-
-            "APPLICATION_REJECTED",
-
-            "A rejected application cannot be approved directly.",
-
-            409,
-
-          );
-
-        }
-
-        if (application.emailVerified !== true) {
-
-          throw new ApprovalRouteError(
-
-            "EMAIL_NOT_VERIFIED",
-
-            "Student email must be verified before approval.",
-
-            403,
-
-          );
-
-        }
-
-
-
-        const email = normalizeEmail(application.email);
-
-        const fullName = cleanString(application.fullName);
-
-        const phone = cleanString(application.phone);
-
-        const collegeUniversity = cleanString(application.collegeUniversity);
-
-        const course = cleanString(application.course);
-
-        const branchStream = cleanString(application.branchStream);
-
-        const graduationYear = cleanString(application.graduationYear);
-
-        const internshipTrack = cleanString(application.internshipTrack);
-
-        const skills = Array.isArray(application.skills)
-
-          ? application.skills.map(cleanString).filter(Boolean)
-
-          : [];
-
-
-
-        if (!isValidEmail(email)) {
-
-          throw new ApprovalRouteError(
-
-            "APPLICATION_EMAIL_INVALID",
-
-            "A valid applicant email is required.",
-
-            400,
-
-          );
-
-        }
-
-        if (!fullName || !phone || !collegeUniversity || !course || !branchStream ||
-
-            !graduationYear || !internshipTrack || skills.length === 0) {
-
-          throw new ApprovalRouteError(
-
-            "APPLICATION_DATA_INCOMPLETE",
-
-            "Applicant profile is incomplete. Check name, phone, education, graduation year, internship domain, and skills.",
-
-            400,
-
-          );
-
-        }
-
-        if (
-
-          application.consentTerms !== true ||
-
-          application.consentPrivacy !== true ||
-
-          application.consentDeclaration !== true
-
-        ) {
-
-          throw new ApprovalRouteError(
-
-            "CONSENT_REQUIRED",
-
-            "Terms, privacy, and declaration consent are required.",
-
-            403,
-
-          );
-
-        }
-
-
-
-        const existingStudent = await Student.findOne({
-
-          $or: [{ email }, { applicationId: application.applicationId }],
-
-        })
-
-          .select({ _id: 1, studentId: 1 })
-
-          .session(session)
-
-          .lean()
-
-          .exec();
-
-
-
-        if (existingStudent) {
-
-          throw new ApprovalRouteError(
-
-            "STUDENT_ALREADY_EXISTS",
-
-            "A student account already exists for this application or email address.",
-
-            409,
-
-          );
-
-        }
-
-
-
-        const studentId = await generateUniqueStudentId(session);
-
-        const now = new Date();
-
-        const adminObjectId = mongoose.isValidObjectId(admin.id)
-
-          ? new mongoose.Types.ObjectId(admin.id)
-
-          : undefined;
-
-
-
-        await Student.create(
-
-          [
-
+          const applicationUpdate = await Application.updateOne(
             {
-
-              applicationId: application.applicationId,
-
-              fullName,
-
-              email,
-
-              emailVerified: true,
-
-              emailVerifiedAt: application.emailVerifiedAt || now,
-
-              phone,
-
-              collegeName: collegeUniversity,
-
-              university: collegeUniversity,
-
-              course,
-
-              branchStream,
-
-              year: "",
-
-              semester: "",
-
-              cgpa: "",
-
-              skills,
-
-              internshipTrack,
-
-              internshipPlan: "",
-
-              internshipSelectionAt: null,
-
-              internshipApplicationAllowed: false,
-
-              internshipStatus: "locked",
-
-              startPreference: "",
-
-              studentId,
-
-              loginPasswordHash,
-
-              credentialsGenerated: true,
-
-              credentialsGeneratedAt: now,
-
-              credentialsExpiresAt: null,
-
-              loginEnabled: true,
-
-              loginEnabledAt: now,
-
-              loginAttempts: 0,
-
-              accountLocked: false,
-
-              lockedUntil: null,
-
-              mustChangePassword: true,
-
-              passwordChangedAt: null,
-
-              applicationStatus: "approved",
-
-              submittedAt: application.createdAt,
-
-              assessmentStatus: "not-started",
-
-              assessmentScore: null,
-
-              assessmentStartedAt: null,
-
-              assessmentSubmittedAt: null,
-
-              assessmentEvaluatedAt: null,
-
-              resultDeclaredAt: null,
-
-              resultVisibleAt: null,
-
-              resultStatus: "pending",
-
-              paymentStatus: "unpaid",
-
-              paymentAmount: 0,
-
-              paymentCurrency: "INR",
-
-              razorpayOrderId: "",
-
-              razorpayPaymentId: "",
-
-              razorpaySignature: "",
-
-              paymentCompletedAt: null,
-
-              receiptEmailSent: false,
-
-              adminApprovalStatus: "approved",
-
-              adminApprovedBy: adminObjectId,
-
-              adminApprovedAt: now,
-
-              adminRejectionReason: "",
-
-              approvedAt: now,
-
-              dashboardStatus: "locked",
-
-              dashboardActivatedAt: null,
-
-              certificateStatus: "not-eligible",
-
-              certificateId: "",
-
-              whatsappJoined: false,
-
-              consentTerms: application.consentTerms,
-
-              consentPrivacy: application.consentPrivacy,
-
-              consentDeclaration: application.consentDeclaration,
-
-              consentUpdates: false,
-
-              consentAcceptedAt: now,
-
-              notes: "",
-
+              _id: application._id,
+              status: { $in: ["pending", "under_review"] },
             },
+            {
+              $set: {
+                status: "approved",
+                studentId,
+              },
+            },
+            { session, runValidators: true },
+          );
 
-          ],
+          if (applicationUpdate.modifiedCount !== 1) {
+            throw new ApprovalRouteError(
+              "APPLICATION_STATUS_CONFLICT",
+              "The application status changed during approval. Refresh and try again.",
+              409,
+            );
+          }
 
-          { session },
-
-        );
-
-
-
-        application.status = "approved";
-
-        application.studentId = studentId;
-
-        // This endpoint does not collect or approve payment.*
-
-        application.paymentStatus = "not_required";
-
-        application.paymentId = undefined;
-
-        application.selectedDuration = undefined;
-
-        await application.save({ session });
-
-
-
-        createdStudentId = studentId;
-
-        createdStudentEmail = email;
-
-        createdStudentName = fullName;
-
-        createdInternshipTrack = internshipTrack;
-
-      });
-
+          createdStudentId = studentId;
+          createdStudentEmail = email;
+          createdStudentName = fullName;
+          createdInternshipTrack = internshipTrack;
+        },
+        {
+          readConcern: { level: "snapshot" },
+          writeConcern: { w: "majority" },
+          readPreference: "primary",
+        },
+      );
     } finally {
-
       await session.endSession();
-
     }
 
-
-
-    // Email is sent only after the database transaction commits.*
-
     try {
-
       await sendCredentialsEmail({
-
         studentEmail: createdStudentEmail,
-
         studentName: createdStudentName,
-
         studentId: createdStudentId,
-
         password: temporaryPassword,
-
         internshipName: createdInternshipTrack,
-
       });
-
     } catch (emailError) {
-
-      console.error("[ADMIN APPROVAL] Credential email failed:", emailError);
+      console.error("[ADMIN_APPROVAL] Initial credential email failed", {
+        name:
+          emailError instanceof Error
+            ? emailError.name
+            : "EmailDeliveryError",
+      });
 
       return apiResponse(
-
         {
-
           success: false,
-
           code: "CREDENTIAL_EMAIL_FAILED",
-
           message:
-
-            "Application approved and student account created, but credential email delivery failed. Use Resend Credentials.",
-
+            "Application approved and student account created, but credential email delivery failed. Use Resend Credentials after checking email configuration.",
           data: {
-
             applicationId,
-
             studentId: createdStudentId,
-
             email: createdStudentEmail,
-
             applicationStatus: "approved",
-
             credentialsGenerated: true,
-
             credentialsSent: false,
-
             paymentStatus: "unpaid",
-
             internshipStatus: "locked",
-
             dashboardStatus: "locked",
-
           },
-
         },
-
         502,
-
       );
-
     }
 
-
-
     return apiResponse(
-
       {
-
         success: true,
-
-        message: "Application approved, student account created, and credentials emailed.",
-
+        message:
+          "Application approved, student account created, and credentials emailed.",
         data: {
-
           applicationId,
-
           studentId: createdStudentId,
-
           email: createdStudentEmail,
-
           fullName: createdStudentName,
-
           internshipTrack: createdInternshipTrack,
-
           applicationStatus: "approved",
-
           loginEnabled: true,
-
           credentialsGenerated: true,
-
           credentialsSent: true,
-
           assessmentStatus: "not-started",
-
           internshipApplicationAllowed: false,
-
           internshipStatus: "locked",
-
           paymentStatus: "unpaid",
-
           dashboardStatus: "locked",
-
-          nextStep: "Student logs in and completes the selected-domain assessment.",
-
+          nextStep:
+            "Student logs in and completes the selected-domain assessment.",
         },
-
       },
-
       201,
-
     );
-
   } catch (error) {
-
     return errorResponse(error, "POST");
-
   }
-
 }
 
-
-
-/**
-
- * PATCH /api/admin/approval
-
- * Allowed status transitions: pending, under_review, rejected.
-
- * Approval must use POST { action: "approve", applicationId }.
-
- */
-
 export async function PATCH(request: NextRequest): Promise<NextResponse> {
-
-  const admin = await getAuthenticatedAdmin(request);
-
-  if (!admin) {
-
-    return apiResponse(
-
-      { success: false, code: "UNAUTHORIZED", message: "Admin login required." },
-
-      401,
-
+  if (!hasValidMutationOrigin(request)) {
+    return validationError(
+      "INVALID_ORIGIN",
+      "Request origin is not allowed.",
+      403,
     );
-
   }
 
-
-
   try {
+    const admin = await requireAdmin(request);
+    if (admin instanceof NextResponse) return admin;
 
     await connectDB();
 
     const body = await readJsonObject(request);
-
-    if (!body) return validationError("INVALID_BODY", "Request body must be a valid JSON object.");
-
-
+    if (!body) {
+      return validationError(
+        "INVALID_BODY",
+        "Request body must be a valid JSON object within the allowed size.",
+      );
+    }
 
     const applicationId = cleanString(body.applicationId);
-
     const status = cleanString(body.status).toLowerCase();
-
     const reason = cleanString(body.reason);
 
-
-
-    if (!applicationId) {
-
-      return validationError("APPLICATION_ID_REQUIRED", "Application ID is required.");
-
+    if (!isValidApplicationId(applicationId)) {
+      return validationError(
+        "APPLICATION_ID_INVALID",
+        "A valid application ID is required.",
+      );
     }
 
     if (reason.length > MAX_REASON_LENGTH) {
-
-      return validationError("INVALID_REASON", "Reason cannot exceed 1000 characters.");
-
+      return validationError(
+        "INVALID_REASON",
+        "Reason cannot exceed 1000 characters.",
+      );
     }
 
     if (!["pending", "under_review", "rejected"].includes(status)) {
-
       return validationError(
-
         "INVALID_STATUS",
-
         "Use pending, under_review, or rejected. Use POST action approve for approval.",
-
       );
-
     }
 
+    const statusUpdate: Record<string, unknown> = { status };
+    if (
+      status === "rejected" &&
+      Application.schema.path("adminRejectionReason")
+    ) {
+      statusUpdate.adminRejectionReason = reason;
+    }
 
-
-    const application = await Application.findOne({ applicationId }).exec();
+    const application = await Application.findOneAndUpdate(
+      {
+        applicationId,
+        status: { $in: ["pending", "under_review", "rejected"] },
+      },
+      { $set: statusUpdate },
+      { new: true, runValidators: true },
+    )
+      .select("applicationId status")
+      .lean()
+      .exec();
 
     if (!application) {
+      const current = await Application.findOne({ applicationId })
+        .select("status")
+        .lean()
+        .exec();
+
+      if (!current) {
+        return apiResponse(
+          {
+            success: false,
+            code: "APPLICATION_NOT_FOUND",
+            message: "Application not found.",
+          },
+          404,
+        );
+      }
 
       return apiResponse(
-
-        { success: false, code: "APPLICATION_NOT_FOUND", message: "Application not found." },
-
-        404,
-
-      );
-
-    }
-
-    if (application.status === "approved") {
-
-      return apiResponse(
-
         {
-
           success: false,
-
-          code: "APPLICATION_ALREADY_APPROVED",
-
-          message: "Approved applications cannot be moved back to another status.",
-
+          code: "APPLICATION_STATUS_CONFLICT",
+          message:
+            "The application status cannot be changed through this action. Refresh and try again.",
         },
-
         409,
-
       );
-
     }
-
-
-
-    application.status = status as "pending" | "under_review" | "rejected";
-
-    if ("adminRejectionReason" in application && status === "rejected") {
-
-      (application as typeof application & { adminRejectionReason?: string }).adminRejectionReason =
-
-        reason;
-
-    }
-
-    await application.save();
-
-
 
     return apiResponse({
-
       success: true,
-
       message: "Application status updated successfully.",
-
       data: {
-
         applicationId: application.applicationId,
-
         status: application.status,
-
-        rejectionReason: status === "rejected" ? reason || null : null,
-
+        rejectionReason:
+          status === "rejected" ? reason || null : null,
         updatedBy: admin.id,
-
       },
-
     });
-
   } catch (error) {
-
     return errorResponse(error, "PATCH");
-
   }
-
 }

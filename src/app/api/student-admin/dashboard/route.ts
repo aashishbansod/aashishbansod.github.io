@@ -1,521 +1,211 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
-
 import {
-  ADMIN_AUTH_COOKIE_NAME,
-  AUTH_COOKIE_NAME,
-  verifyAccessToken,
+  STUDENT_ADMIN_AUTH_COOKIE_NAME,
+  verifyAuthToken,
 } from "@/lib/auth";
-
 import {
-  getStudent,
-  listStudents,
+  getStudentOperationsDashboardRecord,
+  listStudentOperationsDashboardRecords,
+  type StudentOperationsDashboardQuery,
+  type StudentOperationsDashboardStudent,
 } from "@/services/student.service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-/* ============================================================
-   CYBERNET CAREERS
-   STUDENT OPERATIONS DASHBOARD API
-   ============================================================
-
-   PURPOSE
-   ------------------------------------------------------------
-   Read-only Student Operations dashboard endpoint.
-
-   GET
-   ------------------------------------------------------------
-   /api/student-admin/dashboard
-
-   Optional:
-   /api/student-admin/dashboard?id=STUDENT_ID
-
-   Filters:
-   - search
-   - applicationStatus
-   - assessmentStatus
-   - internshipStatus
-   - paymentStatus
-   - studentOpsApprovalStatus
-   - studentOpsStatus
-   - dashboardStatus
-   - page
-   - limit
-
-   SECURITY
-   ------------------------------------------------------------
-   - Admin authentication required
-   - Student sessions rejected
-   - Student dashboard sessions rejected
-   - No lifecycle mutations
-   - No password exposure
-   - No payment mutation
-   - No dashboard activation
-   - No credential generation
-
-   Mutations belong to:
-   /api/student-admin/students
-
-   ============================================================ */
-
-/* ============================================================
-   CONFIG
-   ============================================================ */
-
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 const MAX_SEARCH_LENGTH = 120;
-const MAX_STUDENT_ID_LENGTH = 120;
-
-const AUTHORIZED_ROLES = new Set<string>([
-  "Super Admin",
-  "Admin",
-  "Student Operations Admin",
-]);
-
-/* ============================================================
-   TYPES
-   ============================================================ */
+const MAX_STUDENT_ID_LENGTH = 150;
+const MAX_FILTER_LENGTH = 80;
 
 type JsonObject = Record<string, unknown>;
 
-type AdminTokenPayload = {
-  userId?: unknown;
-  id?: unknown;
-  identifier?: unknown;
-
-  role?: unknown;
-  adminRole?: unknown;
-
-  sessionType?: unknown;
-  authenticationMode?: unknown;
-
-  userType?: unknown;
-  type?: unknown;
-
-  [key: string]: unknown;
-};
-
-type AuthenticatedAdmin = {
+type AuthenticatedStudentAdmin = {
   id: string;
-  role: string;
-  sessionType: string;
+  identifier: string;
+  role: "Student Operations Admin";
 };
 
-type DashboardQuery = {
-  search?: string;
-
-  applicationStatus?: string;
-  assessmentStatus?: string;
-  internshipStatus?: string;
-  paymentStatus?: string;
-  studentOpsApprovalStatus?: string;
-  studentOpsStatus?: string;
-  dashboardStatus?: string;
-
-  page: number;
-  limit: number;
-};
-
-/* ============================================================
-   BASIC HELPERS
-   ============================================================ */
-
-function cleanString(value: unknown): string {
-  return typeof value === "string"
-    ? value.trim()
-    : "";
-}
-
-function lowerString(value: unknown): string {
-  return cleanString(value).toLowerCase();
+function cleanString(value: unknown, maxLength = 500): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\u0000/g, "").trim().slice(0, maxLength);
 }
 
 function isObject(value: unknown): value is JsonObject {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  );
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/* ============================================================
-   REQUEST ID
-   ============================================================ */
-
-function getRequestId(
-  request: NextRequest,
-): string {
-  const incoming = cleanString(
-    request.headers.get("x-request-id"),
-  );
-
-  if (
-    incoming &&
-    /^[a-zA-Z0-9._:-]{8,128}$/.test(
-      incoming,
-    )
-  ) {
-    return incoming;
-  }
-
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `student-ops-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
-  }
+function normalizeRole(value: unknown): string {
+  return cleanString(value, 100).toLowerCase().replace(/[\s_-]+/g, " ");
 }
 
-/* ============================================================
-   SECURITY HEADERS
-   ============================================================ */
+function requestIdFor(request: NextRequest): string {
+  const supplied = cleanString(request.headers.get("x-request-id"), 128);
+  return supplied && /^[a-zA-Z0-9._:-]{8,128}$/.test(supplied)
+    ? supplied
+    : crypto.randomUUID();
+}
 
-function applySecurityHeaders(
-  result: NextResponse,
-  requestId: string,
-): NextResponse {
-  result.headers.set(
+function secure(response: NextResponse, requestId: string): NextResponse {
+  response.headers.set(
     "Cache-Control",
-    "private, no-store, no-cache, must-revalidate, proxy-revalidate",
+    "private, no-store, no-cache, must-revalidate",
   );
-
-  result.headers.set(
-    "Pragma",
-    "no-cache",
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("Expires", "0");
+  response.headers.set("Vary", "Cookie");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+  response.headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()",
   );
-
-  result.headers.set(
-    "Expires",
-    "0",
-  );
-
-  result.headers.set(
-    "X-Content-Type-Options",
-    "nosniff",
-  );
-
-  result.headers.set(
-    "X-Frame-Options",
-    "DENY",
-  );
-
-  result.headers.set(
-    "Referrer-Policy",
-    "strict-origin-when-cross-origin",
-  );
-
-  result.headers.set(
-    "X-Request-Id",
-    requestId,
-  );
-
-  return result;
+  response.headers.set("X-Request-Id", requestId);
+  return response;
 }
 
-/* ============================================================
-   RESPONSE HELPERS
-   ============================================================ */
-
-function jsonResponse(
-  body: unknown,
+function reply(
+  requestId: string,
   status: number,
-  requestId: string,
+  body: Record<string, unknown>,
 ): NextResponse {
-  return applySecurityHeaders(
-    NextResponse.json(
-      body,
-      {
-        status,
-      },
-    ),
-    requestId,
-  );
+  return secure(NextResponse.json(body, { status }), requestId);
 }
 
-function successResponse(
+function fail(
   requestId: string,
-  message: string,
-  data: unknown,
-  status = 200,
-): NextResponse {
-  return jsonResponse(
-    {
-      success: true,
-      message,
-      data,
-    },
-    status,
-    requestId,
-  );
-}
-
-function errorResponse(
-  requestId: string,
-  message: string,
+  status: number,
   code: string,
-  status: number,
+  message: string,
 ): NextResponse {
-  return jsonResponse(
-    {
-      success: false,
-      message,
-      code,
-      requestId,
-    },
-    status,
+  return reply(requestId, status, {
+    success: false,
+    code,
+    message,
     requestId,
-  );
+  });
 }
 
-/* ============================================================
-   SAME-ORIGIN VALIDATION
-   ============================================================ */
+function validateOrigin(request: NextRequest): boolean {
+  const origin = cleanString(request.headers.get("origin"), 2048);
 
-function validateOrigin(
-  request: NextRequest,
-): boolean {
-  const origin = cleanString(
-    request.headers.get("origin"),
-  );
-
-  /*
-   * Normal GET requests may not include Origin.
-   */
   if (!origin) {
-    return true;
+    return request.headers.get("sec-fetch-site")?.toLowerCase() !== "cross-site";
   }
 
   try {
-    const requestUrl = new URL(
-      request.url,
-    );
-
-    const originUrl = new URL(
-      origin,
-    );
-
+    const requestUrl = new URL(request.url);
+    const originUrl = new URL(origin);
     return (
-      requestUrl.protocol ===
-        originUrl.protocol &&
-      requestUrl.host ===
-        originUrl.host
+      originUrl.protocol === requestUrl.protocol &&
+      originUrl.host === requestUrl.host
     );
   } catch {
     return false;
   }
 }
 
-/* ============================================================
-   ADMIN AUTHENTICATION
-   ============================================================ */
-
-async function authenticateAdmin(
+async function authenticateStudentAdmin(
   request: NextRequest,
   requestId: string,
 ): Promise<
-  | {
-      success: true;
-      admin: AuthenticatedAdmin;
-    }
-  | {
-      success: false;
-      response: NextResponse;
-    }
+  | { admin: AuthenticatedStudentAdmin }
+  | { response: NextResponse }
 > {
-  /*
-   * Prefer dedicated admin cookie.
-   * Keep legacy cookie compatibility.
-   */
-  const token =
-    request.cookies.get(
-      ADMIN_AUTH_COOKIE_NAME,
-    )?.value ||
-    request.cookies.get(
-      AUTH_COOKIE_NAME,
-    )?.value ||
-    "";
+  const token = request.cookies
+    .get(STUDENT_ADMIN_AUTH_COOKIE_NAME)
+    ?.value?.trim();
 
   if (!token) {
     return {
-      success: false,
-      response: errorResponse(
+      response: fail(
         requestId,
-        "Administrator authentication is required.",
-        "UNAUTHORIZED",
         401,
+        "UNAUTHORIZED",
+        "Student Operations Admin authentication is required.",
       ),
     };
   }
 
   try {
-    const payload =
-      await verifyAccessToken(
-        token,
-      );
+    const verified: unknown = await verifyAuthToken(token);
 
-    if (!payload) {
+    if (!isObject(verified)) {
       return {
-        success: false,
-        response: errorResponse(
+        response: fail(
           requestId,
-          "Administrator session is invalid or expired.",
+          401,
           "INVALID_SESSION",
-          401,
+          "Student Operations Admin session is invalid or expired.",
         ),
       };
     }
 
-    /*
-     * Keep runtime access safe even if the auth helper
-     * returns a generic object.
-     */
-    const source = isObject(payload)
-      ? (payload as AdminTokenPayload)
-      : {};
-
+    const role = normalizeRole(verified.adminRole);
+    const userRole = normalizeRole(verified.role);
+    const sessionType = cleanString(verified.sessionType, 80)
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "-");
     const id = cleanString(
-      source.userId ??
-        source.id ??
-        source.identifier,
+      verified.userId ?? verified.id ?? verified.identifier,
+      150,
+    );
+    const identifier = cleanString(
+      verified.identifier ?? verified.email ?? verified.adminId,
+      254,
     );
 
-    const role = cleanString(
-      source.role ??
-        source.adminRole,
-    );
-
-    const sessionType = lowerString(
-      source.sessionType ??
-        source.authenticationMode,
-    );
-
-    const userType = lowerString(
-      source.userType ??
-        source.type,
-    );
-
-    if (!id) {
-      return {
-        success: false,
-        response: errorResponse(
-          requestId,
-          "Administrator session is invalid.",
-          "INVALID_ADMIN_SESSION",
-          401,
-        ),
-      };
-    }
-
-    /*
-     * Only admin sessions are allowed.
-     */
     if (
-      sessionType &&
-      sessionType !== "admin"
+      !id ||
+      userRole !== "admin" ||
+      role !== "student operations admin" ||
+      sessionType !== "student-admin"
     ) {
       return {
-        success: false,
-        response: errorResponse(
+        response: fail(
           requestId,
-          "This session cannot access Student Operations.",
-          "INVALID_SESSION_TYPE",
           403,
-        ),
-      };
-    }
-
-    /*
-     * Explicit student protection.
-     */
-    if (
-      userType === "student" ||
-      userType === "student-dashboard" ||
-      userType === "student_dashboard"
-    ) {
-      return {
-        success: false,
-        response: errorResponse(
-          requestId,
-          "Student accounts cannot access Student Operations.",
           "FORBIDDEN",
-          403,
-        ),
-      };
-    }
-
-    if (!role) {
-      return {
-        success: false,
-        response: errorResponse(
-          requestId,
-          "Administrator role information is missing.",
-          "ADMIN_ROLE_MISSING",
-          403,
-        ),
-      };
-    }
-
-    if (
-      !AUTHORIZED_ROLES.has(role)
-    ) {
-      return {
-        success: false,
-        response: errorResponse(
-          requestId,
-          "You are not authorized to access Student Operations.",
-          "FORBIDDEN",
-          403,
+          "This session is not authorized for Student Operations.",
         ),
       };
     }
 
     return {
-      success: true,
       admin: {
         id,
-        role,
-        sessionType:
-          sessionType || "admin",
+        identifier,
+        role: "Student Operations Admin",
       },
     };
   } catch (error) {
     console.error(
-      "[StudentAdminDashboard] Authentication failed.",
-      {
-        requestId,
-        error,
-      },
+      "[StudentAdminDashboard] Authentication verification failed.",
+      { requestId, error },
     );
 
     return {
-      success: false,
-      response: errorResponse(
+      response: fail(
         requestId,
-        "Administrator session could not be verified.",
-        "AUTHENTICATION_ERROR",
         401,
+        "AUTHENTICATION_ERROR",
+        "Student Operations Admin session could not be verified.",
       ),
     };
   }
 }
 
-/* ============================================================
-   QUERY HELPERS
-   ============================================================ */
-
-function getQuery(
+function queryValue(
   request: NextRequest,
   key: string,
+  maxLength = MAX_FILTER_LENGTH,
 ): string {
-  return cleanString(
-    request.nextUrl.searchParams.get(
-      key,
-    ),
-  );
+  return cleanString(request.nextUrl.searchParams.get(key), maxLength);
 }
 
 function positiveInteger(
@@ -524,667 +214,354 @@ function positiveInteger(
   maximum: number,
 ): number {
   const parsed = Number(value);
-
-  if (
-    !Number.isInteger(parsed) ||
-    parsed < 1
-  ) {
-    return fallback;
-  }
-
-  return Math.min(
-    parsed,
-    maximum,
-  );
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, maximum);
 }
 
-function parseDashboardQuery(
-  request: NextRequest,
-): DashboardQuery {
-  const search = getQuery(
-    request,
-    "search",
-  ).slice(
-    0,
-    MAX_SEARCH_LENGTH,
-  );
-
-  const page = positiveInteger(
-    getQuery(
-      request,
-      "page",
-    ),
-    1,
-    10_000,
-  );
-
-  const limit = positiveInteger(
-    getQuery(
-      request,
-      "limit",
-    ),
-    DEFAULT_PAGE_SIZE,
-    MAX_PAGE_SIZE,
-  );
-
+function parseQuery(request: NextRequest): StudentOperationsDashboardQuery & {
+  page: number;
+  limit: number;
+} {
   return {
-    search:
-      search || undefined,
-
+    search: queryValue(request, "search", MAX_SEARCH_LENGTH) || undefined,
     applicationStatus:
-      getQuery(
-        request,
-        "applicationStatus",
-      ) || undefined,
-
+      queryValue(request, "applicationStatus") || undefined,
     assessmentStatus:
-      getQuery(
-        request,
-        "assessmentStatus",
-      ) || undefined,
-
+      queryValue(request, "assessmentStatus") || undefined,
     internshipStatus:
-      getQuery(
-        request,
-        "internshipStatus",
-      ) || undefined,
-
-    paymentStatus:
-      getQuery(
-        request,
-        "paymentStatus",
-      ) || undefined,
-
+      queryValue(request, "internshipStatus") || undefined,
+    paymentStatus: queryValue(request, "paymentStatus") || undefined,
     studentOpsApprovalStatus:
-      getQuery(
-        request,
-        "studentOpsApprovalStatus",
-      ) || undefined,
-
-    studentOpsStatus:
-      getQuery(
-        request,
-        "studentOpsStatus",
-      ) || undefined,
-
-    dashboardStatus:
-      getQuery(
-        request,
-        "dashboardStatus",
-      ) || undefined,
-
-    page,
-    limit,
+      queryValue(request, "studentOpsApprovalStatus") || undefined,
+    studentOpsStatus: queryValue(request, "studentOpsStatus") || undefined,
+    dashboardStatus: queryValue(request, "dashboardStatus") || undefined,
+    page: positiveInteger(queryValue(request, "page", 16), 1, 10000),
+    limit: positiveInteger(
+      queryValue(request, "limit", 16),
+      DEFAULT_PAGE_SIZE,
+      MAX_PAGE_SIZE,
+    ),
   };
 }
 
-/* ============================================================
-   SAFE TOTAL EXTRACTION
-   ============================================================ */
-
-function extractTotal(
-  result: unknown,
-): number {
-  if (!isObject(result)) {
-    return 0;
+function extractTotal(result: unknown): number {
+  if (!isObject(result) || result.success !== true || !isObject(result.data)) {
+    throw new Error("A Student Operations statistics query returned an invalid response.");
   }
 
-  const data = result.data;
+  const total = result.data.total;
 
-  if (!isObject(data)) {
-    return 0;
+  if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0) {
+    throw new Error("A Student Operations statistics query returned an invalid total.");
   }
 
-  const total = data.total;
-
-  if (
-    typeof total === "number" &&
-    Number.isFinite(total) &&
-    total >= 0
-  ) {
-    return total;
-  }
-
-  return 0;
+  return total;
 }
 
-/* ============================================================
-   SINGLE STUDENT
-   ============================================================ */
-
-async function getSingleStudent(
-  request: NextRequest,
-  requestId: string,
-): Promise<NextResponse | null> {
-  const id = getQuery(
-    request,
-    "id",
-  );
-
-  if (!id) {
-    return null;
-  }
-
-  if (
-    id.length >
-    MAX_STUDENT_ID_LENGTH
-  ) {
-    return errorResponse(
-      requestId,
-      "Student ID is invalid.",
-      "INVALID_STUDENT_ID",
-      400,
-    );
-  }
-
-  try {
-    const result =
-      await getStudent(id);
-
-    if (!result.success) {
-      return errorResponse(
-        requestId,
-        result.message,
-        result.code ||
-          "STUDENT_NOT_FOUND",
-        result.code ===
-          "STUDENT_NOT_FOUND"
-          ? 404
-          : 400,
-      );
-    }
-
-    return successResponse(
-      requestId,
-      "Student loaded successfully.",
-      {
-        student:
-          result.data,
-      },
-    );
-  } catch (error) {
-    console.error(
-      "[StudentAdminDashboard] Single student error.",
-      {
-        requestId,
-        error,
-      },
-    );
-
-    return errorResponse(
-      requestId,
-      "Unable to load student.",
-      "STUDENT_LOAD_FAILED",
-      500,
-    );
-  }
+function safeCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
 }
 
-/* ============================================================
-   DASHBOARD STATISTICS
-   ============================================================ */
+function safeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0;
+}
 
-async function getStatistics() {
-  /*
-   * All statistics come from the authoritative
-   * student.service.ts.
-   *
-   * No duplicate MongoDB schema logic here.
-   */
+function safeDate(value: unknown): string | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
 
-  const [
-    totalResult,
-    approvedResult,
-    assessmentPassedResult,
-    paidResult,
-    pendingReviewResult,
-    activeOperationsResult,
-    dashboardActiveResult,
-    dashboardLockedResult,
-    completedResult,
-    rejectedResult,
-  ] = await Promise.all([
-    listStudents({
+  if (typeof value !== "string" && typeof value !== "number") return null;
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeStudent(
+  student: StudentOperationsDashboardStudent,
+): Record<string, unknown> {
+  const fullName = cleanString(student.fullName, 200) || "Student";
+  const domain = cleanString(student.internshipTrack, 150) ||
+    cleanString(student.internshipPlan, 150) ||
+    "Unassigned";
+
+  const studentOpsStatus = cleanString(student.studentOpsStatus, 80);
+  const studentOpsApprovalStatus = cleanString(student.studentOpsApprovalStatus, 80);
+
+  return {
+    id: cleanString(student.id, 150),
+    mainStudentId: cleanString(student.mainStudentId, 150),
+    studentId: cleanString(student.studentId, 150) ||
+      cleanString(student.dashboardStudentId, 150) || "—",
+    dashboardStudentId: cleanString(student.dashboardStudentId, 150),
+    applicationId: cleanString(student.applicationId, 150),
+    fullName,
+    name: fullName,
+    email: cleanString(student.email, 254),
+    phone: cleanString(student.phone, 40),
+    domain,
+    applicationStatus: cleanString(student.applicationStatus, 80),
+    assessmentStatus: cleanString(student.assessmentStatus, 80),
+    internshipStatus: cleanString(student.internshipStatus, 80),
+    internshipPlan: cleanString(student.internshipPlan, 150),
+    internshipTrack: cleanString(student.internshipTrack, 150),
+    status: studentOpsStatus || studentOpsApprovalStatus || "pending",
+    studentOpsApprovalStatus,
+    studentOpsStatus,
+    paymentStatus: cleanString(student.paymentStatus, 80),
+    paymentAmount: safeNumber(student.paymentAmount),
+    paymentCurrency: cleanString(student.paymentCurrency, 12),
+    dashboardStatus: cleanString(student.dashboardStatus, 80),
+    dashboardLoginEnabled: student.dashboardLoginEnabled === true,
+    dashboardCredentialsGenerated: student.dashboardCredentialsGenerated === true,
+    learningStatus: cleanString(student.learningStatus, 80),
+    taskCompletionPercentage: Math.min(100, safeNumber(student.taskCompletionPercentage)),
+    learningProgressPercentage: Math.min(100, safeNumber(student.learningProgressPercentage)),
+    attendancePercentage: Math.min(100, safeNumber(student.attendancePercentage)),
+    weeklyAssessmentStatus: cleanString(student.weeklyAssessmentStatus, 80),
+    saturdayAssessmentStatus: cleanString(student.saturdayAssessmentStatus, 80),
+    projectStatus: cleanString(student.projectStatus, 80),
+    certificateStatus: cleanString(student.certificateStatus, 80),
+    certificateId: cleanString(student.certificateId, 150),
+    createdAt: safeDate(student.createdAt),
+    updatedAt: safeDate(student.updatedAt),
+  };
+}
+
+async function loadStats() {
+  const requests = [
+    listStudentOperationsDashboardRecords({ page: 1, limit: 1 }),
+    listStudentOperationsDashboardRecords({
+      studentOpsStatus: "active",
       page: 1,
       limit: 1,
     }),
-
-    listStudents({
-      applicationStatus:
-        "approved",
+    listStudentOperationsDashboardRecords({
+      applicationStatus: "pending",
       page: 1,
       limit: 1,
     }),
-
-    listStudents({
-      assessmentStatus:
-        "passed",
+    listStudentOperationsDashboardRecords({
+      paymentStatus: "paid",
+      studentOpsApprovalStatus: "pending",
       page: 1,
       limit: 1,
     }),
-
-    listStudents({
-      paymentStatus:
-        "paid",
+    listStudentOperationsDashboardRecords({
+      applicationStatus: "rejected",
       page: 1,
       limit: 1,
     }),
-
-    listStudents({
-      paymentStatus:
-        "paid",
-      studentOpsApprovalStatus:
-        "pending",
-      studentOpsStatus:
-        "pending-review",
+    listStudentOperationsDashboardRecords({
+      paymentStatus: "paid",
       page: 1,
       limit: 1,
     }),
-
-    listStudents({
-      studentOpsStatus:
-        "active",
+    listStudentOperationsDashboardRecords({
+      paymentStatus: "pending",
       page: 1,
       limit: 1,
     }),
+  ] as const;
 
-    listStudents({
-      dashboardStatus:
-        "active",
-      page: 1,
-      limit: 1,
-    }),
-
-    listStudents({
-      dashboardStatus:
-        "locked",
-      page: 1,
-      limit: 1,
-    }),
-
-    listStudents({
-      internshipStatus:
-        "completed",
-      page: 1,
-      limit: 1,
-    }),
-
-    listStudents({
-      applicationStatus:
-        "rejected",
-      page: 1,
-      limit: 1,
-    }),
-  ]);
-
-  const results = [
-    totalResult,
-    approvedResult,
-    assessmentPassedResult,
-    paidResult,
-    pendingReviewResult,
-    activeOperationsResult,
-    dashboardActiveResult,
-    dashboardLockedResult,
-    completedResult,
-    rejectedResult,
-  ];
-
-  const failed = results.find(
-    (item) =>
-      !item.success,
-  );
+  const results = await Promise.all(requests);
+  const failed = results.find((result) => !result.success);
 
   if (failed) {
     throw new Error(
-      failed.message ||
-        "Unable to build Student Operations statistics.",
+      failed.message || "Unable to build Student Operations statistics.",
     );
   }
 
   return {
-    totalStudents:
-      extractTotal(
-        totalResult,
-      ),
-
-    approvedStudents:
-      extractTotal(
-        approvedResult,
-      ),
-
-    assessmentPassedStudents:
-      extractTotal(
-        assessmentPassedResult,
-      ),
-
-    paidStudents:
-      extractTotal(
-        paidResult,
-      ),
-
-    pendingReviewStudents:
-      extractTotal(
-        pendingReviewResult,
-      ),
-
-    activeOperationsStudents:
-      extractTotal(
-        activeOperationsResult,
-      ),
-
-    dashboardActiveStudents:
-      extractTotal(
-        dashboardActiveResult,
-      ),
-
-    dashboardLockedStudents:
-      extractTotal(
-        dashboardLockedResult,
-      ),
-
-    completedStudents:
-      extractTotal(
-        completedResult,
-      ),
-
-    rejectedStudents:
-      extractTotal(
-        rejectedResult,
-      ),
+    totalStudents: extractTotal(results[0]),
+    activeStudents: extractTotal(results[1]),
+    pendingApplications: extractTotal(results[2]),
+    pendingOperationsApprovals: extractTotal(results[3]),
+    failedStudents: extractTotal(results[4]),
+    paidEnrollments: extractTotal(results[5]),
+    pendingPayments: extractTotal(results[6]),
   };
 }
 
-/* ============================================================
-   GET DASHBOARD
-   ============================================================ */
-
-export async function GET(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const requestId = requestIdFor(request);
 
   try {
-    /*
-     * Same-origin protection.
-     */
-    if (
-      !validateOrigin(request)
-    ) {
-      return errorResponse(
+    if (!validateOrigin(request)) {
+      return fail(
         requestId,
-        "Cross-origin dashboard requests are not allowed.",
-        "INVALID_ORIGIN",
         403,
+        "INVALID_ORIGIN",
+        "Cross-origin dashboard requests are not allowed.",
       );
     }
 
-    /*
-     * Admin authentication.
-     */
-    const authentication =
-      await authenticateAdmin(
-        request,
+    const authentication = await authenticateStudentAdmin(request, requestId);
+    if ("response" in authentication) return authentication.response;
+
+    const id = queryValue(request, "id", MAX_STUDENT_ID_LENGTH);
+
+    if (id) {
+      const result = await getStudentOperationsDashboardRecord(id);
+
+      if (!result.success || !result.data) {
+        const status =
+          result.code === "STUDENT_NOT_FOUND"
+            ? 404
+            : result.code === "INTERNAL_SERVER_ERROR"
+              ? 500
+              : 400;
+
+        return fail(
+          requestId,
+          status,
+          result.code || "STUDENT_LOAD_FAILED",
+          result.message || "Student Operations record could not be loaded.",
+        );
+      }
+
+      return reply(requestId, 200, {
+        success: true,
+        message: "Student Operations record loaded successfully.",
+        data: { student: normalizeStudent(result.data) },
         requestId,
-      );
-
-    if (
-      !authentication.success
-    ) {
-      return authentication.response;
+      });
     }
 
-    /*
-     * Optional single student lookup.
-     *
-     * /api/student-admin/dashboard?id=STU-XXXX
-     */
-    const singleStudent =
-      await getSingleStudent(
-        request,
-        requestId,
-      );
-
-    if (singleStudent) {
-      return singleStudent;
-    }
-
-    /*
-     * Main dashboard query.
-     */
-    const query =
-      parseDashboardQuery(
-        request,
-      );
-
-    /*
-     * Student list and statistics can
-     * safely execute in parallel.
-     */
-    const [
-      studentsResult,
-      statistics,
-    ] = await Promise.all([
-      listStudents(
-        query,
-      ),
-      getStatistics(),
+    const query = parseQuery(request);
+    const [studentsResult, stats] = await Promise.all([
+      listStudentOperationsDashboardRecords(query),
+      loadStats(),
     ]);
 
-    if (
-      !studentsResult.success
-    ) {
-      return errorResponse(
+    if (!studentsResult.success || !studentsResult.data) {
+      const status =
+        studentsResult.code === "INTERNAL_SERVER_ERROR"
+          ? 500
+          : studentsResult.code === "STUDENT_NOT_FOUND"
+            ? 404
+            : 400;
+
+      return fail(
         requestId,
-        studentsResult.message,
-        studentsResult.code ||
-          "STUDENTS_LOAD_FAILED",
-        400,
+        status,
+        studentsResult.code || "STUDENTS_LOAD_FAILED",
+        studentsResult.message || "Unable to load Student Operations records.",
       );
     }
 
-    const data =
-      studentsResult.data;
+    const resultData = studentsResult.data;
 
-    return successResponse(
-      requestId,
-      "Student Operations dashboard loaded successfully.",
-      {
-        statistics,
+    if (
+      !Array.isArray(resultData.students) ||
+      !Number.isSafeInteger(resultData.total) ||
+      resultData.total < 0 ||
+      !Number.isSafeInteger(resultData.page) ||
+      resultData.page < 1 ||
+      !Number.isSafeInteger(resultData.limit) ||
+      resultData.limit < 1 ||
+      !Number.isSafeInteger(resultData.totalPages) ||
+      resultData.totalPages < 0
+    ) {
+      throw new Error("Student Operations returned an invalid dashboard result.");
+    }
 
-        students:
-          data?.students ?? [],
+    const students = resultData.students.map(normalizeStudent);
+    const total = resultData.total;
+    const page = resultData.page;
+    const limit = resultData.limit;
+    const totalPages = resultData.totalPages;
 
-        pagination: {
-          page:
-            data?.page ??
-            query.page,
-
-          limit:
-            data?.limit ??
-            query.limit,
-
-          total:
-            data?.total ??
-            0,
-
-          totalPages:
-            data?.totalPages ??
-            0,
+    return reply(requestId, 200, {
+      success: true,
+      message: "Student Operations dashboard loaded successfully.",
+      data: {
+        stats,
+        recentStudents: students,
+        generatedAt: new Date().toISOString(),
+        statistics: {
+          totalStudents: stats.totalStudents,
+          activeOperationsStudents: stats.activeStudents,
+          pendingReviewStudents: stats.pendingOperationsApprovals,
+          paidStudents: stats.paidEnrollments,
+          rejectedStudents: stats.failedStudents,
         },
-
-        filters: {
-          search:
-            query.search ??
-            null,
-
-          applicationStatus:
-            query.applicationStatus ??
-            null,
-
-          assessmentStatus:
-            query.assessmentStatus ??
-            null,
-
-          internshipStatus:
-            query.internshipStatus ??
-            null,
-
-          paymentStatus:
-            query.paymentStatus ??
-            null,
-
-          studentOpsApprovalStatus:
-            query.studentOpsApprovalStatus ??
-            null,
-
-          studentOpsStatus:
-            query.studentOpsStatus ??
-            null,
-
-          dashboardStatus:
-            query.dashboardStatus ??
-            null,
-        },
-
+        students,
+        pagination: { page, limit, total, totalPages },
+        filters: query,
         viewer: {
-          id:
-            authentication.admin.id,
-
-          role:
-            authentication.admin.role,
+          id: authentication.admin.id,
+          identifier: authentication.admin.identifier,
+          role: authentication.admin.role,
         },
-
-        generatedAt:
-          new Date().toISOString(),
       },
-    );
+      requestId,
+    });
   } catch (error) {
     console.error(
       "[GET /api/student-admin/dashboard] Unexpected error.",
-      {
-        requestId,
-        error,
-      },
+      { requestId, error },
     );
 
-    return errorResponse(
+    return fail(
       requestId,
-      "Unable to load Student Operations dashboard.",
-      "INTERNAL_SERVER_ERROR",
       500,
+      "INTERNAL_SERVER_ERROR",
+      "Unable to load Student Operations dashboard.",
     );
   }
 }
 
-/* ============================================================
-   UNSUPPORTED METHODS
-   ============================================================ */
+export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
+  const requestId = requestIdFor(request);
+  const response = new NextResponse(null, {
+    status: 204,
+    headers: {
+      Allow: "GET, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+    },
+  });
 
-export async function POST(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
+  return secure(response, requestId);
+}
 
-  return errorResponse(
-    requestId,
-    "POST is not supported on the dashboard endpoint. Use /api/student-admin/students for Student Operations actions.",
-    "METHOD_NOT_ALLOWED",
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  return fail(
+    requestIdFor(request),
     405,
+    "METHOD_NOT_ALLOWED",
+    "POST is not supported on the dashboard endpoint.",
   );
 }
 
-export async function PUT(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
+export async function PUT(request: NextRequest): Promise<NextResponse> {
+  return fail(
+    requestIdFor(request),
+    405,
+    "METHOD_NOT_ALLOWED",
     "PUT is not supported on the dashboard endpoint.",
-    "METHOD_NOT_ALLOWED",
-    405,
   );
 }
 
-export async function PATCH(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
+export async function PATCH(request: NextRequest): Promise<NextResponse> {
+  return fail(
+    requestIdFor(request),
+    405,
+    "METHOD_NOT_ALLOWED",
     "PATCH is not supported on the dashboard endpoint.",
-    "METHOD_NOT_ALLOWED",
-    405,
   );
 }
 
-export async function DELETE(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
+export async function DELETE(request: NextRequest): Promise<NextResponse> {
+  return fail(
+    requestIdFor(request),
+    405,
+    "METHOD_NOT_ALLOWED",
     "DELETE is not supported on the dashboard endpoint.",
-    "METHOD_NOT_ALLOWED",
-    405,
-  );
-}
-
-export async function HEAD(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  return errorResponse(
-    requestId,
-    "HEAD is not supported.",
-    "METHOD_NOT_ALLOWED",
-    405,
-  );
-}
-
-/* ============================================================
-   OPTIONS
-   ============================================================ */
-
-export async function OPTIONS(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  const result =
-    new NextResponse(
-      null,
-      {
-        status: 204,
-        headers: {
-          Allow:
-            "GET, OPTIONS",
-
-          "Access-Control-Allow-Methods":
-            "GET, OPTIONS",
-
-          "Access-Control-Allow-Headers":
-            "Content-Type, Authorization, X-Requested-With, X-Request-Id",
-
-          "Cache-Control":
-            "no-store",
-        },
-      },
-    );
-
-  return applySecurityHeaders(
-    result,
-    requestId,
   );
 }

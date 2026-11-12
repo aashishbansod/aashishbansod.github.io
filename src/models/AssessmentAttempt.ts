@@ -3,47 +3,61 @@ import "server-only";
 import mongoose, { Schema, Types, type Model } from "mongoose";
 import { connectDB } from "@/lib/db";
 
-/**
- * Assessment attempt persistence model.
- * API/service code must authenticate callers, verify ownership and calculate
- * authoritative scores. Never execute student code inside the Next.js process.
- */
 export const ASSESSMENT_CONSTANTS = {
-  MCQ_COUNT: 30,
-  CODING_COUNT: 2,
-  MCQ_MARKS_PER_QUESTION: 2,
-  CODING_MARKS_PER_QUESTION: 20,
-  MCQ_TOTAL_MARKS: 60,
-  CODING_TOTAL_MARKS: 40,
-  TOTAL_MARKS: 100,
-  PASSING_MARKS: 40,
+  MCQ_COUNT: 90,
+  EASY_COUNT: 30,
+  MEDIUM_COUNT: 30,
+  HARD_COUNT: 30,
+  CODING_COUNT: 0,
+  MCQ_MARKS_PER_QUESTION: 1,
+  CODING_MARKS_PER_QUESTION: 0,
+  MCQ_TOTAL_MARKS: 90,
+  CODING_TOTAL_MARKS: 0,
+  TOTAL_MARKS: 90,
+  PASSING_MARKS: 36,
   PASSING_PERCENTAGE: 40,
-  MCQ_DURATION_MINUTES: 30,
-  CODING_DURATION_MINUTES: 30,
-  TOTAL_DURATION_MINUTES: 60,
-  MCQ_DURATION_SECONDS: 1800,
-  CODING_DURATION_SECONDS: 1800,
-  TOTAL_DURATION_SECONDS: 3600,
+  MCQ_DURATION_MINUTES: 90,
+  CODING_DURATION_MINUTES: 0,
+  TOTAL_DURATION_MINUTES: 90,
+  MCQ_DURATION_SECONDS: 5400,
+  CODING_DURATION_SECONDS: 0,
+  TOTAL_DURATION_SECONDS: 5400,
 } as const;
 
 export const ASSESSMENT_ATTEMPT_STATUS = [
-  "in-progress", "coding-in-progress", "submitted", "evaluating",
-  "passed", "failed", "expired", "cancelled",
+  "in-progress",
+  "coding-in-progress",
+  "submitted",
+  "evaluating",
+  "passed",
+  "failed",
+  "expired",
+  "cancelled",
 ] as const;
+
 export type AssessmentAttemptStatus = (typeof ASSESSMENT_ATTEMPT_STATUS)[number];
 
 export const ASSESSMENT_PHASE = ["mcq", "coding", "completed"] as const;
 export type AssessmentPhase = (typeof ASSESSMENT_PHASE)[number];
+
 export const QUESTION_SECTION = ["mcq", "coding"] as const;
 export type QuestionSection = (typeof QUESTION_SECTION)[number];
+
 export const CODING_SUBMISSION_STATUS = [
-  "not-submitted", "submitted", "evaluating", "evaluated", "failed",
+  "not-submitted",
+  "submitted",
+  "evaluating",
+  "evaluated",
+  "failed",
 ] as const;
+
 export type CodingSubmissionStatus = (typeof CODING_SUBMISSION_STATUS)[number];
+export type AssessmentDifficulty = "easy" | "medium" | "hard";
 
 export interface IAttemptQuestion {
   questionId: string;
   section: QuestionSection;
+  difficulty: AssessmentDifficulty;
   order: number;
   marks: number;
   question: string;
@@ -56,12 +70,14 @@ export interface IAttemptQuestion {
   examples?: unknown[];
   constraints?: string;
 }
+
 export interface IMCQAnswer {
   questionId: string;
   answer: string;
   answeredAt: Date;
   marksAwarded: number;
 }
+
 export interface ICodingAnswer {
   questionId: string;
   language: string;
@@ -76,6 +92,7 @@ export interface ICodingAnswer {
   evaluationMessage?: string;
   evaluatedAt?: Date;
 }
+
 export interface IAssessmentAttempt {
   _id: Types.ObjectId;
   attemptId: string;
@@ -121,177 +138,710 @@ export interface IAssessmentAttempt {
 
 const C = ASSESSMENT_CONSTANTS;
 const MAX_COUNTER = 1000;
-const safeInteger = (value: unknown) =>
+const OPTION_IDS = ["A", "B", "C", "D"] as const;
+const DIFFICULTIES: AssessmentDifficulty[] = ["easy", "medium", "hard"];
+
+const safeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value);
-const safeNonNegativeInteger = (value: unknown) =>
-  safeInteger(value) && Number(value) >= 0;
-const nonEmpty = (value: unknown) =>
+
+const safeNonNegativeInteger = (value: unknown): value is number =>
+  safeInteger(value) && value >= 0;
+
+const nonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
-const AttemptQuestionSchema = new Schema<IAttemptQuestion>({
-  questionId: { type: String, required: true, trim: true, maxlength: 256 },
-  section: { type: String, required: true, enum: QUESTION_SECTION },
-  order: {
-    type: Number, required: true, min: 1, max: C.MCQ_COUNT + C.CODING_COUNT,
-    validate: { validator: safeInteger, message: "Question order must be an integer." },
-  },
-  marks: {
-    type: Number, required: true, min: 0, max: C.CODING_MARKS_PER_QUESTION,
-    validate: { validator: safeInteger, message: "Question marks must be an integer." },
-  },
-  question: { type: String, required: true, trim: true, maxlength: 20_000 },
-  options: {
-    type: [String], default: undefined,
-    validate: {
-      validator: (v: string[] | undefined) => v === undefined ||
-        (v.length === 4 && v.every((s) => nonEmpty(s) && s.length <= 5000)),
-      message: "MCQ questions must contain exactly four non-empty options.",
+const validDate = (value: unknown): value is Date =>
+  value instanceof Date && Number.isFinite(value.getTime());
+
+function validateQuestionSnapshot(questions: IAttemptQuestion[]): boolean {
+  if (!Array.isArray(questions) || questions.length !== C.MCQ_COUNT) return false;
+
+  const questionIds: string[] = [];
+  const orders: number[] = [];
+
+  for (const question of questions) {
+    if (!question || typeof question !== "object") return false;
+    if (!nonEmpty(question.questionId) || !safeInteger(question.order)) return false;
+    questionIds.push(question.questionId.trim());
+    orders.push(question.order);
+  }
+
+  orders.sort((a, b) => a - b);
+
+  if (
+    questionIds.some((id) => !id) ||
+    new Set(questionIds).size !== C.MCQ_COUNT ||
+    !orders.every((order, index) => order === index + 1)
+  ) {
+    return false;
+  }
+
+  const counts = {
+    easy: 0,
+    medium: 0,
+    hard: 0,
+  };
+
+  for (const question of questions) {
+    if (
+      question.section !== "mcq" ||
+      !DIFFICULTIES.includes(question.difficulty) ||
+      !nonEmpty(question.question) ||
+      question.question.length > 20_000 ||
+      question.marks !== C.MCQ_MARKS_PER_QUESTION ||
+      !Array.isArray(question.options) ||
+      question.options.length !== 4 ||
+      !question.options.every((option) => nonEmpty(option) && option.length <= 5000)
+    ) {
+      return false;
+    }
+
+    counts[question.difficulty] += 1;
+  }
+
+  return (
+    counts.easy === C.EASY_COUNT &&
+    counts.medium === C.MEDIUM_COUNT &&
+    counts.hard === C.HARD_COUNT &&
+    questions.reduce((total, question) => total + question.marks, 0) === C.TOTAL_MARKS
+  );
+}
+
+const AttemptQuestionSchema = new Schema<IAttemptQuestion>(
+  {
+    questionId: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 256,
     },
-  },
-  language: { type: String, trim: true, maxlength: 100 },
-  languages: {
-    type: [String], default: undefined,
-    validate: {
-      validator: (v: string[] | undefined) => {
-        if (v === undefined) return true;
-        if (v.length > 20 || !v.every((s) => nonEmpty(s) && s.length <= 100)) return false;
-        const normalized = v.map((s) => s.trim().toLowerCase());
-        return new Set(normalized).size === normalized.length;
+    section: {
+      type: String,
+      required: true,
+      enum: ["mcq"],
+      default: "mcq",
+    },
+    difficulty: {
+      type: String,
+      required: true,
+      enum: DIFFICULTIES,
+    },
+    order: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: C.MCQ_COUNT,
+      validate: {
+        validator: safeInteger,
+        message: "Question order must be an integer between 1 and 90.",
       },
-      message: "Allowed languages must be non-empty and unique.",
     },
-  },
-  starterCode: { type: String, maxlength: 30_000 },
-  inputFormat: { type: String, maxlength: 10_000 },
-  outputFormat: { type: String, maxlength: 10_000 },
-  examples: {
-    type: [Schema.Types.Mixed], default: undefined,
-    validate: { validator: (v: unknown[] | undefined) => v === undefined || v.length <= 20 },
-  },
-  constraints: { type: String, maxlength: 10_000 },
-}, { _id: false, id: false, strict: "throw" });
-
-const MCQAnswerSchema = new Schema<IMCQAnswer>({
-  questionId: { type: String, required: true, trim: true, maxlength: 256 },
-  answer: { type: String, required: true, trim: true, uppercase: true, enum: ["A", "B", "C", "D"] },
-  answeredAt: { type: Date, required: true },
-  marksAwarded: {
-    type: Number, required: true, default: 0, min: 0, max: C.MCQ_MARKS_PER_QUESTION,
-    validate: { validator: safeInteger, message: "Awarded MCQ marks must be an integer." },
-  },
-}, { _id: false, id: false, strict: "throw" });
-
-const CodingAnswerSchema = new Schema<ICodingAnswer>({
-  questionId: { type: String, required: true, trim: true, maxlength: 256 },
-  language: { type: String, required: true, trim: true, maxlength: 100 },
-  code: { type: String, required: true, maxlength: 50_000 },
-  submittedAt: Date,
-  status: { type: String, required: true, enum: CODING_SUBMISSION_STATUS, default: "not-submitted" },
-  marksAwarded: {
-    type: Number, required: true, default: 0, min: 0, max: C.CODING_MARKS_PER_QUESTION,
-    validate: { validator: safeInteger, message: "Awarded coding marks must be an integer." },
-  },
-  executionTimeMs: {
-    type: Number, min: 0, max: 600_000,
-    validate: { validator: (v: number | undefined) => v === undefined || safeNonNegativeInteger(v) },
-  },
-  memoryUsedKb: {
-    type: Number, min: 0, max: 2_147_483_647,
-    validate: { validator: (v: number | undefined) => v === undefined || safeNonNegativeInteger(v) },
-  },
-  testCasesPassed: {
-    type: Number, min: 0, max: 100_000,
-    validate: { validator: (v: number | undefined) => v === undefined || safeNonNegativeInteger(v) },
-  },
-  testCasesTotal: {
-    type: Number, min: 0, max: 100_000,
-    validate: { validator: (v: number | undefined) => v === undefined || safeNonNegativeInteger(v) },
-  },
-  evaluationMessage: { type: String, maxlength: 5000 },
-  evaluatedAt: Date,
-}, { _id: false, id: false, strict: "throw" });
-
-export const AssessmentAttemptSchema = new Schema<IAssessmentAttempt>({
-  attemptId: { type: String, required: true, unique: true, trim: true, immutable: true, maxlength: 100 },
-  studentId: { type: Schema.Types.ObjectId, required: true, immutable: true, index: true },
-  assessmentId: { type: String, required: true, trim: true, maxlength: 256, immutable: true },
-  domain: { type: String, required: true, trim: true, maxlength: 200, immutable: true, index: true },
-  internshipTrack: { type: String, required: true, trim: true, maxlength: 200, immutable: true },
-  status: { type: String, required: true, enum: ASSESSMENT_ATTEMPT_STATUS, default: "in-progress", index: true },
-  currentPhase: { type: String, required: true, enum: ASSESSMENT_PHASE, default: "mcq" },
-  questions: {
-    type: [AttemptQuestionSchema], required: true,
-    validate: {
-      validator: (qs: IAttemptQuestion[]) => {
-        if (!Array.isArray(qs) || qs.length !== C.MCQ_COUNT + C.CODING_COUNT) return false;
-        const mcqs = qs.filter((q) => q.section === "mcq");
-        const coding = qs.filter((q) => q.section === "coding");
-        const ids = qs.map((q) => q.questionId?.trim());
-        const orders = qs.map((q) => q.order);
-        return mcqs.length === C.MCQ_COUNT && coding.length === C.CODING_COUNT &&
-          ids.every(Boolean) && new Set(ids).size === ids.length &&
-          orders.every((n) => safeInteger(n) && n >= 1 && n <= qs.length) &&
-          new Set(orders).size === orders.length &&
-          mcqs.every((q) => q.marks === C.MCQ_MARKS_PER_QUESTION && Array.isArray(q.options) && q.options.length === 4) &&
-          coding.every((q) => q.marks === C.CODING_MARKS_PER_QUESTION) &&
-          mcqs.reduce((s, q) => s + q.marks, 0) === C.MCQ_TOTAL_MARKS &&
-          coding.reduce((s, q) => s + q.marks, 0) === C.CODING_TOTAL_MARKS;
+    marks: {
+      type: Number,
+      required: true,
+      min: C.MCQ_MARKS_PER_QUESTION,
+      max: C.MCQ_MARKS_PER_QUESTION,
+      validate: {
+        validator: (value: number) => value === C.MCQ_MARKS_PER_QUESTION,
+        message: "Every MCQ must carry exactly one mark.",
       },
-      message: "Attempt must contain 30 two-mark MCQs and 2 twenty-mark coding questions.",
+    },
+    question: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 20_000,
+    },
+    options: {
+      type: [String],
+      required: true,
+      validate: {
+        validator: (value: string[]) =>
+          Array.isArray(value) &&
+          value.length === 4 &&
+          value.every((option) => nonEmpty(option) && option.length <= 5000),
+        message: "Every MCQ must contain exactly four non-empty options.",
+      },
+    },
+    language: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      select: false,
+    },
+    languages: {
+      type: [String],
+      default: undefined,
+      select: false,
+      validate: {
+        validator: (value: string[] | undefined) => {
+          if (value === undefined) return true;
+          if (value.length > 20 || !value.every((item) => nonEmpty(item) && item.length <= 100)) {
+            return false;
+          }
+          const normalized = value.map((item) => item.trim().toLowerCase());
+          return new Set(normalized).size === normalized.length;
+        },
+        message: "Allowed languages must be non-empty and unique.",
+      },
+    },
+    starterCode: {
+      type: String,
+      maxlength: 30_000,
+      select: false,
+    },
+    inputFormat: {
+      type: String,
+      maxlength: 10_000,
+      select: false,
+    },
+    outputFormat: {
+      type: String,
+      maxlength: 10_000,
+      select: false,
+    },
+    examples: {
+      type: [Schema.Types.Mixed],
+      default: undefined,
+      select: false,
+      validate: {
+        validator: (value: unknown[] | undefined) =>
+          value === undefined || value.length <= 20,
+      },
+    },
+    constraints: {
+      type: String,
+      maxlength: 10_000,
+      select: false,
     },
   },
-  startedAt: { type: Date, required: true, immutable: true },
-  mcqStartedAt: { type: Date, required: true, immutable: true },
-  mcqDeadline: { type: Date, required: true, immutable: true },
-  codingStartedAt: Date,
-  codingDeadline: Date,
-  finalDeadline: { type: Date, required: true, immutable: true },
-  mcqAnswers: {
-    type: [MCQAnswerSchema], default: [],
-    validate: {
-      validator: (as: IMCQAnswer[]) => Array.isArray(as) && as.length <= C.MCQ_COUNT &&
-        as.every((a) => nonEmpty(a.questionId)) &&
-        new Set(as.map((a) => a.questionId.trim())).size === as.length,
-      message: "MCQ answers must have unique IDs and cannot exceed 30 answers.",
+  {
+    _id: false,
+    id: false,
+    strict: "throw",
+  },
+);
+
+const MCQAnswerSchema = new Schema<IMCQAnswer>(
+  {
+    questionId: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 256,
+    },
+    answer: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+      enum: OPTION_IDS,
+    },
+    answeredAt: {
+      type: Date,
+      required: true,
+      validate: {
+        validator: validDate,
+        message: "Answer timestamp must be valid.",
+      },
+    },
+    marksAwarded: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: C.MCQ_MARKS_PER_QUESTION,
+      validate: {
+        validator: safeInteger,
+        message: "Awarded MCQ marks must be an integer between 0 and 1.",
+      },
     },
   },
-  codingAnswers: {
-    type: [CodingAnswerSchema], default: [],
-    validate: {
-      validator: (as: ICodingAnswer[]) => Array.isArray(as) && as.length <= C.CODING_COUNT &&
-        as.every((a) => nonEmpty(a.questionId)) &&
-        new Set(as.map((a) => a.questionId.trim())).size === as.length,
-      message: "Coding answers must have unique IDs and cannot exceed 2 answers.",
+  {
+    _id: false,
+    id: false,
+    strict: "throw",
+  },
+);
+
+const CodingAnswerSchema = new Schema<ICodingAnswer>(
+  {
+    questionId: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 256,
+    },
+    language: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 100,
+    },
+    code: {
+      type: String,
+      required: true,
+      maxlength: 50_000,
+    },
+    submittedAt: Date,
+    status: {
+      type: String,
+      required: true,
+      enum: CODING_SUBMISSION_STATUS,
+      default: "not-submitted",
+    },
+    marksAwarded: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: C.CODING_MARKS_PER_QUESTION,
+      validate: {
+        validator: safeInteger,
+      },
+    },
+    executionTimeMs: {
+      type: Number,
+      min: 0,
+      max: 600_000,
+      validate: {
+        validator: (value: number | undefined) => value === undefined || safeNonNegativeInteger(value),
+      },
+    },
+    memoryUsedKb: {
+      type: Number,
+      min: 0,
+      max: 2_147_483_647,
+      validate: {
+        validator: (value: number | undefined) => value === undefined || safeNonNegativeInteger(value),
+      },
+    },
+    testCasesPassed: {
+      type: Number,
+      min: 0,
+      max: 100_000,
+      validate: {
+        validator: (value: number | undefined) => value === undefined || safeNonNegativeInteger(value),
+      },
+    },
+    testCasesTotal: {
+      type: Number,
+      min: 0,
+      max: 100_000,
+      validate: {
+        validator: (value: number | undefined) => value === undefined || safeNonNegativeInteger(value),
+      },
+    },
+    evaluationMessage: {
+      type: String,
+      maxlength: 5000,
+      select: false,
+    },
+    evaluatedAt: Date,
+  },
+  {
+    _id: false,
+    id: false,
+    strict: "throw",
+  },
+);
+
+export const AssessmentAttemptSchema = new Schema<IAssessmentAttempt>(
+  {
+    attemptId: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      immutable: true,
+      maxlength: 100,
+    },
+    studentId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      immutable: true,
+      index: true,
+    },
+    assessmentId: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 256,
+      immutable: true,
+    },
+    domain: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 200,
+      immutable: true,
+      index: true,
+    },
+    internshipTrack: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 200,
+      immutable: true,
+    },
+    status: {
+      type: String,
+      required: true,
+      enum: ASSESSMENT_ATTEMPT_STATUS,
+      default: "in-progress",
+      index: true,
+    },
+    currentPhase: {
+      type: String,
+      required: true,
+      enum: ASSESSMENT_PHASE,
+      default: "mcq",
+    },
+    questions: {
+      type: [AttemptQuestionSchema],
+      required: true,
+      validate: {
+        validator: validateQuestionSnapshot,
+        message:
+          "An attempt must contain exactly 90 one-mark MCQs: 30 Easy, 30 Medium and 30 Hard, with four options per question and no coding questions.",
+      },
+    },
+    startedAt: {
+      type: Date,
+      required: true,
+      immutable: true,
+      validate: {
+        validator: validDate,
+      },
+    },
+    mcqStartedAt: {
+      type: Date,
+      required: true,
+      immutable: true,
+      validate: {
+        validator: validDate,
+      },
+    },
+    mcqDeadline: {
+      type: Date,
+      required: true,
+      immutable: true,
+      validate: {
+        validator: validDate,
+      },
+    },
+    codingStartedAt: {
+      type: Date,
+      select: false,
+    },
+    codingDeadline: {
+      type: Date,
+      select: false,
+    },
+    finalDeadline: {
+      type: Date,
+      required: true,
+      immutable: true,
+      validate: {
+        validator: validDate,
+      },
+    },
+    mcqAnswers: {
+      type: [MCQAnswerSchema],
+      default: [],
+      validate: {
+        validator: (answers: IMCQAnswer[]) =>
+          Array.isArray(answers) &&
+          answers.length <= C.MCQ_COUNT &&
+          answers.every((answer) => nonEmpty(answer.questionId)) &&
+          new Set(answers.map((answer) => answer.questionId.trim())).size === answers.length,
+        message: "MCQ answers must have unique question IDs and cannot exceed 90 answers.",
+      },
+    },
+    codingAnswers: {
+      type: [CodingAnswerSchema],
+      default: [],
+      validate: {
+        validator: (answers: ICodingAnswer[]) => Array.isArray(answers) && answers.length === 0,
+        message: "Coding submissions are disabled for the frozen 90-MCQ assessment.",
+      },
+    },
+    mcqScore: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: C.MCQ_TOTAL_MARKS,
+      validate: {
+        validator: safeInteger,
+        message: "MCQ score must be an integer between 0 and 90.",
+      },
+    },
+    codingScore: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: 0,
+      validate: {
+        validator: (value: number) => value === 0,
+        message: "Coding score must remain zero because coding is disabled.",
+      },
+    },
+    totalScore: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: C.TOTAL_MARKS,
+      validate: {
+        validator: safeInteger,
+        message: "Total score must be an integer between 0 and 90.",
+      },
+    },
+    percentage: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: 100,
+      validate: {
+        validator: (value: number) => Number.isFinite(value) && value >= 0 && value <= 100,
+        message: "Percentage must be between 0 and 100.",
+      },
+    },
+    passingMarks: {
+      type: Number,
+      required: true,
+      default: C.PASSING_MARKS,
+      immutable: true,
+      min: C.PASSING_MARKS,
+      max: C.PASSING_MARKS,
+      validate: {
+        validator: (value: number) => value === C.PASSING_MARKS,
+        message: "The frozen passing threshold is 36 marks.",
+      },
+    },
+    passed: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
+    tabSwitches: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: MAX_COUNTER,
+      validate: {
+        validator: safeNonNegativeInteger,
+      },
+    },
+    fullscreenExitCount: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: MAX_COUNTER,
+      validate: {
+        validator: safeNonNegativeInteger,
+      },
+    },
+    copyAttempts: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: MAX_COUNTER,
+      validate: {
+        validator: safeNonNegativeInteger,
+      },
+    },
+    pasteAttempts: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: MAX_COUNTER,
+      validate: {
+        validator: safeNonNegativeInteger,
+      },
+    },
+    shortcutAttempts: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: MAX_COUNTER,
+      validate: {
+        validator: safeNonNegativeInteger,
+      },
+    },
+    lastActivityAt: Date,
+    submittedAt: Date,
+    submittedBy: {
+      type: String,
+      enum: ["student", "system"],
+    },
+    evaluationStartedAt: Date,
+    evaluatedAt: Date,
+    resultDeclaredAt: Date,
+    evaluationError: {
+      type: String,
+      maxlength: 5000,
+      select: false,
+    },
+    ipHash: {
+      type: String,
+      maxlength: 256,
+      select: false,
+    },
+    userAgent: {
+      type: String,
+      maxlength: 1000,
+      select: false,
+    },
+    questionBankVersion: {
+      type: String,
+      maxlength: 100,
     },
   },
-  mcqScore: { type: Number, required: true, default: 0, min: 0, max: C.MCQ_TOTAL_MARKS, validate: { validator: safeInteger } },
-  codingScore: { type: Number, required: true, default: 0, min: 0, max: C.CODING_TOTAL_MARKS, validate: { validator: safeInteger } },
-  totalScore: { type: Number, required: true, default: 0, min: 0, max: C.TOTAL_MARKS, validate: { validator: safeInteger } },
-  percentage: { type: Number, required: true, default: 0, min: 0, max: 100 },
-  passingMarks: { type: Number, required: true, default: C.PASSING_MARKS, immutable: true },
-  passed: { type: Boolean, required: true, default: false },
-  tabSwitches: { type: Number, required: true, default: 0, min: 0, max: MAX_COUNTER, validate: { validator: safeInteger } },
-  fullscreenExitCount: { type: Number, required: true, default: 0, min: 0, max: MAX_COUNTER, validate: { validator: safeInteger } },
-  copyAttempts: { type: Number, required: true, default: 0, min: 0, max: MAX_COUNTER, validate: { validator: safeInteger } },
-  pasteAttempts: { type: Number, required: true, default: 0, min: 0, max: MAX_COUNTER, validate: { validator: safeInteger } },
-  shortcutAttempts: { type: Number, required: true, default: 0, min: 0, max: MAX_COUNTER, validate: { validator: safeInteger } },
-  lastActivityAt: Date,
-  submittedAt: Date,
-  submittedBy: { type: String, enum: ["student", "system"] },
-  evaluationStartedAt: Date,
-  evaluatedAt: Date,
-  resultDeclaredAt: Date,
-  evaluationError: { type: String, maxlength: 5000, select: false },
-  ipHash: { type: String, maxlength: 256, select: false },
-  userAgent: { type: String, maxlength: 1000, select: false },
-  questionBankVersion: { type: String, maxlength: 100 },
-}, {
-  timestamps: true,
-  strict: "throw",
-  versionKey: false,
-  id: false,
-  collection: "assessmentattempts",
-  autoIndex: process.env.NODE_ENV !== "production",
+  {
+    timestamps: true,
+    strict: "throw",
+    versionKey: false,
+    id: false,
+    collection: "assessmentattempts",
+    autoIndex: process.env.NODE_ENV !== "production",
+    minimize: true,
+  },
+);
+
+AssessmentAttemptSchema.pre("validate", function validateAttemptConsistency() {
+  const document = this as unknown as IAssessmentAttempt & {
+    invalidate: (path: string, message: string) => void;
+  };
+
+  const questions = Array.isArray(document.questions) ? document.questions : [];
+  const questionIds = new Set(questions.map((question) => question.questionId));
+  const answers = Array.isArray(document.mcqAnswers) ? document.mcqAnswers : [];
+
+  for (const answer of answers) {
+    if (!questionIds.has(answer.questionId)) {
+      document.invalidate("mcqAnswers", "An answer references a question outside this attempt.");
+      break;
+    }
+
+    if (!OPTION_IDS.includes(answer.answer as (typeof OPTION_IDS)[number])) {
+      document.invalidate("mcqAnswers", "An answer must be one of A, B, C or D.");
+      break;
+    }
+
+    if (answer.marksAwarded !== 0 && answer.marksAwarded !== 1) {
+      document.invalidate("mcqAnswers", "An answer can receive only zero or one mark.");
+      break;
+    }
+  }
+
+  if (validDate(document.startedAt) && validDate(document.mcqStartedAt) &&
+      Math.abs(document.startedAt.getTime() - document.mcqStartedAt.getTime()) > 1000) {
+    document.invalidate("mcqStartedAt", "The MCQ start time must match the attempt start time.");
+  }
+
+  if (validDate(document.mcqDeadline) && validDate(document.finalDeadline) &&
+      Math.abs(document.mcqDeadline.getTime() - document.finalDeadline.getTime()) > 1000) {
+    document.invalidate("finalDeadline", "The MCQ and final deadlines must match for the 90-minute assessment.");
+  }
+
+  if (document.mcqAnswers?.some((answer) =>
+    !validDate(answer.answeredAt) ||
+    !safeInteger(answer.marksAwarded) ||
+    answer.marksAwarded < 0 ||
+    answer.marksAwarded > C.MCQ_MARKS_PER_QUESTION
+  )) {
+    document.invalidate("mcqAnswers", "Every MCQ answer must have a valid timestamp and an integer mark from zero to one.");
+  }
+
+  if (document.mcqScore !== document.mcqAnswers.reduce(
+    (total, answer) => total + (safeNonNegativeInteger(answer.marksAwarded) ? answer.marksAwarded : 0),
+    0,
+  ) && ["passed", "failed"].includes(document.status)) {
+    document.invalidate("mcqScore", "The final MCQ score must equal the marks awarded to saved answers.");
+  }
+
+  if (document.percentage !== Math.round((document.totalScore / C.TOTAL_MARKS) * 10000) / 100) {
+    document.invalidate("percentage", "The percentage must match the final score out of 90.");
+  }
+
+  if (document.mcqScore > C.MCQ_TOTAL_MARKS || document.totalScore > C.TOTAL_MARKS) {
+    document.invalidate("totalScore", "Assessment scores cannot exceed 90 marks.");
+  }
+
+  if (document.codingAnswers?.length) {
+    document.invalidate("codingAnswers", "Coding submissions are disabled.");
+  }
+
+  if (document.currentPhase === "coding" || document.status === "coding-in-progress") {
+    document.invalidate("currentPhase", "Coding phase is disabled for the frozen 90-MCQ assessment.");
+  }
+
+  if (document.codingStartedAt || document.codingDeadline) {
+    document.invalidate("codingStartedAt", "Coding timing fields are disabled for this assessment.");
+  }
+
+  if (document.codingScore !== 0) {
+    document.invalidate("codingScore", "Coding score must be zero.");
+  }
+
+  if (document.totalScore !== document.mcqScore) {
+    document.invalidate("totalScore", "Total score must equal the MCQ score.");
+  }
+
+  if (document.passingMarks !== C.PASSING_MARKS) {
+    document.invalidate("passingMarks", "Passing marks are fixed at 36.");
+  }
+
+  if (validDate(document.startedAt) && validDate(document.finalDeadline)) {
+    const expectedDeadline = document.startedAt.getTime() + C.TOTAL_DURATION_SECONDS * 1000;
+    const actualDeadline = document.finalDeadline.getTime();
+
+    if (Math.abs(actualDeadline - expectedDeadline) > 1000) {
+      document.invalidate("finalDeadline", "The assessment deadline must be exactly 90 minutes after start.");
+    }
+  }
+
+  if (validDate(document.startedAt) && validDate(document.mcqDeadline)) {
+    const expectedDeadline = document.startedAt.getTime() + C.MCQ_DURATION_SECONDS * 1000;
+    const actualDeadline = document.mcqDeadline.getTime();
+
+    if (Math.abs(actualDeadline - expectedDeadline) > 1000) {
+      document.invalidate("mcqDeadline", "The MCQ deadline must be exactly 90 minutes after start.");
+    }
+  }
+
+  if (["passed", "failed"].includes(document.status)) {
+    if (document.currentPhase !== "completed") {
+      document.invalidate("currentPhase", "A finalized assessment must be in the completed phase.");
+    }
+
+    const expectedPassed = document.totalScore >= C.PASSING_MARKS;
+
+    if (document.passed !== expectedPassed) {
+      document.invalidate("passed", "The pass result must match the 36-mark threshold.");
+    }
+
+    if (document.status !== (expectedPassed ? "passed" : "failed")) {
+      document.invalidate("status", "The final status must match the 36-mark passing threshold.");
+    }
+
+    if (!validDate(document.submittedAt)) {
+      document.invalidate("submittedAt", "A finalized assessment must have a valid submission timestamp.");
+    }
+
+    if (!validDate(document.evaluatedAt)) {
+      document.invalidate("evaluatedAt", "A finalized assessment must have a valid evaluation timestamp.");
+    }
+  }
 });
 
 AssessmentAttemptSchema.index({ studentId: 1, createdAt: -1 });
@@ -303,7 +853,9 @@ AssessmentAttemptSchema.index(
     name: "active_student_attempt_unique",
     unique: true,
     partialFilterExpression: {
-      status: { $in: ["in-progress", "coding-in-progress", "submitted", "evaluating"] },
+      status: {
+        $in: ["in-progress", "coding-in-progress", "submitted", "evaluating"],
+      },
     },
   },
 );
@@ -311,20 +863,26 @@ AssessmentAttemptSchema.index(
 const MODEL_NAME = "AssessmentAttempt";
 const COLLECTION_NAME = "assessmentattempts";
 
-/**
- * Preserves the current service contract: StudentModel and assessment attempts
- * use the Main Careers connection. If moving attempts to Student Operations,
- * migrate the service and all assessment routes together.
- */
 export async function getAssessmentAttemptModel(): Promise<Model<IAssessmentAttempt>> {
   await connectDB();
+
   const connection = mongoose.connection;
+
   if (connection.readyState !== 1) {
     throw new Error("Main Careers MongoDB is not connected. Assessment attempt operations cannot continue.");
   }
+
   const existing = connection.models[MODEL_NAME] as Model<IAssessmentAttempt> | undefined;
-  if (existing) return existing;
-  return connection.model<IAssessmentAttempt>(MODEL_NAME, AssessmentAttemptSchema, COLLECTION_NAME);
+
+  if (existing) {
+    return existing;
+  }
+
+  return connection.model<IAssessmentAttempt>(
+    MODEL_NAME,
+    AssessmentAttemptSchema,
+    COLLECTION_NAME,
+  );
 }
 
 export type AssessmentAttemptDocument = IAssessmentAttempt;

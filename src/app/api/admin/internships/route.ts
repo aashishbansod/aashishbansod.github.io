@@ -1,38 +1,92 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import mongoose, { type SortOrder } from "mongoose";
-
 import connectDB from "@/lib/db";
+import Admin from "@/models/Admin";
 import Internship, {
   INTERNSHIP_DURATIONS,
   INTERNSHIP_MODES,
   INTERNSHIP_PLAN_CODES,
 } from "@/models/Internship";
-import { verifyAuthToken, type AuthUser } from "@/lib/auth";
+import {
+  ADMIN_AUTH_COOKIE_NAME,
+  verifyAuthToken,
+  type AuthUser,
+} from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const AUTH_COOKIE_NAME = "cybernet_auth_token";
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_SEARCH_LENGTH = 100;
+const MAX_TEXT_LENGTH = 5000;
 
+type RecordValue = Record<string, unknown>;
 type InternshipStatus = "active" | "inactive" | "draft" | "closed";
 type PlanCode = "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
 type Duration = "1 Month" | "3 Months" | "6 Months";
 type Mode = "Remote" | "Hybrid" | "On-site";
-type RecordValue = Record<string, unknown>;
 
-class InputError extends Error {
-  constructor(message: string, public readonly code: string, public readonly status = 400) {
+class RouteError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status = 400,
+  ) {
     super(message);
-    this.name = "InputError";
+    this.name = "RouteError";
   }
 }
 
-function respond(body: unknown, status = 200): NextResponse {
+const PLAN_CONFIG: Record<
+  PlanCode,
+  { duration: Duration; durationMonths: 1 | 3 | 6; price: number; sortOrder: 1 | 2 | 3 }
+> = {
+  ONE_MONTH: { duration: "1 Month", durationMonths: 1, price: 499, sortOrder: 1 },
+  THREE_MONTHS: { duration: "3 Months", durationMonths: 3, price: 999, sortOrder: 2 },
+  SIX_MONTHS: { duration: "6 Months", durationMonths: 6, price: 1699, sortOrder: 3 },
+};
+
+const PLAN_BY_DURATION: Record<Duration, PlanCode> = {
+  "1 Month": "ONE_MONTH",
+  "3 Months": "THREE_MONTHS",
+  "6 Months": "SIX_MONTHS",
+};
+
+const MUTABLE_FIELDS = new Set([
+  "title",
+  "name",
+  "description",
+  "domain",
+  "assessmentDomain",
+  "assessmentRequired",
+  "applicationRequired",
+  "sortOrder",
+  "stipend",
+  "location",
+  "skills",
+  "technologies",
+  "requirements",
+  "responsibilities",
+  "eligibility",
+  "maxStudents",
+  "featured",
+  "certificateEligible",
+  "tags",
+  "notes",
+  "startDate",
+  "endDate",
+  "mode",
+  "status",
+  "isPublic",
+  "isSelectable",
+  "planCode",
+  "duration",
+]);
+
+function json(body: unknown, status = 200): NextResponse {
   return NextResponse.json(body, {
     status,
     headers: {
@@ -41,23 +95,35 @@ function respond(body: unknown, status = 200): NextResponse {
       Expires: "0",
       Vary: "Cookie",
       "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "X-Robots-Tag": "noindex, nofollow",
     },
   });
 }
 
-function success(message: string, data: unknown, status = 200): NextResponse {
-  return respond({ success: true, message, data }, status);
+function success(message: string, data: RecordValue, status = 200) {
+  return json({ success: true, message, data }, status);
 }
 
-function failure(message: string, code: string, status = 400, extra: RecordValue = {}): NextResponse {
-  return respond({ success: false, message, code, ...extra }, status);
+function failure(
+  message: string,
+  code: string,
+  status = 400,
+  extra: RecordValue = {},
+) {
+  return json({ success: false, message, code, ...extra }, status);
+}
+
+function isRecord(value: unknown): value is RecordValue {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
-function numeric(value: unknown, fallback = 0): number {
+function numberValue(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
@@ -66,369 +132,719 @@ function numeric(value: unknown, fallback = 0): number {
   return fallback;
 }
 
-function bool(value: unknown, fallback: boolean): boolean {
-  if (typeof value === "boolean") return value;
-  if (value === 1 || value === "1" || value === "true" || value === "yes") return true;
-  if (value === 0 || value === "0" || value === "false" || value === "no") return false;
-  return fallback;
+function booleanValue(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function stringArray(value: unknown, maxItems = 100): string[] {
-  const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
-  return [...new Set(items
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim().slice(0, 200))
-    .filter(Boolean))].slice(0, maxItems);
+function parsePositiveInteger(
+  value: string | null,
+  fallback: number,
+  maximum: number,
+): number {
+  if (!value || !/^\d+$/.test(value)) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, maximum);
+}
+
+function parseStatus(
+  value: unknown,
+  fallback: InternshipStatus = "draft",
+): InternshipStatus {
+  const candidate = text(value, fallback).toLowerCase();
+  if (["active", "inactive", "draft", "closed"].includes(candidate)) {
+    return candidate as InternshipStatus;
+  }
+  throw new RouteError(
+    "Status must be active, inactive, draft, or closed.",
+    "INVALID_STATUS",
+  );
+}
+
+function parsePlan(planValue: unknown, durationValue: unknown) {
+  const rawPlan = text(planValue).toUpperCase();
+  const rawDuration = text(durationValue) as Duration;
+
+  let planCode: PlanCode | undefined;
+
+  if (rawPlan) {
+    if (!(INTERNSHIP_PLAN_CODES as readonly string[]).includes(rawPlan)) {
+      throw new RouteError("Choose a valid internship plan.", "INVALID_PLAN");
+    }
+    planCode = rawPlan as PlanCode;
+  } else if ((INTERNSHIP_DURATIONS as readonly string[]).includes(rawDuration)) {
+    planCode = PLAN_BY_DURATION[rawDuration];
+  }
+
+  if (!planCode || !PLAN_CONFIG[planCode]) {
+    throw new RouteError(
+      "Choose a valid internship plan: 1 Month, 3 Months, or 6 Months.",
+      "INVALID_PLAN",
+    );
+  }
+
+  return { planCode, ...PLAN_CONFIG[planCode] };
 }
 
 function parseDate(value: unknown, field: string): Date | null {
   if (value === null || value === undefined || value === "") return null;
-  if (typeof value !== "string" && typeof value !== "number" && !(value instanceof Date)) {
-    throw new InputError(`${field} must be a valid date.`, "INVALID_DATE");
+  if (
+    typeof value !== "string" &&
+    typeof value !== "number" &&
+    !(value instanceof Date)
+  ) {
+    throw new RouteError(`${field} must be a valid date.`, "INVALID_DATE");
   }
-  const result = new Date(value instanceof Date ? value.getTime() : value);
-  if (Number.isNaN(result.getTime())) throw new InputError(`${field} must be a valid date.`, "INVALID_DATE");
-  return result;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new RouteError(`${field} must be a valid date.`, "INVALID_DATE");
+  }
+  return date;
 }
 
-function validateDateRange(startDate: Date | null, endDate: Date | null): void {
+function validateDateRange(startDate: Date | null, endDate: Date | null) {
   if (startDate && endDate && endDate.getTime() < startDate.getTime()) {
-    throw new InputError("End date cannot be earlier than start date.", "INVALID_DATE_RANGE");
+    throw new RouteError(
+      "End date cannot be earlier than start date.",
+      "INVALID_DATE_RANGE",
+    );
   }
 }
 
-function parseStatus(value: unknown, fallback: InternshipStatus = "draft"): InternshipStatus {
-  const status = text(value, fallback).toLowerCase();
-  if (["active", "inactive", "draft", "closed"].includes(status)) return status as InternshipStatus;
-  throw new InputError("Status must be active, inactive, draft, or closed.", "INVALID_STATUS");
-}
+function stringArray(value: unknown, field: string): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
 
-function parsePlan(value: unknown, durationValue: unknown): { planCode: PlanCode; duration: Duration; durationMonths: number } {
-  const planMap: Record<PlanCode, { duration: Duration; durationMonths: number }> = {
-    ONE_MONTH: { duration: "1 Month", durationMonths: 1 },
-    THREE_MONTHS: { duration: "3 Months", durationMonths: 3 },
-    SIX_MONTHS: { duration: "6 Months", durationMonths: 6 },
-  };
-  const durationToPlan: Record<Duration, PlanCode> = {
-    "1 Month": "ONE_MONTH",
-    "3 Months": "THREE_MONTHS",
-    "6 Months": "SIX_MONTHS",
-  };
-  const rawPlan = text(value).toUpperCase();
-  const rawDuration = text(durationValue) as Duration;
-  const plan = (INTERNSHIP_PLAN_CODES as readonly string[]).includes(rawPlan)
-    ? rawPlan as PlanCode
-    : durationToPlan[rawDuration];
-  if (!plan || !planMap[plan]) {
-    throw new InputError("Choose a valid internship plan: 1 Month, 3 Months, or 6 Months.", "INVALID_PLAN");
+  if (values.length > 100) {
+    throw new RouteError(
+      `${field} cannot contain more than 100 items.`,
+      "ARRAY_TOO_LARGE",
+    );
   }
-  return { planCode: plan, ...planMap[plan] };
+
+  const normalized = values
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().slice(0, 200))
+    .filter(Boolean);
+
+  return [...new Set(normalized)];
 }
 
-/** Trusted server-side pricing. Never use a price supplied by the browser. */
-function priceForPlan(plan: PlanCode): number {
-  switch (plan) {
-    case "ONE_MONTH": return 499;
-    case "THREE_MONTHS": return 999;
-    case "SIX_MONTHS": return 1699;
+function parseMode(value: unknown): Mode {
+  const mode = text(value, "Remote");
+  if (!(INTERNSHIP_MODES as readonly string[]).includes(mode)) {
+    throw new RouteError(
+      "Mode must be Remote, Hybrid, or On-site.",
+      "INVALID_MODE",
+    );
   }
-}
-
-function toPlain(value: unknown): RecordValue {
-  if (!value || typeof value !== "object") return {};
-  const candidate = value as { toObject?: () => RecordValue };
-  return typeof candidate.toObject === "function" ? candidate.toObject() : value as RecordValue;
-}
-
-function parseStatusSafe(value: unknown): InternshipStatus {
-  const candidate = text(value, "draft").toLowerCase();
-  return ["active", "inactive", "draft", "closed"].includes(candidate) ? candidate as InternshipStatus : "draft";
+  return mode as Mode;
 }
 
 function serialize(document: unknown): RecordValue | null {
-  if (!document) return null;
-  const item = toPlain(document);
-  const id = String(item._id ?? item.id ?? "");
-  const title = text(item.title, text(item.name));
-  const candidatePlan = text(item.planCode).toUpperCase() as PlanCode;
-  const candidateDuration = text(item.duration) as Duration;
-  const planFromDuration = (INTERNSHIP_DURATIONS as readonly string[]).includes(candidateDuration)
-    ? parsePlan(undefined, candidateDuration).planCode
-    : undefined;
-  const planCode = (INTERNSHIP_PLAN_CODES as readonly string[]).includes(candidatePlan) ? candidatePlan : planFromDuration;
-  const duration = (INTERNSHIP_DURATIONS as readonly string[]).includes(candidateDuration)
-    ? candidateDuration
-    : planCode ? parsePlan(planCode, undefined).duration : "";
-  const price = typeof item.price === "number" ? item.price : planCode ? priceForPlan(planCode) : numeric(item.price);
+  if (!document || !isRecord(document)) return null;
+
+  const raw = document;
+  const id = String(raw._id ?? raw.id ?? "");
+  const title = text(raw.title, text(raw.name));
+  const rawPlan = text(raw.planCode).toUpperCase();
+  const rawDuration = text(raw.duration) as Duration;
+
+  const planCode = (INTERNSHIP_PLAN_CODES as readonly string[]).includes(rawPlan)
+    ? (rawPlan as PlanCode)
+    : (INTERNSHIP_DURATIONS as readonly string[]).includes(rawDuration)
+      ? PLAN_BY_DURATION[rawDuration]
+      : null;
+
+  const plan = planCode ? PLAN_CONFIG[planCode] : null;
+  const price = plan?.price ?? numberValue(raw.price);
+
   return {
-    ...item,
+    ...raw,
     _id: id,
     id,
     title,
-    name: text(item.name, title),
-    domain: text(item.domain),
-    assessmentDomain: text(item.assessmentDomain, text(item.domain)),
-    planCode: planCode ?? null,
-    duration,
-    durationMonths: numeric(item.durationMonths, planCode ? parsePlan(planCode, undefined).durationMonths : 0) || null,
+    name: text(raw.name, title),
+    domain: text(raw.domain),
+    assessmentDomain: text(raw.assessmentDomain, text(raw.domain)),
+    planCode,
+    duration: plan?.duration ?? raw.duration ?? "",
+    durationMonths: plan?.durationMonths ?? numberValue(raw.durationMonths),
     price,
-    priceInPaise: numeric(item.priceInPaise, Math.round(price * 100)),
-    currency: text(item.currency, "INR"),
-    status: parseStatusSafe(item.status),
-    isPublic: bool(item.isPublic, false),
-    isSelectable: bool(item.isSelectable, false),
-    applications: Math.max(0, Math.floor(numeric(item.applications))),
-    applicants: Math.max(0, Math.floor(numeric(item.applicants))),
-    enrolledStudents: Math.max(0, Math.floor(numeric(item.enrolledStudents))),
-    createdAt: item.createdAt ?? null,
-    updatedAt: item.updatedAt ?? null,
+    priceInPaise: plan
+      ? plan.price * 100
+      : numberValue(raw.priceInPaise, Math.round(price * 100)),
+    currency: "INR",
+    status: ["active", "inactive", "draft", "closed"].includes(text(raw.status))
+      ? text(raw.status)
+      : "draft",
+    isPublic: raw.isPublic === true,
+    isSelectable: raw.isSelectable === true,
+    applications: Math.max(0, Math.floor(numberValue(raw.applications))),
+    applicants: Math.max(0, Math.floor(numberValue(raw.applicants))),
+    enrolledStudents: Math.max(0, Math.floor(numberValue(raw.enrolledStudents))),
+    createdAt: raw.createdAt ?? null,
+    updatedAt: raw.updatedAt ?? null,
   };
 }
 
-async function requireAdmin(): Promise<{ ok: true; user: AuthUser } | { ok: false; response: NextResponse }> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(AUTH_COOKIE_NAME)?.value;
-  if (!token) return { ok: false, response: failure("Authentication required.", "UNAUTHENTICATED", 401) };
+async function authenticateAdmin(
+  request: NextRequest,
+): Promise<
+  | { ok: true; user: AuthUser; role: string }
+  | { ok: false; response: NextResponse }
+> {
+  const token = request.cookies.get(ADMIN_AUTH_COOKIE_NAME)?.value;
+
+  if (!token) {
+    return {
+      ok: false,
+      response: failure("Authentication required.", "UNAUTHENTICATED", 401),
+    };
+  }
 
   let user: AuthUser | null = null;
+
   try {
-    user = await verifyAuthToken(token) as AuthUser;
+    user = await verifyAuthToken(token);
   } catch {
     user = null;
   }
-  if (!user) return { ok: false, response: failure("Session is invalid or expired. Please sign in again.", "INVALID_SESSION", 401) };
 
-  const role = text((user as unknown as RecordValue).role).toLowerCase().replace(/[\s_-]+/g, "");
-  if (!["admin", "superadmin", "mainadmin", "owner"].includes(role)) {
-    return { ok: false, response: failure("Admin access is required.", "FORBIDDEN", 403) };
+  if (
+    !user ||
+    user.role !== "admin" ||
+    user.sessionType !== "admin" ||
+    !user.adminRole ||
+    !mongoose.isValidObjectId(user.id)
+  ) {
+    return {
+      ok: false,
+      response: failure(
+        "Admin session is invalid or expired.",
+        "INVALID_SESSION",
+        401,
+      ),
+    };
   }
-  return { ok: true, user };
+
+  await connectDB();
+
+  const adminDoc = await Admin.findById(user.id)
+    .select(
+      "_id role isActive isEmailVerified permissions security.accountLocked security.lockedUntil",
+    )
+    .lean()
+    .exec();
+
+  if (!adminDoc) {
+    return {
+      ok: false,
+      response: failure("Admin account was not found.", "ADMIN_NOT_FOUND", 401),
+    };
+  }
+
+  const admin = adminDoc as unknown as RecordValue;
+  const security = isRecord(admin.security) ? admin.security : {};
+  const permissions = isRecord(admin.permissions) ? admin.permissions : {};
+  const lockedUntilValue = security.lockedUntil;
+  const lockedUntil = lockedUntilValue
+    ? new Date(String(lockedUntilValue)).getTime()
+    : 0;
+
+  if (
+    admin.isActive !== true ||
+    admin.isEmailVerified !== true ||
+    security.accountLocked === true ||
+    (Number.isFinite(lockedUntil) && lockedUntil > Date.now()) ||
+    text(admin.role) !== user.adminRole
+  ) {
+    return {
+      ok: false,
+      response: failure(
+        "Admin account is inactive, unverified, locked, or has changed role.",
+        "ADMIN_ACCESS_REVOKED",
+        403,
+      ),
+    };
+  }
+
+  if (user.adminRole !== "Super Admin" && permissions.internships !== true) {
+    return {
+      ok: false,
+      response: failure(
+        "You do not have permission to manage internships.",
+        "INSUFFICIENT_PERMISSION",
+        403,
+      ),
+    };
+  }
+
+  return { ok: true, user, role: user.adminRole };
 }
 
-async function readBody(request: Request): Promise<RecordValue> {
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    throw new InputError("Request body is too large.", "BODY_TOO_LARGE", 413);
-  }
-  let parsed: unknown;
+function verifyMutationOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+
+  if (!origin && !referer) return false;
+
   try {
-    parsed = await request.json();
+    const expected = request.nextUrl.origin;
+    if (origin && new URL(origin).origin !== expected) return false;
+    if (referer && new URL(referer).origin !== expected) return false;
+    return true;
   } catch {
-    throw new InputError("Request body must be valid JSON.", "INVALID_JSON");
+    return false;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new InputError("Request body must be a JSON object.", "INVALID_REQUEST_BODY");
-  }
-  return parsed as RecordValue;
 }
 
-function creatorId(user: AuthUser): mongoose.Types.ObjectId | undefined {
-  const record = user as unknown as RecordValue;
-  const candidate = text(record.id, text(record._id));
-  return mongoose.Types.ObjectId.isValid(candidate) ? new mongoose.Types.ObjectId(candidate) : undefined;
+async function readBody(request: NextRequest): Promise<RecordValue> {
+  const contentLength = Number(request.headers.get("content-length") || 0);
+
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    throw new RouteError("Request body is too large.", "BODY_TOO_LARGE", 413);
+  }
+
+  const contentType = request.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    throw new RouteError(
+      "Content-Type must be application/json.",
+      "INVALID_CONTENT_TYPE",
+      415,
+    );
+  }
+
+  const raw = await request.text();
+
+  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
+    throw new RouteError("Request body is too large.", "BODY_TOO_LARGE", 413);
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new RouteError("Request body must be valid JSON.", "INVALID_JSON");
+  }
+
+  if (!isRecord(parsed)) {
+    throw new RouteError("Request body must be a JSON object.", "INVALID_BODY");
+  }
+
+  return parsed;
 }
 
-function buildCreateData(body: RecordValue, user: AuthUser, planOverride?: Duration): RecordValue {
+function creatorId(user: AuthUser): mongoose.Types.ObjectId | null {
+  return mongoose.isValidObjectId(user.id)
+    ? new mongoose.Types.ObjectId(user.id)
+    : null;
+}
+
+function buildCreateData(
+  body: RecordValue,
+  user: AuthUser,
+  durationOverride?: Duration,
+): RecordValue {
   const title = text(body.title, text(body.name));
   const domain = text(body.domain);
-  if (title.length < 3 || title.length > 200) throw new InputError("Title must contain 3–200 characters.", "TITLE_REQUIRED");
-  if (!domain || domain.length > 150) throw new InputError("A valid internship domain is required.", "DOMAIN_REQUIRED");
 
-  const plan = parsePlan(planOverride ? undefined : body.planCode, planOverride ?? body.duration);
-  const status = parseStatus(body.status, "draft");
-  const isPublic = bool(body.isPublic, status === "active");
-  const isSelectable = status === "active" && isPublic && bool(body.isSelectable, true);
-  const modeValue = text(body.mode, "Remote");
-  if (!(INTERNSHIP_MODES as readonly string[]).includes(modeValue)) {
-    throw new InputError("Mode must be Remote, Hybrid, or On-site.", "INVALID_MODE");
+  if (title.length < 3 || title.length > 200) {
+    throw new RouteError(
+      "Title must contain 3–200 characters.",
+      "INVALID_TITLE",
+    );
   }
-  const price = priceForPlan(plan.planCode);
+
+  if (!domain || domain.length > 150) {
+    throw new RouteError("A valid internship domain is required.", "INVALID_DOMAIN");
+  }
+
+  const plan = parsePlan(
+    durationOverride ? undefined : body.planCode,
+    durationOverride ?? body.duration,
+  );
+  const status = parseStatus(body.status, "draft");
+  const isPublic = status === "active" && booleanValue(body.isPublic, true);
+  const isSelectable =
+    status === "active" && isPublic && booleanValue(body.isSelectable, true);
+  const mode = parseMode(body.mode);
   const startDate = parseDate(body.startDate, "startDate");
   const endDate = parseDate(body.endDate, "endDate");
   validateDateRange(startDate, endDate);
 
+  const maxStudents = numberValue(body.maxStudents);
+  if (
+    !Number.isInteger(maxStudents) ||
+    maxStudents < 0 ||
+    maxStudents > 1_000_000
+  ) {
+    throw new RouteError(
+      "Maximum students must be a non-negative integer.",
+      "INVALID_CAPACITY",
+    );
+  }
+
+  const sortOrder = numberValue(body.sortOrder, plan.sortOrder);
+  if (!Number.isInteger(sortOrder) || sortOrder < 1 || sortOrder > 100) {
+    throw new RouteError(
+      "Sort order must be an integer from 1 to 100.",
+      "INVALID_SORT_ORDER",
+    );
+  }
+
   return {
     title,
     name: title,
-    description: text(body.description).slice(0, 5000),
+    description: text(body.description).slice(0, MAX_TEXT_LENGTH),
     domain,
     assessmentDomain: text(body.assessmentDomain, domain).slice(0, 150),
-    assessmentRequired: bool(body.assessmentRequired, true),
-    applicationRequired: bool(body.applicationRequired, true),
+    assessmentRequired: booleanValue(body.assessmentRequired, true),
+    applicationRequired: booleanValue(body.applicationRequired, true),
     planCode: plan.planCode,
     duration: plan.duration,
     durationMonths: plan.durationMonths,
-    sortOrder: Math.max(1, Math.min(100, Math.floor(numeric(body.sortOrder, 1) || 1))),
-    price,
-    priceInPaise: price * 100,
+    sortOrder,
+    price: plan.price,
+    priceInPaise: plan.price * 100,
     currency: "INR",
     stipend: text(body.stipend).slice(0, 200),
-    mode: modeValue as Mode,
-    location: text(body.location, modeValue === "Remote" ? "Remote" : "").slice(0, 200),
-    skills: stringArray(body.skills),
-    technologies: stringArray(body.technologies),
-    requirements: stringArray(body.requirements),
-    responsibilities: stringArray(body.responsibilities),
+    mode,
+    location: text(body.location, mode === "Remote" ? "Remote" : "").slice(0, 200),
+    skills: stringArray(body.skills, "skills"),
+    technologies: stringArray(body.technologies, "technologies"),
+    requirements: stringArray(body.requirements, "requirements"),
+    responsibilities: stringArray(body.responsibilities, "responsibilities"),
     eligibility: text(body.eligibility).slice(0, 3000),
-    maxStudents: Math.max(0, Math.floor(numeric(body.maxStudents))),
+    maxStudents,
     enrolledStudents: 0,
     applications: 0,
     applicants: 0,
     status,
     isPublic,
     isSelectable,
-    featured: bool(body.featured, false),
-    certificateEligible: bool(body.certificateEligible, true),
-    tags: stringArray(body.tags),
+    featured: booleanValue(body.featured, false),
+    certificateEligible: booleanValue(body.certificateEligible, true),
+    tags: stringArray(body.tags, "tags"),
     startDate,
     endDate,
-    createdBy: creatorId(user) ?? null,
+    createdBy: creatorId(user),
     notes: text(body.notes).slice(0, 3000),
   };
 }
 
 function isDuplicateKeyError(error: unknown): boolean {
-  return !!error && typeof error === "object" && (error as { code?: unknown }).code === 11000;
+  return isRecord(error) && Number(error.code) === 11000;
 }
 
-function validationResponse(error: mongoose.Error.ValidationError): NextResponse {
-  const details = Object.values(error.errors).map((entry) => ({ field: entry.path, message: entry.message }));
-  return failure("Internship validation failed.", "VALIDATION_ERROR", 422, { errors: details });
-}
-
-function errorFrom(error: unknown, fallbackMessage: string, fallbackCode: string): NextResponse {
-  if (error instanceof InputError) return failure(error.message, error.code, error.status);
-  if (error instanceof mongoose.Error.ValidationError) return validationResponse(error);
-  if (isDuplicateKeyError(error)) {
-    return failure("An internship with the same domain and plan or unique ID already exists.", "DUPLICATE_DOMAIN_PLAN", 409);
+function handleError(
+  error: unknown,
+  fallback: string,
+  code: string,
+): NextResponse {
+  if (error instanceof RouteError) {
+    return failure(error.message, error.code, error.status);
   }
-  console.error(`[${fallbackCode}]`, error);
-  return failure(fallbackMessage, fallbackCode, 500);
+
+  if (error instanceof mongoose.Error.ValidationError) {
+    return failure("Internship validation failed.", "VALIDATION_ERROR", 422, {
+      errors: Object.values(error.errors).map((item) => ({
+        field: item.path,
+        message: item.message,
+      })),
+    });
+  }
+
+  if (isDuplicateKeyError(error)) {
+    return failure(
+      "An internship with this domain and plan already exists.",
+      "DUPLICATE_DOMAIN_PLAN",
+      409,
+    );
+  }
+
+  console.error(`[${code}]`, error);
+  return failure(fallback, code, 500);
+}
+
+async function findDomainPlanConflict(
+  domain: string,
+  planCode: PlanCode,
+  excludedId?: string,
+) {
+  const filter: RecordValue = {
+    domain: { $regex: `^${escapeRegex(domain)}$`, $options: "i" },
+    planCode,
+  };
+
+  if (excludedId) {
+    filter._id = { $ne: new mongoose.Types.ObjectId(excludedId) };
+  }
+
+  return Internship.findOne(filter).select("_id").lean().exec();
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
   try {
-    await connectDB();
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return auth.response;
+
     const params = request.nextUrl.searchParams;
-    const page = Math.max(1, Math.min(10_000, Math.floor(numeric(params.get("page"), 1))));
-    const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(numeric(params.get("limit"), DEFAULT_LIMIT))));
-    const search = text(params.get("search") ?? params.get("q")).slice(0, 100);
+    const requestedPage = parsePositiveInteger(params.get("page"), 1, 100_000);
+    const limit = parsePositiveInteger(params.get("limit"), DEFAULT_LIMIT, MAX_LIMIT);
+    const search = text(params.get("search") ?? params.get("q")).slice(
+      0,
+      MAX_SEARCH_LENGTH,
+    );
     const statusParam = text(params.get("status")).toLowerCase();
     const domain = text(params.get("domain")).slice(0, 150);
-    const planCode = text(params.get("planCode")).toUpperCase();
-    const filter: Record<string, unknown> = {};
+    const planParam = text(params.get("planCode")).toUpperCase();
 
-    if (["active", "inactive", "draft", "closed"].includes(statusParam)) filter.status = statusParam;
-    if (domain) filter.domain = { $regex: escapeRegex(domain), $options: "i" };
-    if ((INTERNSHIP_PLAN_CODES as readonly string[]).includes(planCode)) filter.planCode = planCode;
+    const filter: RecordValue = {};
+
+    if (statusParam && statusParam !== "all") {
+      if (!["active", "inactive", "draft", "closed"].includes(statusParam)) {
+        return failure(
+          "Unsupported internship status filter.",
+          "INVALID_STATUS_FILTER",
+          400,
+        );
+      }
+      filter.status = statusParam;
+    }
+
+    if (domain) {
+      filter.domain = { $regex: escapeRegex(domain), $options: "i" };
+    }
+
+    if (planParam) {
+      if (!(INTERNSHIP_PLAN_CODES as readonly string[]).includes(planParam)) {
+        return failure(
+          "Unsupported internship plan filter.",
+          "INVALID_PLAN_FILTER",
+          400,
+        );
+      }
+      filter.planCode = planParam;
+    }
+
     if (search) {
-      const escaped = escapeRegex(search);
+      const regex = { $regex: escapeRegex(search), $options: "i" };
       filter.$or = [
-        { title: { $regex: escaped, $options: "i" } },
-        { name: { $regex: escaped, $options: "i" } },
-        { domain: { $regex: escaped, $options: "i" } },
-        { assessmentDomain: { $regex: escaped, $options: "i" } },
-        { internshipId: { $regex: escaped, $options: "i" } },
+        { title: regex },
+        { name: regex },
+        { domain: regex },
+        { assessmentDomain: regex },
+        { internshipId: regex },
       ];
     }
 
     const sortParam = text(params.get("sort"), "newest");
-    const sortBy: Record<string, SortOrder> = sortParam === "oldest"
-      ? { createdAt: 1 }
-      : sortParam === "title" ? { title: 1 } : { createdAt: -1 };
+    const sortBy: Record<string, SortOrder> =
+      sortParam === "oldest"
+        ? { createdAt: 1, _id: 1 }
+        : sortParam === "title"
+          ? { title: 1, _id: 1 }
+          : { createdAt: -1, _id: -1 };
 
-    const [documents, total, statusRows, domainRows, totalsRows] = await Promise.all([
-      Internship.find(filter).sort(sortBy).skip((page - 1) * limit).limit(limit).lean().exec(),
+    const [total, statusRows, domainRows, totalsRows] = await Promise.all([
       Internship.countDocuments(filter).exec(),
-      Internship.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]).exec(),
-      Internship.aggregate([{ $group: { _id: "$domain", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 50 }]).exec(),
-      Internship.aggregate([{ $group: {
-        _id: null,
-        totalApplications: { $sum: { $ifNull: ["$applications", 0] } },
-        totalApplicants: { $sum: { $ifNull: ["$applicants", 0] } },
-        totalEnrolled: { $sum: { $ifNull: ["$enrolledStudents", 0] } },
-      } }]).exec(),
+      Internship.aggregate([
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]).exec(),
+      Internship.aggregate([
+        { $group: { _id: "$domain", count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } },
+        { $limit: 50 },
+      ]).exec(),
+      Internship.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalApplications: { $sum: { $ifNull: ["$applications", 0] } },
+            totalApplicants: { $sum: { $ifNull: ["$applicants", 0] } },
+            totalEnrolled: { $sum: { $ifNull: ["$enrolledStudents", 0] } },
+          },
+        },
+      ]).exec(),
     ]);
 
-    const internships = documents.map(serialize).filter((item): item is RecordValue => item !== null);
-    const statusCounts: Record<InternshipStatus, number> = { active: 0, inactive: 0, draft: 0, closed: 0 };
+    const totalPages = total ? Math.ceil(total / limit) : 0;
+    const page = totalPages ? Math.min(requestedPage, totalPages) : 1;
+
+    const documents = await Internship.find(filter)
+      .sort(sortBy)
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean()
+      .exec();
+
+    const internships = documents
+      .map(serialize)
+      .filter((item): item is RecordValue => item !== null);
+
+    const statusCounts: Record<InternshipStatus, number> = {
+      active: 0,
+      inactive: 0,
+      draft: 0,
+      closed: 0,
+    };
+
     for (const row of statusRows as Array<{ _id?: unknown; count?: unknown }>) {
       const key = text(row._id) as InternshipStatus;
-      if (Object.prototype.hasOwnProperty.call(statusCounts, key)) statusCounts[key] = numeric(row.count);
+      if (Object.prototype.hasOwnProperty.call(statusCounts, key)) {
+        statusCounts[key] = numberValue(row.count);
+      }
     }
+
     const totals = (totalsRows as Array<RecordValue>)[0] ?? {};
-    const domains = (domainRows as Array<{ _id?: unknown; count?: unknown }>).map((row) => ({ domain: text(row._id), count: numeric(row.count) }));
+    const domains = (
+      domainRows as Array<{ _id?: unknown; count?: unknown }>
+    )
+      .map((row) => ({
+        domain: text(row._id),
+        count: numberValue(row.count),
+      }))
+      .filter((row) => row.domain);
+
     const pagination = {
-      page, limit, total,
-      totalPages: total ? Math.ceil(total / limit) : 0,
-      hasNextPage: page * limit < total,
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
       hasPreviousPage: page > 1,
     };
+
     const stats = {
       total,
       active: statusCounts.active,
       inactive: statusCounts.inactive,
       draft: statusCounts.draft,
       closed: statusCounts.closed,
-      applications: numeric(totals.totalApplications),
-      applicants: numeric(totals.totalApplicants),
-      enrolled: numeric(totals.totalEnrolled),
+      applications: numberValue(totals.totalApplications),
+      applicants: numberValue(totals.totalApplicants),
+      enrolled: numberValue(totals.totalEnrolled),
     };
-    // Retain response aliases used by existing dashboard versions.
-    return success("Internships fetched successfully.", { internships, data: internships, pagination, stats, domains, ...pagination, ...stats });
+
+    return success("Internships fetched successfully.", {
+      internships,
+      data: internships,
+      pagination,
+      stats,
+      domains,
+      ...pagination,
+      ...stats,
+    });
   } catch (error) {
-    return errorFrom(error, "Unable to fetch internships.", "INTERNSHIPS_FETCH_FAILED");
+    return handleError(error, "Unable to fetch internships.", "INTERNSHIPS_FETCH_FAILED");
   }
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (!verifyMutationOrigin(request)) {
+    return failure("Request origin could not be verified.", "INVALID_ORIGIN", 403);
+  }
+
   try {
-    await connectDB();
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return auth.response;
+
+    if (!["Super Admin", "Admin"].includes(auth.role)) {
+      return failure("Your admin role cannot create internships.", "FORBIDDEN", 403);
+    }
+
     const body = await readBody(request);
     const domain = text(body.domain);
-    const createAllPlans = bool(body.createAllPlans, false);
+
+    if (!domain || domain.length > 150) {
+      throw new RouteError("A valid internship domain is required.", "INVALID_DOMAIN");
+    }
+
+    const createAllPlans = body.createAllPlans === true;
     const durations: Duration[] = createAllPlans
       ? ["1 Month", "3 Months", "6 Months"]
       : [parsePlan(body.planCode, body.duration).duration];
 
-    const existing = await Internship.find({ domain: { $regex: `^${escapeRegex(domain)}$`, $options: "i" } })
-      .select("planCode duration").lean().exec();
-    const existingPlans = new Set(existing.map((item) => text(item.planCode).toUpperCase() || parsePlan(undefined, item.duration).planCode));
-    const requestedPlans = durations.map((duration) => parsePlan(undefined, duration));
-    const duplicate = requestedPlans.find((plan) => existingPlans.has(plan.planCode));
-    if (duplicate) return failure(`A ${duplicate.duration} internship plan already exists for ${domain}.`, "DUPLICATE_DOMAIN_PLAN", 409);
+    const requestedPlans = durations.map((duration) =>
+      parsePlan(undefined, duration),
+    );
+    const planCodes = requestedPlans.map((plan) => plan.planCode);
 
-    // Create the requested plans as one logical operation; roll back newly created rows if a later insert fails.
+    if (new Set(planCodes).size !== planCodes.length) {
+      throw new RouteError(
+        "Duplicate plans were requested.",
+        "DUPLICATE_REQUESTED_PLAN",
+      );
+    }
+
+    const existing = await Internship.find({
+      domain: { $regex: `^${escapeRegex(domain)}$`, $options: "i" },
+      planCode: { $in: planCodes },
+    })
+      .select("planCode")
+      .lean()
+      .exec();
+
+    const existingPlans = new Set(
+      existing.map((item) => text(item.planCode).toUpperCase()),
+    );
+    const duplicatePlan = requestedPlans.find((plan) =>
+      existingPlans.has(plan.planCode),
+    );
+
+    if (duplicatePlan) {
+      return failure(
+        `A ${duplicatePlan.duration} internship plan already exists for ${domain}.`,
+        "DUPLICATE_DOMAIN_PLAN",
+        409,
+      );
+    }
+
     const createdIds: mongoose.Types.ObjectId[] = [];
+
     try {
       for (const duration of durations) {
         const data = buildCreateData(body, auth.user, duration);
-        const created = await Internship.create(data as any);
+        const created = await Internship.create(data);
         createdIds.push(created._id as mongoose.Types.ObjectId);
       }
     } catch (createError) {
-      if (createdIds.length) await Internship.deleteMany({ _id: { $in: createdIds } }).exec();
+      if (createdIds.length) {
+        await Internship.deleteMany({ _id: { $in: createdIds } }).exec();
+      }
       throw createError;
     }
 
-    const createdDocuments = await Internship.find({ _id: { $in: createdIds } }).sort({ durationMonths: 1 }).lean().exec();
-    const internships = createdDocuments.map(serialize).filter((item): item is RecordValue => item !== null);
-    return success("Internship plan(s) created successfully.", {
-      internship: internships[0] ?? null,
-      internships,
-      data: internships,
-      createdCount: internships.length,
-    }, 201);
+    const createdDocuments = await Internship.find({ _id: { $in: createdIds } })
+      .sort({ durationMonths: 1 })
+      .lean()
+      .exec();
+
+    const internships = createdDocuments
+      .map(serialize)
+      .filter((item): item is RecordValue => item !== null);
+
+    return success(
+      "Internship plan(s) created successfully.",
+      {
+        internship: internships[0] ?? null,
+        internships,
+        data: internships,
+        createdCount: internships.length,
+      },
+      201,
+    );
   } catch (error) {
-    return errorFrom(error, "Unable to create internship.", "INTERNSHIP_CREATE_FAILED");
+    return handleError(error, "Unable to create internship.", "INTERNSHIP_CREATE_FAILED");
   }
 }
 
@@ -441,51 +857,78 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 }
 
 async function updateInternship(request: NextRequest): Promise<NextResponse> {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (!verifyMutationOrigin(request)) {
+    return failure("Request origin could not be verified.", "INVALID_ORIGIN", 403);
+  }
+
   try {
-    await connectDB();
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return auth.response;
+
+    if (!["Super Admin", "Admin"].includes(auth.role)) {
+      return failure("Your admin role cannot modify internships.", "FORBIDDEN", 403);
+    }
+
     const body = await readBody(request);
     const id = text(body.id, text(body._id, text(body.internshipId)));
-    if (!id || !mongoose.Types.ObjectId.isValid(id)) return failure("A valid internship ID is required.", "INVALID_INTERNSHIP_ID", 400);
+
+    if (!mongoose.isValidObjectId(id)) {
+      throw new RouteError("A valid internship ID is required.", "INVALID_INTERNSHIP_ID");
+    }
 
     const existing = await Internship.findById(id).exec();
-    if (!existing) return failure("Internship not found.", "INTERNSHIP_NOT_FOUND", 404);
+
+    if (!existing) {
+      return failure("Internship not found.", "INTERNSHIP_NOT_FOUND", 404);
+    }
 
     const update: RecordValue = {};
-    const fields = [
-      "title", "name", "description", "domain", "assessmentDomain", "assessmentRequired",
-      "applicationRequired", "sortOrder", "stipend", "location", "skills", "technologies",
-      "requirements", "responsibilities", "eligibility", "maxStudents", "featured",
-      "certificateEligible", "tags", "notes", "startDate", "endDate", "mode", "status",
-      "isPublic", "isSelectable", "planCode", "duration",
-    ] as const;
 
-    for (const field of fields) {
-      if (body[field] === undefined) continue;
-      const value = body[field];
+    for (const [field, value] of Object.entries(body)) {
+      if (["id", "_id", "internshipId", "action"].includes(field)) continue;
+      if (!MUTABLE_FIELDS.has(field)) continue;
+
       switch (field) {
-        case "title": {
-          const title = text(value, text(body.name));
-          if (title.length < 3 || title.length > 200) throw new InputError("Title must contain 3–200 characters.", "TITLE_REQUIRED");
+        case "title":
+        case "name": {
+          const title = text(value);
+          if (title.length < 3 || title.length > 200) {
+            throw new RouteError(
+              "Title must contain 3–200 characters.",
+              "INVALID_TITLE",
+            );
+          }
           update.title = title;
           update.name = title;
           break;
         }
-        case "name":
-          update.name = text(value).slice(0, 200);
-          break;
         case "domain": {
-          const nextDomain = text(value);
-          if (!nextDomain || nextDomain.length > 150) throw new InputError("A valid domain is required.", "DOMAIN_REQUIRED");
-          update.domain = nextDomain;
+          const domain = text(value);
+          if (!domain || domain.length > 150) {
+            throw new RouteError(
+              "A valid internship domain is required.",
+              "INVALID_DOMAIN",
+            );
+          }
+          update.domain = domain;
+          if (
+            body.assessmentDomain === undefined &&
+            (!text(existing.assessmentDomain) ||
+              text(existing.assessmentDomain).toLowerCase() ===
+                text(existing.domain).toLowerCase())
+          ) {
+            update.assessmentDomain = domain;
+          }
           break;
         }
         case "assessmentDomain":
           update.assessmentDomain = text(value).slice(0, 150);
           break;
         case "description":
-          update.description = text(value).slice(0, 5000);
+          update.description = text(value).slice(0, MAX_TEXT_LENGTH);
+          break;
+        case "stipend":
+          update.stipend = text(value).slice(0, 200);
           break;
         case "location":
           update.location = text(value).slice(0, 200);
@@ -496,12 +939,9 @@ async function updateInternship(request: NextRequest): Promise<NextResponse> {
         case "notes":
           update.notes = text(value).slice(0, 3000);
           break;
-        case "mode": {
-          const mode = text(value);
-          if (!(INTERNSHIP_MODES as readonly string[]).includes(mode)) throw new InputError("Invalid internship mode.", "INVALID_MODE");
-          update.mode = mode;
+        case "mode":
+          update.mode = parseMode(value);
           break;
-        }
         case "status":
           update.status = parseStatus(value);
           break;
@@ -511,7 +951,9 @@ async function updateInternship(request: NextRequest): Promise<NextResponse> {
         case "applicationRequired":
         case "featured":
         case "certificateEligible":
-          if (typeof value !== "boolean") throw new InputError(`${field} must be true or false.`, "INVALID_BOOLEAN");
+          if (typeof value !== "boolean") {
+            throw new RouteError(`${field} must be true or false.`, "INVALID_BOOLEAN");
+          }
           update[field] = value;
           break;
         case "skills":
@@ -519,7 +961,7 @@ async function updateInternship(request: NextRequest): Promise<NextResponse> {
         case "requirements":
         case "responsibilities":
         case "tags":
-          update[field] = stringArray(value);
+          update[field] = stringArray(value, field);
           break;
         case "startDate":
         case "endDate":
@@ -527,116 +969,259 @@ async function updateInternship(request: NextRequest): Promise<NextResponse> {
           break;
         case "planCode":
         case "duration": {
-          const plan = parsePlan(body.planCode ?? existing.planCode, body.duration ?? existing.duration);
+          const plan = parsePlan(
+            body.planCode ?? existing.planCode,
+            body.duration ?? existing.duration,
+          );
           update.planCode = plan.planCode;
           update.duration = plan.duration;
           update.durationMonths = plan.durationMonths;
-          update.price = priceForPlan(plan.planCode);
-          update.priceInPaise = priceForPlan(plan.planCode) * 100;
+          update.sortOrder = plan.sortOrder;
+          update.price = plan.price;
+          update.priceInPaise = plan.price * 100;
           update.currency = "INR";
           break;
         }
         case "sortOrder": {
-          const n = numeric(value, Number.NaN);
-          if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 100) throw new InputError("sortOrder must be an integer from 1 to 100.", "INVALID_SORT_ORDER");
-          update.sortOrder = n;
+          const valueNumber = numberValue(value, Number.NaN);
+          if (!Number.isInteger(valueNumber) || valueNumber < 1 || valueNumber > 100) {
+            throw new RouteError(
+              "Sort order must be an integer from 1 to 100.",
+              "INVALID_SORT_ORDER",
+            );
+          }
+          update.sortOrder = valueNumber;
           break;
         }
         case "maxStudents": {
-          const n = numeric(value, Number.NaN);
-          if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) throw new InputError("maxStudents must be a non-negative integer.", "INVALID_CAPACITY");
-          update.maxStudents = n;
+          const valueNumber = numberValue(value, Number.NaN);
+          if (
+            !Number.isInteger(valueNumber) ||
+            valueNumber < 0 ||
+            valueNumber > 1_000_000
+          ) {
+            throw new RouteError(
+              "Maximum students must be a non-negative integer.",
+              "INVALID_CAPACITY",
+            );
+          }
+          update.maxStudents = valueNumber;
           break;
         }
-        default:
-          break;
       }
     }
 
-    // Status action compatibility with the admin page's activate/deactivate controls.
     const action = text(body.action).toLowerCase();
+
     if (action) {
-      const actionStatus: Record<string, InternshipStatus> = {
-        activate: "active", deactivate: "inactive", draft: "draft", close: "closed",
+      const actions: Record<string, InternshipStatus> = {
+        activate: "active",
+        deactivate: "inactive",
+        draft: "draft",
+        close: "closed",
       };
-      if (!actionStatus[action]) throw new InputError("Unsupported internship action.", "INVALID_ACTION");
-      update.status = actionStatus[action];
-      if (action === "activate") {
-        update.isPublic = true;
-        update.isSelectable = true;
+      const nextStatus = actions[action];
+
+      if (!nextStatus) {
+        throw new RouteError("Unsupported internship action.", "INVALID_ACTION");
       }
-      if (["deactivate", "draft", "close"].includes(action)) {
-        update.isPublic = false;
-        update.isSelectable = false;
-      }
+
+      update.status = nextStatus;
+      update.isPublic = nextStatus === "active";
+      update.isSelectable = nextStatus === "active";
     }
 
-    if (Object.keys(update).length === 0) return failure("No supported fields were supplied for update.", "NO_UPDATE_FIELDS", 400);
+    if (Object.keys(update).length === 0) {
+      throw new RouteError(
+        "No supported fields were supplied for update.",
+        "NO_UPDATE_FIELDS",
+      );
+    }
 
     const nextStatus = (update.status ?? existing.status) as InternshipStatus;
-    const nextPublic = update.isPublic === undefined ? bool(existing.isPublic, false) : bool(update.isPublic, false);
-    const requestedSelectable = update.isSelectable === undefined ? bool(existing.isSelectable, false) : bool(update.isSelectable, false);
-    update.isSelectable = nextStatus === "active" && nextPublic && requestedSelectable;
+    const nextPublic =
+      update.isPublic === undefined
+        ? existing.isPublic === true
+        : update.isPublic === true;
+    const requestedSelectable =
+      update.isSelectable === undefined
+        ? existing.isSelectable === true
+        : update.isSelectable === true;
 
-    const nextStart = (update.startDate === undefined ? existing.startDate : update.startDate) as Date | null;
-    const nextEnd = (update.endDate === undefined ? existing.endDate : update.endDate) as Date | null;
-    validateDateRange(nextStart, nextEnd);
+    update.isSelectable =
+      nextStatus === "active" && nextPublic && requestedSelectable;
 
-    // These counters and pricing are server-owned; ignore any extra browser fields.
-    delete update.applications;
-    delete update.applicants;
-    delete update.enrolledStudents;
+    if (nextStatus !== "active") {
+      update.isPublic = false;
+    }
+
+    const nextStart =
+      update.startDate === undefined ? existing.startDate : update.startDate;
+    const nextEnd =
+      update.endDate === undefined ? existing.endDate : update.endDate;
+
+    validateDateRange(
+      nextStart instanceof Date
+        ? nextStart
+        : nextStart
+          ? new Date(String(nextStart))
+          : null,
+      nextEnd instanceof Date
+        ? nextEnd
+        : nextEnd
+          ? new Date(String(nextEnd))
+          : null,
+    );
 
     const resultingDomain = text(update.domain, text(existing.domain));
-    const resultingPlan = text(update.planCode, text(existing.planCode)).toUpperCase();
-    const duplicate = await Internship.findOne({
-      _id: { $ne: id },
-      domain: { $regex: `^${escapeRegex(resultingDomain)}$`, $options: "i" },
-      planCode: resultingPlan as PlanCode,
-    }).select("_id").lean().exec();
-    if (duplicate) return failure("An internship with the same domain and plan already exists.", "DUPLICATE_DOMAIN_PLAN", 409);
+    const resultingPlan = text(
+      update.planCode,
+      text(existing.planCode),
+    ).toUpperCase();
 
-    const updated = await Internship.findByIdAndUpdate(id, { $set: update }, {
-      new: true,
-      runValidators: true,
-      context: "query",
-    }).exec();
-    if (!updated) return failure("Internship not found.", "INTERNSHIP_NOT_FOUND", 404);
+    if ((INTERNSHIP_PLAN_CODES as readonly string[]).includes(resultingPlan)) {
+      const duplicate = await findDomainPlanConflict(
+        resultingDomain,
+        resultingPlan as PlanCode,
+        id,
+      );
+
+      if (duplicate) {
+        return failure(
+          "An internship with the same domain and plan already exists.",
+          "DUPLICATE_DOMAIN_PLAN",
+          409,
+        );
+      }
+    }
+
+    update.updatedBy = creatorId(auth.user);
+
+    const updated = await Internship.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(id) },
+      { $set: update },
+      { new: true, runValidators: true, context: "query" },
+    ).exec();
+
+    if (!updated) {
+      return failure("Internship not found.", "INTERNSHIP_NOT_FOUND", 404);
+    }
+
     const serialized = serialize(updated);
-    return success("Internship updated successfully.", { internship: serialized, data: serialized });
+
+    return success("Internship updated successfully.", {
+      internship: serialized,
+      data: serialized,
+    });
   } catch (error) {
-    return errorFrom(error, "Unable to update internship.", "INTERNSHIP_UPDATE_FAILED");
+    return handleError(error, "Unable to update internship.", "INTERNSHIP_UPDATE_FAILED");
   }
 }
 
-/** Preserve activity history: close records that have applications/enrolments. */
 export async function DELETE(request: NextRequest): Promise<NextResponse> {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
-  try {
-    await connectDB();
-    const id = text(request.nextUrl.searchParams.get("id"), text(request.nextUrl.searchParams.get("_id"), text(request.nextUrl.searchParams.get("internshipId"))));
-    if (!id || !mongoose.Types.ObjectId.isValid(id)) return failure("A valid internship ID is required.", "INVALID_INTERNSHIP_ID", 400);
-    const internship = await Internship.findById(id).exec();
-    if (!internship) return failure("Internship not found.", "INTERNSHIP_NOT_FOUND", 404);
+  if (!verifyMutationOrigin(request)) {
+    return failure("Request origin could not be verified.", "INVALID_ORIGIN", 403);
+  }
 
-    const hasActivity = numeric(internship.applications) > 0 || numeric(internship.applicants) > 0 || numeric(internship.enrolledStudents) > 0;
-    if (hasActivity) {
-      const closed = await Internship.findByIdAndUpdate(id, {
-        $set: { status: "closed", isPublic: false, isSelectable: false },
-      }, { new: true, runValidators: true }).exec();
-      return success("This internship has activity, so it was closed to preserve student and payment history.", {
-        deleted: false, closed: true, internship: serialize(closed),
-      });
+  try {
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return auth.response;
+
+    if (auth.role !== "Super Admin") {
+      return failure(
+        "Only Super Admin can delete or close internship plans.",
+        "FORBIDDEN",
+        403,
+      );
     }
 
-    await Internship.findByIdAndDelete(id).exec();
-    return success("Internship deleted successfully.", { deleted: true, closed: false, id });
+    const id = text(
+      request.nextUrl.searchParams.get("id"),
+      text(
+        request.nextUrl.searchParams.get("_id"),
+        text(request.nextUrl.searchParams.get("internshipId")),
+      ),
+    );
+
+    if (!mongoose.isValidObjectId(id)) {
+      throw new RouteError("A valid internship ID is required.", "INVALID_INTERNSHIP_ID");
+    }
+
+    const internship = await Internship.findById(id).exec();
+
+    if (!internship) {
+      return failure("Internship not found.", "INTERNSHIP_NOT_FOUND", 404);
+    }
+
+    const hasActivity =
+      numberValue(internship.applications) > 0 ||
+      numberValue(internship.applicants) > 0 ||
+      numberValue(internship.enrolledStudents) > 0;
+
+    if (hasActivity) {
+      const closed = await Internship.findOneAndUpdate(
+        {
+          _id: new mongoose.Types.ObjectId(id),
+          applications: internship.applications,
+          applicants: internship.applicants,
+          enrolledStudents: internship.enrolledStudents,
+        },
+        {
+          $set: {
+            status: "closed",
+            isPublic: false,
+            isSelectable: false,
+            updatedBy: creatorId(auth.user),
+          },
+        },
+        { new: true, runValidators: true },
+      ).exec();
+
+      if (!closed) {
+        return failure(
+          "Internship changed while processing. Refresh and try again.",
+          "DELETE_CONFLICT",
+          409,
+        );
+      }
+
+      return success(
+        "This internship has activity, so it was closed to preserve student and payment history.",
+        { deleted: false, closed: true, internship: serialize(closed) },
+      );
+    }
+
+    const deleted = await Internship.findOneAndDelete({
+      _id: new mongoose.Types.ObjectId(id),
+      applications: { $in: [0, null] },
+      applicants: { $in: [0, null] },
+      enrolledStudents: { $in: [0, null] },
+    }).exec();
+
+    if (!deleted) {
+      return failure(
+        "Internship activity changed before deletion. Refresh and try again.",
+        "DELETE_CONFLICT",
+        409,
+      );
+    }
+
+    return success("Internship deleted successfully.", {
+      deleted: true,
+      closed: false,
+      id,
+    });
   } catch (error) {
-    return errorFrom(error, "Unable to delete internship.", "INTERNSHIP_DELETE_FAILED");
+    return handleError(error, "Unable to delete internship.", "INTERNSHIP_DELETE_FAILED");
   }
 }
 
 export async function OPTIONS(): Promise<NextResponse> {
-  return respond(null, 204);
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }

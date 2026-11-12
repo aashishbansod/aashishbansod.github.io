@@ -6,7 +6,6 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -21,13 +20,6 @@ import {
   UserRound,
 } from "lucide-react";
 
-type LoginMode =
-  | "auto"
-  | "student"
-  | "admin"
-  | "student-admin"
-  | "student-dashboard";
-
 type LoginStatus = "idle" | "loading" | "error";
 
 type LoginUser = {
@@ -39,7 +31,9 @@ type LoginUser = {
   userType?: string;
   type?: string;
   studentId?: string;
+  dashboardStudentId?: string;
   adminId?: string;
+  username?: string;
   fullName?: string;
   name?: string;
   email?: string;
@@ -55,10 +49,13 @@ type LoginResponse = {
   code?: string;
   retryAfter?: number;
   user?: LoginUser;
-  data?: { user?: LoginUser };
+  data?: {
+    user?: LoginUser;
+  };
 };
 
 const LOGIN_API = "/api/auth/login";
+
 const ADMIN_HOME = "/admin/dashboard";
 const OPERATIONS_HOME = "/student-admin/dashboard";
 const STUDENT_HOME = "/student";
@@ -67,7 +64,7 @@ const INTERNSHIPS_HOME = "/student/internships";
 const STUDENT_DASHBOARD_HOME = "/student/dashboard";
 
 const MIN_PASSWORD_LENGTH = 8;
-const MAX_PASSWORD_LENGTH = 200;
+const MAX_PASSWORD_LENGTH = 128;
 const MAX_IDENTIFIER_LENGTH = 254;
 
 function cleanString(value: unknown): string {
@@ -82,70 +79,47 @@ function normalize(value: unknown): string {
 }
 
 function isOperationsUser(user: LoginUser): boolean {
-  const role = normalize(user.role || user.userType || user.type);
-  const adminRole = normalize(user.adminRole);
+  const role = normalize(user.role || user.adminRole);
+  const authenticationMode = normalize(user.authenticationMode);
 
-  const roles = [
-    "student operations admin",
-    "student operations",
-    "student admin",
-    "student operations manager",
-  ];
-
-  return roles.includes(role) || roles.includes(adminRole);
+  return (
+    authenticationMode === "student admin" ||
+    role === "student operations admin" ||
+    role === "student operations" ||
+    role === "student admin"
+  );
 }
 
 function isAdminUser(user: LoginUser): boolean {
-  const role = normalize(user.role || user.userType || user.type);
-  const adminRole = normalize(user.adminRole);
+  const role = normalize(user.adminRole || user.role);
 
-  const roles = [
-    "admin",
-    "super admin",
-    "superadmin",
-    "hr",
-    "assessment manager",
-    "support",
-  ];
-
-  return roles.includes(role) || roles.includes(adminRole);
+  return (
+    normalize(user.authenticationMode) === "admin" ||
+    role === "admin" ||
+    role === "super admin" ||
+    role === "superadmin" ||
+    role === "hr" ||
+    role === "assessment manager" ||
+    role === "support"
+  );
 }
 
 function isStudentUser(user: LoginUser): boolean {
-  const role = normalize(user.role || user.userType || user.type);
+  const role = normalize(user.userType || user.role || user.type);
 
   return (
     role === "student" ||
     role === "candidate" ||
-    Boolean(cleanString(user.studentId))
+    Boolean(cleanString(user.studentId)) ||
+    Boolean(cleanString(user.dashboardStudentId))
   );
 }
 
 function isDashboardSession(user: LoginUser): boolean {
   return (
-    normalize(user.sessionType) === "student dashboard" ||
-    normalize(user.authenticationMode) === "student dashboard"
+    normalize(user.authenticationMode) === "student dashboard" ||
+    normalize(user.sessionType) === "student dashboard"
   );
-}
-
-function normalizeMode(value: string | null): LoginMode {
-  switch (normalize(value)) {
-    case "admin":
-      return "admin";
-
-    case "student":
-      return "student";
-
-    case "student admin":
-    case "student operations":
-      return "student-admin";
-
-    case "student dashboard":
-      return "student-dashboard";
-
-    default:
-      return "auto";
-  }
 }
 
 function safeInternalPath(value: string | null): string | null {
@@ -170,101 +144,6 @@ function safeInternalPath(value: string | null): string | null {
   return null;
 }
 
-function getErrorMessage(
-  result: LoginResponse | null,
-  status: number,
-): string {
-  const code = cleanString(result?.code);
-
-  const messages: Record<string, string> = {
-    IDENTIFIER_REQUIRED:
-      "Student ID, Admin ID or email is required.",
-    PASSWORD_REQUIRED: "Password is required.",
-    INVALID_IDENTIFIER: "Please enter a valid login identifier.",
-    INVALID_PASSWORD: "Please enter a valid password.",
-    INVALID_AUTH_MODE: "The selected login portal is invalid.",
-    INVALID_CREDENTIALS: "Invalid ID, email or password.",
-    EMAIL_NOT_VERIFIED:
-      "Please verify your email before logging in.",
-    ACCOUNT_INACTIVE: "Your account is currently inactive.",
-    LOGIN_NOT_ENABLED: "Login is disabled for this account.",
-    LOGIN_DISABLED: "Login is disabled for this account.",
-    CREDENTIALS_NOT_GENERATED:
-      "Your student credentials have not been generated yet.",
-    CREDENTIALS_EXPIRED:
-      "Your credentials have expired. Please contact support.",
-    APPLICATION_REJECTED: "Your application was rejected.",
-    APPLICATION_NOT_APPROVED:
-      "Your application has not been approved yet.",
-    ASSESSMENT_NOT_PASSED:
-      "You have not passed the required assessment yet.",
-    ASSESSMENT_RESULT_NOT_PASSED:
-      "Your assessment result is not marked as passed.",
-    INTERNSHIP_NOT_APPROVED:
-      "Your internship has not been approved yet.",
-    PAYMENT_NOT_VERIFIED:
-      "Payment verification is required for dashboard access.",
-    STUDENT_OPS_NOT_APPROVED:
-      "Student Operations approval is still pending.",
-    STUDENT_OPS_NOT_ACTIVE:
-      "Your internship account is not active yet.",
-    DASHBOARD_NOT_ACTIVE:
-      "Your student dashboard is not active yet.",
-    DASHBOARD_LOGIN_NOT_ENABLED:
-      "Student dashboard login is not enabled yet.",
-    DASHBOARD_CREDENTIALS_NOT_GENERATED:
-      "Dashboard credentials have not been generated yet.",
-    DASHBOARD_CREDENTIALS_EXPIRED:
-      "Your dashboard credentials have expired.",
-    ACCOUNT_TEMPORARILY_LOCKED:
-      "Too many failed attempts. Please try again later.",
-    DASHBOARD_ACCOUNT_TEMPORARILY_LOCKED:
-      "Too many dashboard login attempts. Please try again later.",
-    RATE_LIMITED:
-      "Too many login attempts. Please try again later.",
-    ADMIN_PASSWORD_NOT_CONFIGURED:
-      "Administrator login is not configured correctly.",
-    AUTH_SECRET_NOT_CONFIGURED:
-      "Authentication is not configured on the server.",
-    AUTHENTICATION_ERROR:
-      "Unable to process login right now. Please try again.",
-  };
-
-  if (messages[code]) {
-    const retry = result?.retryAfter;
-
-    if (typeof retry === "number" && retry > 0) {
-      return `${messages[code]} Retry in about ${Math.ceil(retry)} seconds.`;
-    }
-
-    return messages[code];
-  }
-
-  if (status === 429) {
-    return "Too many login attempts. Please try again later.";
-  }
-
-  if (status === 401) {
-    return "Invalid ID, email or password.";
-  }
-
-  if (status === 403) {
-    return (
-      cleanString(result?.message) ||
-      "You are not authorized to access this portal."
-    );
-  }
-
-  if (status >= 500) {
-    return "Server error. Please try again later.";
-  }
-
-  return (
-    cleanString(result?.message) ||
-    "Unable to log in. Check your details and try again."
-  );
-}
-
 function getStudentDestination(
   user: LoginUser,
   nextPath: string | null,
@@ -287,9 +166,105 @@ function getStudentDestination(
   const assessmentPassed =
     assessmentStatus === "passed" || resultStatus === "passed";
 
-  return assessmentPassed
-    ? INTERNSHIPS_HOME
-    : ASSESSMENT_HOME;
+  return assessmentPassed ? INTERNSHIPS_HOME : ASSESSMENT_HOME;
+}
+
+function getErrorMessage(
+  result: LoginResponse | null,
+  status: number,
+): string {
+  const code = cleanString(result?.code);
+
+  const messages: Record<string, string> = {
+    IDENTIFIER_REQUIRED: "Please enter your ID, username or email.",
+    PASSWORD_REQUIRED: "Please enter your password.",
+    INVALID_IDENTIFIER: "Please enter a valid login ID or email.",
+    INVALID_PASSWORD: "Please enter a valid password.",
+    INVALID_AUTH_MODE: "Unable to identify the account type.",
+    INVALID_CREDENTIALS: "Incorrect ID, username, email or password.",
+    EMAIL_NOT_VERIFIED: "Please verify your email before logging in.",
+    ACCOUNT_INACTIVE: "Your account is currently inactive.",
+    ACCOUNT_DISABLED: "Your account is currently disabled.",
+    LOGIN_NOT_ENABLED: "Login is not enabled for your account.",
+    LOGIN_DISABLED: "Login is currently disabled for your account.",
+    CREDENTIALS_NOT_GENERATED:
+      "Your login credentials have not been generated yet.",
+    CREDENTIALS_EXPIRED:
+      "Your credentials have expired. Please contact support.",
+    APPLICATION_REJECTED: "Your application was rejected.",
+    APPLICATION_NOT_APPROVED:
+      "Your application is waiting for approval.",
+    APPLICATION_PENDING:
+      "Your application is waiting for administrator approval.",
+    ASSESSMENT_NOT_PASSED:
+      "You must pass the required assessment first.",
+    ASSESSMENT_RESULT_NOT_PASSED:
+      "Your assessment result is not marked as passed.",
+    INTERNSHIP_NOT_APPROVED:
+      "Your internship has not been approved yet.",
+    PAYMENT_NOT_VERIFIED:
+      "Payment verification is required for dashboard access.",
+    STUDENT_OPS_NOT_APPROVED:
+      "Student Operations approval is still pending.",
+    STUDENT_OPS_NOT_ACTIVE:
+      "Your internship account is not active yet.",
+    DASHBOARD_NOT_ACTIVE:
+      "Your student dashboard is not active yet.",
+    DASHBOARD_LOGIN_NOT_ENABLED:
+      "Student dashboard login is not enabled yet.",
+    DASHBOARD_CREDENTIALS_NOT_GENERATED:
+      "Dashboard credentials have not been generated yet.",
+    DASHBOARD_CREDENTIALS_EXPIRED:
+      "Your dashboard credentials have expired.",
+    REGISTRATION_NOT_ACTIVE:
+      "Your account registration is not active yet.",
+    ACCOUNT_TEMPORARILY_LOCKED:
+      "Too many incorrect attempts. Your account is temporarily locked.",
+    DASHBOARD_ACCOUNT_TEMPORARILY_LOCKED:
+      "Too many incorrect attempts. Dashboard login is temporarily locked.",
+    RATE_LIMITED:
+      "Too many login attempts. Please try again later.",
+    AUTHENTICATION_ERROR:
+      "Unable to verify your account. Please contact support.",
+    INTERNAL_SERVER_ERROR:
+      "A server error occurred. Please try again later.",
+    AUTH_SECRET_NOT_CONFIGURED:
+      "Authentication is not configured correctly on the server.",
+  };
+
+  if (messages[code]) {
+    const retry = result?.retryAfter;
+
+    if (typeof retry === "number" && retry > 0) {
+      return `${messages[code]} Retry in about ${Math.ceil(retry)} seconds.`;
+    }
+
+    return messages[code];
+  }
+
+  if (status === 429) {
+    return "Too many login attempts. Please try again later.";
+  }
+
+  if (status === 401) {
+    return "Incorrect login ID or password.";
+  }
+
+  if (status === 403) {
+    return (
+      cleanString(result?.message) ||
+      "You are not authorized to access this account."
+    );
+  }
+
+  if (status >= 500) {
+    return "Server error. Please try again later.";
+  }
+
+  return (
+    cleanString(result?.message) ||
+    "Unable to log in. Check your credentials and try again."
+  );
 }
 
 function LoginPageContent() {
@@ -306,33 +281,7 @@ function LoginPageContent() {
   const abortRef = useRef<AbortController | null>(null);
   const submittingRef = useRef(false);
 
-  const mode = useMemo(
-    () => normalizeMode(searchParams.get("mode")),
-    [searchParams],
-  );
-
-  const nextPath = useMemo(
-    () => safeInternalPath(searchParams.get("next")),
-    [searchParams],
-  );
-
-  const pageTitle =
-    mode === "admin"
-      ? "Admin Sign In"
-      : mode === "student-admin"
-        ? "Student Operations"
-        : mode === "student-dashboard"
-          ? "Student Dashboard"
-          : "Welcome";
-
-  const subtitle =
-    mode === "admin"
-      ? "Sign in with your Admin ID or email."
-      : mode === "student-admin"
-        ? "Manage student approvals and internship operations."
-        : mode === "student-dashboard"
-          ? "Access your approved internship dashboard."
-          : "Sign in with your Student ID, Admin ID or email.";
+  const nextPath = safeInternalPath(searchParams.get("next"));
 
   useEffect(() => {
     setMounted(true);
@@ -344,14 +293,10 @@ function LoginPageContent() {
 
   const clearError = useCallback(() => {
     setError("");
-    setStatus((current) =>
-      current === "error" ? "idle" : current,
-    );
+    setStatus((current) => (current === "error" ? "idle" : current));
   }, []);
 
-  async function handleSubmit(
-    event: FormEvent<HTMLFormElement>,
-  ) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (submittingRef.current || status === "loading") {
@@ -359,19 +304,17 @@ function LoginPageContent() {
     }
 
     const cleanIdentifier = identifier.trim();
-
-    // Do not trim passwords; whitespace can be part of a password.
     const loginPassword = password;
 
     if (!cleanIdentifier) {
       setStatus("error");
-      setError("Student ID, Admin ID or email is required.");
+      setError("Please enter your Student ID, Admin ID, username or email.");
       return;
     }
 
     if (cleanIdentifier.length > MAX_IDENTIFIER_LENGTH) {
       setStatus("error");
-      setError("Please enter a valid login identifier.");
+      setError("Login identifier is too long.");
       return;
     }
 
@@ -380,7 +323,7 @@ function LoginPageContent() {
       loginPassword.length > MAX_PASSWORD_LENGTH
     ) {
       setStatus("error");
-      setError("Password must contain 8–200 characters.");
+      setError("Password must contain 8–128 characters.");
       return;
     }
 
@@ -406,7 +349,7 @@ function LoginPageContent() {
         body: JSON.stringify({
           identifier: cleanIdentifier,
           password: loginPassword,
-          mode,
+          mode: "auto",
         }),
       });
 
@@ -429,27 +372,12 @@ function LoginPageContent() {
       if (!user) {
         setStatus("error");
         setError(
-          "Login succeeded, but account information was not returned.",
+          "Authentication succeeded, but account information was not returned.",
         );
         return;
       }
 
-      // Session cookies are managed by the server.
-      // Never store authentication tokens in browser storage.
-
       if (isOperationsUser(user)) {
-        if (
-          mode === "student" ||
-          mode === "student-dashboard" ||
-          mode === "admin"
-        ) {
-          setStatus("error");
-          setError(
-            "Use the dedicated Student Operations login portal.",
-          );
-          return;
-        }
-
         setStatus("idle");
 
         router.replace(
@@ -463,24 +391,10 @@ function LoginPageContent() {
       }
 
       if (isAdminUser(user)) {
-        if (
-          mode === "student" ||
-          mode === "student-admin" ||
-          mode === "student-dashboard"
-        ) {
-          setStatus("error");
-          setError(
-            "This administrator account cannot use the selected student portal.",
-          );
-          return;
-        }
-
         setStatus("idle");
 
         router.replace(
-          nextPath?.startsWith("/admin")
-            ? nextPath
-            : ADMIN_HOME,
+          nextPath?.startsWith("/admin") ? nextPath : ADMIN_HOME,
         );
 
         router.refresh();
@@ -488,29 +402,16 @@ function LoginPageContent() {
       }
 
       if (isStudentUser(user)) {
-        if (mode === "admin" || mode === "student-admin") {
-          setStatus("error");
-          setError("This is not an administrator account.");
-          return;
-        }
-
         setStatus("idle");
 
-        const destination =
-          mode === "student-dashboard"
-            ? nextPath?.startsWith("/student/dashboard")
-              ? nextPath
-              : STUDENT_DASHBOARD_HOME
-            : getStudentDestination(user, nextPath);
-
-        router.replace(destination);
+        router.replace(getStudentDestination(user, nextPath));
         router.refresh();
         return;
       }
 
       setStatus("error");
       setError(
-        "Your account role could not be identified. Contact support.",
+        "Your account was authenticated, but its role could not be identified. Please contact support.",
       );
     } catch (requestError) {
       if (
@@ -520,14 +421,10 @@ function LoginPageContent() {
         return;
       }
 
-      console.error(
-        "[CyberNet Careers] Login request failed.",
-      );
+      console.error("[CyberNet Careers] Login request failed.");
 
       setStatus("error");
-      setError(
-        "Unable to connect to the server. Please try again.",
-      );
+      setError("Unable to connect to the server. Please try again.");
     } finally {
       submittingRef.current = false;
 
@@ -535,9 +432,7 @@ function LoginPageContent() {
         abortRef.current = null;
       }
 
-      setStatus((current) =>
-        current === "loading" ? "idle" : current,
-      );
+      setStatus((current) => (current === "loading" ? "idle" : current));
     }
   }
 
@@ -556,18 +451,13 @@ function LoginPageContent() {
       <section
         aria-labelledby="login-title"
         className={`relative w-full max-w-md transition-all duration-300 ${
-          mounted
-            ? "translate-y-0 opacity-100"
-            : "translate-y-2 opacity-0"
+          mounted ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
         }`}
       >
         <div className="rounded-[30px] border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-8">
           <header className="text-center">
             <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-xs font-extrabold tracking-wide text-blue-700">
-              <ShieldCheck
-                aria-hidden="true"
-                className="h-4 w-4"
-              />
+              <ShieldCheck aria-hidden="true" className="h-4 w-4" />
               CyberNet Careers
             </div>
 
@@ -575,28 +465,14 @@ function LoginPageContent() {
               id="login-title"
               className="mt-5 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl"
             >
-              {pageTitle}
+              Welcome
             </h1>
 
             <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">
-              {subtitle}
+              Sign in to your CyberNet account using your registered
+              credentials.
             </p>
           </header>
-
-          {mode !== "auto" && (
-            <div
-              role="status"
-              className="mt-5 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-center text-xs font-semibold text-blue-700"
-            >
-              {mode === "admin"
-                ? "Administrator authentication"
-                : mode === "student-admin"
-                  ? "Student Operations authentication"
-                  : mode === "student-dashboard"
-                    ? "Student Dashboard authentication"
-                    : "Main Student authentication"}
-            </div>
-          )}
 
           {error && (
             <div
@@ -608,10 +484,7 @@ function LoginPageContent() {
             </div>
           )}
 
-          <form
-            onSubmit={handleSubmit}
-            className="mt-6 space-y-5"
-          >
+          <form onSubmit={handleSubmit} className="mt-7 space-y-5">
             <div>
               <label
                 htmlFor="identifier"
@@ -621,14 +494,7 @@ function LoginPageContent() {
                   aria-hidden="true"
                   className="h-4 w-4 text-blue-600"
                 />
-
-                {mode === "admin"
-                  ? "Admin ID / Email"
-                  : mode === "student-admin"
-                    ? "Operations Admin ID / Email"
-                    : mode === "student-dashboard"
-                      ? "Dashboard Student ID / Email"
-                      : "Student ID / Admin ID / Email"}
+                Student ID / Admin ID / Username / Email
               </label>
 
               <input
@@ -640,15 +506,7 @@ function LoginPageContent() {
                   setIdentifier(event.target.value);
                   clearError();
                 }}
-                placeholder={
-                  mode === "admin"
-                    ? "Enter Admin ID or email"
-                    : mode === "student-admin"
-                      ? "Enter Operations Admin ID or email"
-                      : mode === "student-dashboard"
-                        ? "Enter dashboard Student ID or email"
-                        : "Enter Student ID, Admin ID or email"
-                }
+                placeholder="Enter your ID, username or email"
                 autoComplete="username"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -696,23 +554,13 @@ function LoginPageContent() {
                     setShowPassword((previous) => !previous)
                   }
                   disabled={status === "loading"}
-                  aria-label={
-                    showPassword
-                      ? "Hide password"
-                      : "Show password"
-                  }
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                   className="absolute inset-y-0 right-0 flex items-center px-4 text-slate-400 transition hover:text-blue-600 disabled:opacity-50"
                 >
                   {showPassword ? (
-                    <EyeOff
-                      aria-hidden="true"
-                      className="h-5 w-5"
-                    />
+                    <EyeOff aria-hidden="true" className="h-5 w-5" />
                   ) : (
-                    <Eye
-                      aria-hidden="true"
-                      className="h-5 w-5"
-                    />
+                    <Eye aria-hidden="true" className="h-5 w-5" />
                   )}
                 </button>
               </div>
@@ -729,11 +577,11 @@ function LoginPageContent() {
                     aria-hidden="true"
                     className="h-4 w-4 animate-spin"
                   />
-                  Authenticating…
+                  Verifying Credentials...
                 </>
               ) : (
                 <>
-                  Sign in
+                  Sign In
                   <ArrowRight
                     aria-hidden="true"
                     className="h-4 w-4 transition-transform group-hover:translate-x-1"
@@ -749,7 +597,6 @@ function LoginPageContent() {
                 aria-hidden="true"
                 className="h-3.5 w-3.5 shrink-0 text-emerald-500"
               />
-
               <p className="text-[11px] leading-5 text-slate-500">
                 Secure sign-in using server-managed HttpOnly cookies.
               </p>
@@ -777,7 +624,7 @@ function LoginPageFallback() {
           aria-hidden="true"
           className="h-5 w-5 animate-spin text-blue-600"
         />
-        Loading secure login…
+        Loading secure login...
       </div>
     </main>
   );

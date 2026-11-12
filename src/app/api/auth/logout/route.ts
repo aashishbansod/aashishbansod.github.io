@@ -1,927 +1,423 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-
 import {
   AUTH_COOKIE_NAME,
   AUTH_COOKIE_OPTIONS,
-
   ADMIN_AUTH_COOKIE_NAME,
   ADMIN_AUTH_COOKIE_OPTIONS,
-
+  STUDENT_ADMIN_AUTH_COOKIE_NAME,
+  STUDENT_ADMIN_AUTH_COOKIE_OPTIONS,
   STUDENT_AUTH_COOKIE_NAME,
   STUDENT_AUTH_COOKIE_OPTIONS,
-
   STUDENT_DASHBOARD_AUTH_COOKIE_NAME,
   STUDENT_DASHBOARD_AUTH_COOKIE_OPTIONS,
 } from "@/lib/auth";
-
-/**
- * ============================================================
- * CYBERNET CAREERS
- * PRODUCTION AUTH LOGOUT API
- * ============================================================
- *
- * POST /api/auth/logout
- *
- * Supported scopes:
- *
- *   { "scope": "admin" }
- *   { "scope": "student" }
- *   { "scope": "student-dashboard" }
- *   { "scope": "all" }
- *
- * Empty body:
- *
- *   -> "all"
- *
- * Security model:
- *
- * - Does not decode JWTs.
- * - Does not return JWT contents.
- * - Does not require MongoDB.
- * - Logout is idempotent.
- * - Dedicated authentication cookies are supported.
- * - Legacy authentication cookie is always cleared.
- * - Same-origin protection is enforced.
- * - Cookies are expired using their original attributes.
- * - Responses are never cached.
- * - Request IDs are returned for observability.
- *
- * IMPORTANT:
- *
- * Cookie deletion must use compatible cookie attributes.
- * Therefore this route preserves the original cookie
- * configuration and changes only expiration.
- *
- * ============================================================
- */
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-
-/* ============================================================
-   CONFIGURATION
-   ============================================================ */
-
-const ALLOWED_METHODS =
-  "POST, OPTIONS";
-
-const MAX_BODY_SIZE =
-  2_048;
-
+const MAX_BODY_BYTES = 2_048;
+const ALLOWED_METHODS = "POST, OPTIONS";
 const LOGOUT_SCOPES = [
   "admin",
+  "student-admin",
   "student",
   "student-dashboard",
   "all",
 ] as const;
 
-type LogoutScope =
-  (typeof LOGOUT_SCOPES)[number];
-
+type LogoutScope = (typeof LOGOUT_SCOPES)[number];
 type CookieOptions =
   | typeof AUTH_COOKIE_OPTIONS
   | typeof ADMIN_AUTH_COOKIE_OPTIONS
+  | typeof STUDENT_ADMIN_AUTH_COOKIE_OPTIONS
   | typeof STUDENT_AUTH_COOKIE_OPTIONS
   | typeof STUDENT_DASHBOARD_AUTH_COOKIE_OPTIONS;
 
+type JsonRecord = Record<string, unknown>;
 
-/* ============================================================
-   REQUEST ID
-   ============================================================ */
+const SECURITY_HEADERS = {
+  "Cache-Control": "private, no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
+  Expires: "0",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "X-Robots-Tag": "noindex, nofollow, noarchive",
+  Vary: "Cookie",
+} as const;
 
-function getRequestId(
-  request: NextRequest,
-): string {
-  const incoming =
-    request.headers
-      .get("x-request-id")
-      ?.trim();
+function getRequestId(request: NextRequest): string {
+  const supplied = request.headers.get("x-request-id")?.trim();
 
-  if (
-    incoming &&
-    /^[a-zA-Z0-9._:-]{8,128}$/.test(
-      incoming,
-    )
-  ) {
-    return incoming;
-  }
-
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `logout-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
-  }
+  return supplied && /^[a-zA-Z0-9._:-]{8,128}$/.test(supplied)
+    ? supplied
+    : randomUUID();
 }
-
-
-/* ============================================================
-   SECURITY HEADERS
-   ============================================================ */
 
 function applySecurityHeaders(
   response: NextResponse,
   requestId: string,
 ): NextResponse {
-  response.headers.set(
-    "Cache-Control",
-    "private, no-store, no-cache, must-revalidate, proxy-revalidate",
-  );
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    response.headers.set(name, value);
+  }
 
-  response.headers.set(
-    "Pragma",
-    "no-cache",
-  );
+  response.headers.set("X-Request-ID", requestId);
 
-  response.headers.set(
-    "Expires",
-    "0",
-  );
-
-  response.headers.set(
-    "X-Content-Type-Options",
-    "nosniff",
-  );
-
-  response.headers.set(
-    "X-Frame-Options",
-    "DENY",
-  );
-
-  response.headers.set(
-    "Referrer-Policy",
-    "strict-origin-when-cross-origin",
-  );
-
-  response.headers.set(
-    "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=()",
-  );
-
-  response.headers.set(
-    "Cross-Origin-Resource-Policy",
-    "same-origin",
-  );
-
-  response.headers.set(
-    "X-Robots-Tag",
-    "noindex, nofollow, noarchive",
-  );
-
-  response.headers.set(
-    "Vary",
-    "Cookie",
-  );
-
-  response.headers.set(
-    "X-Request-ID",
-    requestId,
-  );
-
-  if (
-    process.env.NODE_ENV ===
-    "production"
-  ) {
-    response.headers.set(
-      "Strict-Transport-Security",
-      "max-age=31536000; includeSubDomains",
-    );
+  if (process.env.NODE_ENV === "production") {
+    response.headers.set("Strict-Transport-Security", "max-age=31536000");
   }
 
   return response;
 }
 
-
-/* ============================================================
-   JSON RESPONSE
-   ============================================================ */
-
 function jsonResponse(
-  data: unknown,
+  body: JsonRecord,
   status: number,
   requestId: string,
 ): NextResponse {
   return applySecurityHeaders(
-    NextResponse.json(
-      data,
-      {
-        status,
-      },
-    ),
+    NextResponse.json(body, { status }),
     requestId,
   );
 }
 
-
-/* ============================================================
-   EMPTY RESPONSE
-   ============================================================ */
-
-function emptyResponse(
-  status: number,
-  requestId: string,
-): NextResponse {
-  return applySecurityHeaders(
-    new NextResponse(
-      null,
-      {
-        status,
-      },
-    ),
-    requestId,
-  );
+function emptyResponse(status: number, requestId: string): NextResponse {
+  return applySecurityHeaders(new NextResponse(null, { status }), requestId);
 }
 
+function isSameOriginRequest(request: NextRequest): boolean {
+  const origin = request.headers.get("origin")?.trim();
 
-/* ============================================================
-   SAME-ORIGIN / CSRF PROTECTION
-   ============================================================ */
+  if (origin) {
+    try {
+      return new URL(origin).origin === request.nextUrl.origin;
+    } catch {
+      return false;
+    }
+  }
 
-function isSameOriginRequest(
+  const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
+  return fetchSite === "same-origin" || fetchSite === "same-site";
+}
+
+async function readBody(
   request: NextRequest,
-): boolean {
-  const origin =
-    request.headers
-      .get("origin")
-      ?.trim();
+): Promise<{ kind: "empty" } | { kind: "body"; value: string } | { kind: "too-large" } | { kind: "invalid-encoding" }> {
+  const lengthHeader = request.headers.get("content-length");
+  const declaredLength =
+    lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : 0;
 
-  /*
-   * Some legitimate same-origin requests may not
-   * include Origin.
-   */
-  if (!origin) {
-    return true;
+  if (
+    Number.isSafeInteger(declaredLength) &&
+    declaredLength > MAX_BODY_BYTES
+  ) {
+    return { kind: "too-large" };
+  }
+
+  if (!request.body) return { kind: "empty" };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      total += value.byteLength;
+
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return { kind: "too-large" };
+      }
+
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (total === 0) return { kind: "empty" };
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
 
   try {
-    const requestOrigin =
-      request.nextUrl.origin;
-
-    return (
-      new URL(origin).origin ===
-      requestOrigin
-    );
+    return {
+      kind: "body",
+      value: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    };
   } catch {
-    return false;
+    return { kind: "invalid-encoding" };
   }
 }
 
+function normalizeScope(value: unknown): LogoutScope | null {
+  if (value === undefined || value === null || value === "") return "all";
+  if (typeof value !== "string") return null;
 
-/* ============================================================
-   BODY SIZE VALIDATION
-   ============================================================ */
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return "all";
 
-function isBodyTooLarge(
-  request: NextRequest,
-): boolean {
-  const contentLength =
-    request.headers.get(
-      "content-length",
-    );
-
-  if (!contentLength) {
-    return false;
-  }
-
-  const length =
-    Number(contentLength);
-
-  if (
-    !Number.isFinite(length) ||
-    length < 0
-  ) {
-    return false;
-  }
-
-  return (
-    length >
-    MAX_BODY_SIZE
-  );
-}
-
-
-/* ============================================================
-   CONTENT TYPE VALIDATION
-   ============================================================ */
-
-function isJsonContentType(
-  request: NextRequest,
-): boolean {
-  const contentType =
-    request.headers.get(
-      "content-type",
-    );
-
-  /*
-   * Empty body is supported for backwards compatibility.
-   */
-  if (!contentType) {
-    return true;
-  }
-
-  return (
-    contentType
-      .toLowerCase()
-      .split(";", 1)[0]
-      .trim() ===
-    "application/json"
-  );
-}
-
-
-/* ============================================================
-   LOGOUT SCOPE NORMALIZATION
-   ============================================================ */
-
-function normalizeScope(
-  value: unknown,
-): LogoutScope | null {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
-    return "all";
-  }
-
-  if (
-    typeof value !==
-    "string"
-  ) {
-    return null;
-  }
-
-  const normalized =
-    value
-      .trim()
-      .toLowerCase();
-
-  if (
-    !normalized
-  ) {
-    return "all";
-  }
-
-  return (
-    LOGOUT_SCOPES as readonly string[]
-  ).includes(
-    normalized,
-  )
+  return (LOGOUT_SCOPES as readonly string[]).includes(normalized)
     ? (normalized as LogoutScope)
     : null;
 }
-
-
-/* ============================================================
-   PARSE LOGOUT REQUEST
-   ============================================================ */
-
-async function parseScope(
-  request: NextRequest,
-  requestId: string,
-): Promise<
-  | {
-      success: true;
-      scope: LogoutScope;
-    }
-  | {
-      success: false;
-      response: NextResponse;
-    }
-> {
-  /*
-   * ----------------------------------------------------------
-   * BODY SIZE
-   * ----------------------------------------------------------
-   */
-
-  if (
-    isBodyTooLarge(request)
-  ) {
-    return {
-      success: false,
-
-      response:
-        jsonResponse(
-          {
-            success: false,
-            message:
-              "Logout request body is too large.",
-            code:
-              "REQUEST_TOO_LARGE",
-          },
-          413,
-          requestId,
-        ),
-    };
-  }
-
-  /*
-   * ----------------------------------------------------------
-   * CONTENT TYPE
-   * ----------------------------------------------------------
-   */
-
-  if (
-    !isJsonContentType(
-      request,
-    )
-  ) {
-    return {
-      success: false,
-
-      response:
-        jsonResponse(
-          {
-            success: false,
-            message:
-              "Request must use application/json.",
-            code:
-              "INVALID_CONTENT_TYPE",
-          },
-          415,
-          requestId,
-        ),
-    };
-  }
-
-  /*
-   * ----------------------------------------------------------
-   * EMPTY BODY
-   * ----------------------------------------------------------
-   *
-   * Empty logout request means full logout.
-   */
-
-  const contentLength =
-    request.headers.get(
-      "content-length",
-    );
-
-  if (
-    contentLength &&
-    Number(contentLength) === 0
-  ) {
-    return {
-      success: true,
-      scope: "all",
-    };
-  }
-
-  /*
-   * ----------------------------------------------------------
-   * READ BODY
-   * ----------------------------------------------------------
-   */
-
-  let body: unknown;
-
-  try {
-    body =
-      await request.json();
-  } catch {
-    /*
-     * Some clients do not send a body or a reliable
-     * content-length header.
-     *
-     * Preserve backwards compatibility:
-     * invalid/empty body -> all.
-     */
-    return {
-      success: true,
-      scope: "all",
-    };
-  }
-
-  /*
-   * ----------------------------------------------------------
-   * BODY OBJECT
-   * ----------------------------------------------------------
-   */
-
-  if (
-    !body ||
-    typeof body !==
-      "object" ||
-    Array.isArray(body)
-  ) {
-    return {
-      success: false,
-
-      response:
-        jsonResponse(
-          {
-            success: false,
-            message:
-              "Invalid logout request.",
-            code:
-              "INVALID_REQUEST",
-          },
-          400,
-          requestId,
-        ),
-    };
-  }
-
-  const value =
-    (
-      body as Record<
-        string,
-        unknown
-      >
-    ).scope;
-
-  const scope =
-    normalizeScope(value);
-
-  if (!scope) {
-    return {
-      success: false,
-
-      response:
-        jsonResponse(
-          {
-            success: false,
-
-            message:
-              "Invalid logout scope. Use admin, student, student-dashboard or all.",
-
-            code:
-              "INVALID_LOGOUT_SCOPE",
-          },
-          400,
-          requestId,
-        ),
-    };
-  }
-
-  return {
-    success: true,
-    scope,
-  };
-}
-
-
-/* ============================================================
-   COOKIE EXPIRATION
-   ============================================================ */
 
 function expireCookie(
   response: NextResponse,
   name: string,
   options: CookieOptions,
 ): void {
-  /*
-   * IMPORTANT:
-   *
-   * Keep the original cookie attributes.
-   *
-   * Only expiration is changed.
-   *
-   * This makes deletion reliable when the original
-   * cookie was created with:
-   *
-   * - httpOnly
-   * - secure
-   * - sameSite
-   * - path
-   * - maxAge
-   */
-
-  response.cookies.set(
-    name,
-    "",
-    {
-      ...options,
-
-      maxAge: 0,
-
-      expires:
-        new Date(0),
-
-      path:
-        options.path ??
-        "/",
-    },
-  );
+  response.cookies.set(name, "", {
+    ...options,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: options.path || "/",
+    maxAge: 0,
+    expires: new Date(0),
+  });
 }
 
-
-/* ============================================================
-   LEGACY COOKIE
-   ============================================================ */
-
-function expireLegacyCookie(
-  response: NextResponse,
-): void {
-  expireCookie(
-    response,
-    AUTH_COOKIE_NAME,
-    AUTH_COOKIE_OPTIONS,
-  );
+function expireLegacyCookie(response: NextResponse): void {
+  expireCookie(response, AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS);
 }
-
-
-/* ============================================================
-   ADMIN COOKIE
-   ============================================================ */
-
-function expireAdminCookie(
-  response: NextResponse,
-): void {
-  expireCookie(
-    response,
-    ADMIN_AUTH_COOKIE_NAME,
-    ADMIN_AUTH_COOKIE_OPTIONS,
-  );
-}
-
-
-/* ============================================================
-   MAIN STUDENT COOKIE
-   ============================================================ */
-
-function expireStudentCookie(
-  response: NextResponse,
-): void {
-  expireCookie(
-    response,
-    STUDENT_AUTH_COOKIE_NAME,
-    STUDENT_AUTH_COOKIE_OPTIONS,
-  );
-}
-
-
-/* ============================================================
-   STUDENT DASHBOARD COOKIE
-   ============================================================ */
-
-function expireDashboardCookie(
-  response: NextResponse,
-): void {
-  expireCookie(
-    response,
-    STUDENT_DASHBOARD_AUTH_COOKIE_NAME,
-    STUDENT_DASHBOARD_AUTH_COOKIE_OPTIONS,
-  );
-}
-
-
-/* ============================================================
-   APPLY LOGOUT SCOPE
-   ============================================================ */
 
 function applyLogoutScope(
   response: NextResponse,
   scope: LogoutScope,
 ): void {
-  switch (scope) {
-    /*
-     * --------------------------------------------------------
-     * ADMIN
-     * --------------------------------------------------------
-     */
-
-    case "admin":
-      expireAdminCookie(
-        response,
-      );
-      break;
-
-    /*
-     * --------------------------------------------------------
-     * MAIN STUDENT
-     * --------------------------------------------------------
-     */
-
-    case "student":
-      expireStudentCookie(
-        response,
-      );
-      break;
-
-    /*
-     * --------------------------------------------------------
-     * STUDENT DASHBOARD
-     * --------------------------------------------------------
-     */
-
-    case "student-dashboard":
-      expireDashboardCookie(
-        response,
-      );
-      break;
-
-    /*
-     * --------------------------------------------------------
-     * EVERYTHING
-     * --------------------------------------------------------
-     */
-
-    case "all":
-      expireAdminCookie(
-        response,
-      );
-
-      expireStudentCookie(
-        response,
-      );
-
-      expireDashboardCookie(
-        response,
-      );
-
-      break;
+  if (scope === "admin" || scope === "all") {
+    expireCookie(response, ADMIN_AUTH_COOKIE_NAME, ADMIN_AUTH_COOKIE_OPTIONS);
   }
 
-  /*
-   * ----------------------------------------------------------
-   * LEGACY COOKIE
-   * ----------------------------------------------------------
-   *
-   * The legacy cookie is not session-specific.
-   *
-   * It is therefore always cleared during logout.
-   *
-   * This prevents an older route from restoring a stale
-   * authentication state after the user has logged out.
-   */
+  if (scope === "student-admin" || scope === "all") {
+    expireCookie(
+      response,
+      STUDENT_ADMIN_AUTH_COOKIE_NAME,
+      STUDENT_ADMIN_AUTH_COOKIE_OPTIONS,
+    );
+  }
 
-  expireLegacyCookie(
-    response,
-  );
+  if (scope === "student" || scope === "all") {
+    expireCookie(response, STUDENT_AUTH_COOKIE_NAME, STUDENT_AUTH_COOKIE_OPTIONS);
+  }
+
+  if (scope === "student-dashboard" || scope === "all") {
+    expireCookie(
+      response,
+      STUDENT_DASHBOARD_AUTH_COOKIE_NAME,
+      STUDENT_DASHBOARD_AUTH_COOKIE_OPTIONS,
+    );
+  }
+
+  expireLegacyCookie(response);
 }
 
-
-/* ============================================================
-   METHOD NOT ALLOWED
-   ============================================================ */
-
-function methodNotAllowed(
-  request: NextRequest,
-): NextResponse {
-  const requestId =
-    getRequestId(request);
-
-  const response =
-    jsonResponse(
-      {
-        success: false,
-
-        message:
-          "Method not allowed.",
-
-        code:
-          "METHOD_NOT_ALLOWED",
-      },
-      405,
+function methodNotAllowed(request: NextRequest): NextResponse {
+  const requestId = getRequestId(request);
+  const response = jsonResponse(
+    {
+      success: false,
+      message: "Method not allowed.",
+      code: "METHOD_NOT_ALLOWED",
       requestId,
-    );
-
-  response.headers.set(
-    "Allow",
-    ALLOWED_METHODS,
+    },
+    405,
+    requestId,
   );
 
+  response.headers.set("Allow", ALLOWED_METHODS);
   return response;
 }
 
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const requestId = getRequestId(request);
 
-/* ============================================================
-   POST /api/auth/logout
-   ============================================================ */
+  if (!isSameOriginRequest(request)) {
+    return jsonResponse(
+      {
+        success: false,
+        message: "Cross-origin logout requests are not allowed.",
+        code: "INVALID_ORIGIN",
+        requestId,
+      },
+      403,
+      requestId,
+    );
+  }
 
-export async function POST(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
+  const contentType = request.headers.get("content-type");
+  const hasBody = request.body !== null;
+
+  if (
+    (contentType && contentType.split(";", 1)[0].trim().toLowerCase() !== "application/json") ||
+    (hasBody && !contentType)
+  ) {
+    return jsonResponse(
+      {
+        success: false,
+        message: "Request must use application/json.",
+        code: "INVALID_CONTENT_TYPE",
+        requestId,
+      },
+      415,
+      requestId,
+    );
+  }
 
   try {
-    /*
-     * --------------------------------------------------------
-     * SAME-ORIGIN PROTECTION
-     * --------------------------------------------------------
-     */
+    const bodyResult = await readBody(request);
 
-    if (
-      !isSameOriginRequest(
-        request,
-      )
-    ) {
+    if (bodyResult.kind === "too-large") {
       return jsonResponse(
         {
           success: false,
-
-          message:
-            "Cross-origin logout requests are not allowed.",
-
-          code:
-            "INVALID_ORIGIN",
-        },
-        403,
-        requestId,
-      );
-    }
-
-    /*
-     * --------------------------------------------------------
-     * PARSE SCOPE
-     * --------------------------------------------------------
-     */
-
-    const parsed =
-      await parseScope(
-        request,
-        requestId,
-      );
-
-    if (
-      !parsed.success
-    ) {
-      return parsed.response;
-    }
-
-    /*
-     * --------------------------------------------------------
-     * CREATE RESPONSE
-     * --------------------------------------------------------
-     *
-     * Logout is intentionally idempotent.
-     *
-     * We do NOT:
-     *
-     * - decode JWT
-     * - query MongoDB
-     * - validate session
-     * - check password
-     * - check account status
-     *
-     * A missing or already expired cookie should still
-     * result in a successful logout operation.
-     */
-
-    const response =
-      jsonResponse(
-        {
-          success: true,
-
-          message:
-            parsed.scope ===
-            "all"
-              ? "You have been logged out successfully."
-              : "The selected session has been logged out successfully.",
-
-          code:
-            "LOGOUT_SUCCESS",
-
-          scope:
-            parsed.scope,
-
+          message: "Logout request body is too large.",
+          code: "REQUEST_TOO_LARGE",
           requestId,
         },
-        200,
+        413,
         requestId,
       );
+    }
 
-    /*
-     * --------------------------------------------------------
-     * EXPIRE SESSION COOKIE(S)
-     * --------------------------------------------------------
-     */
+    if (bodyResult.kind === "invalid-encoding") {
+      return jsonResponse(
+        {
+          success: false,
+          message: "Invalid request encoding.",
+          code: "INVALID_REQUEST",
+          requestId,
+        },
+        400,
+        requestId,
+      );
+    }
 
-    applyLogoutScope(
-      response,
-      parsed.scope,
+    let scope: LogoutScope = "all";
+
+    if (bodyResult.kind === "body") {
+      let parsed: unknown;
+
+      try {
+        parsed = JSON.parse(bodyResult.value);
+      } catch {
+        return jsonResponse(
+          {
+            success: false,
+            message: "Invalid JSON request body.",
+            code: "INVALID_JSON",
+            requestId,
+          },
+          400,
+          requestId,
+        );
+      }
+
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed)
+      ) {
+        return jsonResponse(
+          {
+            success: false,
+            message: "Invalid logout request.",
+            code: "INVALID_REQUEST",
+            requestId,
+          },
+          400,
+          requestId,
+        );
+      }
+
+      const data = parsed as JsonRecord;
+      const unknownKeys = Object.keys(data).filter((key) => key !== "scope");
+
+      if (unknownKeys.length > 0) {
+        return jsonResponse(
+          {
+            success: false,
+            message: "Logout request contains unsupported fields.",
+            code: "INVALID_REQUEST_FIELDS",
+            requestId,
+          },
+          400,
+          requestId,
+        );
+      }
+
+      scope = normalizeScope(data.scope) ?? "all";
+
+      if (!normalizeScope(data.scope)) {
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              "Invalid logout scope. Use admin, student-admin, student, student-dashboard or all.",
+            code: "INVALID_LOGOUT_SCOPE",
+            requestId,
+          },
+          400,
+          requestId,
+        );
+      }
+    }
+
+    const response = jsonResponse(
+      {
+        success: true,
+        message:
+          scope === "all"
+            ? "You have been logged out successfully."
+            : "The selected session has been logged out successfully.",
+        code: "LOGOUT_SUCCESS",
+        scope,
+        requestId,
+      },
+      200,
+      requestId,
     );
 
+    applyLogoutScope(response, scope);
     return response;
   } catch (error) {
-    /*
-     * Never expose internal errors to the browser.
-     */
+    const details =
+      error !== null && typeof error === "object"
+        ? (error as { name?: unknown; code?: unknown })
+        : {};
 
-    console.error(
-      "[CyberNet Careers] POST /api/auth/logout failed:",
-      {
-        requestId,
-        error,
-      },
-    );
+    console.error("[CyberNet Careers] Logout API failed.", {
+      requestId,
+      errorName:
+        typeof details.name === "string"
+          ? details.name.slice(0, 80)
+          : "UnknownError",
+      ...(typeof details.code === "string" ||
+      typeof details.code === "number"
+        ? { errorCode: String(details.code).slice(0, 40) }
+        : {}),
+    });
 
     return jsonResponse(
       {
         success: false,
-
-        message:
-          "Unable to complete logout. Please try again.",
-
-        code:
-          "LOGOUT_ERROR",
-
+        message: "Unable to complete logout. Please try again.",
+        code: "LOGOUT_ERROR",
         requestId,
       },
       500,
@@ -930,104 +426,32 @@ export async function POST(
   }
 }
 
-
-/* ============================================================
-   GET /api/auth/logout
-   ============================================================ */
-
-export async function GET(
-  request: NextRequest,
-): Promise<NextResponse> {
-  return methodNotAllowed(
-    request,
-  );
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  return methodNotAllowed(request);
 }
 
-
-/* ============================================================
-   HEAD /api/auth/logout
-   ============================================================ */
-
-export async function HEAD(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  const response =
-    emptyResponse(
-      405,
-      requestId,
-    );
-
-  response.headers.set(
-    "Allow",
-    ALLOWED_METHODS,
-  );
-
+export async function HEAD(request: NextRequest): Promise<NextResponse> {
+  const requestId = getRequestId(request);
+  const response = emptyResponse(405, requestId);
+  response.headers.set("Allow", ALLOWED_METHODS);
   return response;
 }
 
-
-/* ============================================================
-   PUT /api/auth/logout
-   ============================================================ */
-
-export async function PUT(
-  request: NextRequest,
-): Promise<NextResponse> {
-  return methodNotAllowed(
-    request,
-  );
+export async function PUT(request: NextRequest): Promise<NextResponse> {
+  return methodNotAllowed(request);
 }
 
-
-/* ============================================================
-   PATCH /api/auth/logout
-   ============================================================ */
-
-export async function PATCH(
-  request: NextRequest,
-): Promise<NextResponse> {
-  return methodNotAllowed(
-    request,
-  );
+export async function PATCH(request: NextRequest): Promise<NextResponse> {
+  return methodNotAllowed(request);
 }
 
-
-/* ============================================================
-   DELETE /api/auth/logout
-   ============================================================ */
-
-export async function DELETE(
-  request: NextRequest,
-): Promise<NextResponse> {
-  return methodNotAllowed(
-    request,
-  );
+export async function DELETE(request: NextRequest): Promise<NextResponse> {
+  return methodNotAllowed(request);
 }
 
-
-/* ============================================================
-   OPTIONS /api/auth/logout
-   ============================================================ */
-
-export async function OPTIONS(
-  request: NextRequest,
-): Promise<NextResponse> {
-  const requestId =
-    getRequestId(request);
-
-  const response =
-    emptyResponse(
-      204,
-      requestId,
-    );
-
-  response.headers.set(
-    "Allow",
-    ALLOWED_METHODS,
-  );
-
+export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
+  const requestId = getRequestId(request);
+  const response = emptyResponse(204, requestId);
+  response.headers.set("Allow", ALLOWED_METHODS);
   return response;
 }

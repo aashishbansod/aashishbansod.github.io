@@ -260,7 +260,12 @@ function normalizeAttempt(value: unknown): Attempt | null {
   const raw = asRecord(value);
   const timing = asRecord(raw.timing);
 
-  const questions = asArray(raw.questions).map(normalizeQuestion);
+  const questions = asArray(raw.questions)
+    .map(normalizeQuestion)
+    .sort((a, b) => {
+      const rank: Record<Difficulty, number> = { easy: 0, medium: 1, hard: 2 };
+      return rank[a.difficulty] - rank[b.difficulty] || a.order - b.order;
+    });
 
   return {
     attemptId: asString(raw.attemptId ?? raw.id),
@@ -396,6 +401,8 @@ export default function StudentAssessmentPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const questions = attempt?.questions ?? [];
+  const sectionOrder: Difficulty[] = ["easy", "medium", "hard"];
+  const sectionPosition = sectionOrder.indexOf(activeSection);
   const currentQuestion = questions[currentIndex] ?? null;
   const sectionQuestions = useMemo(
     () => questions
@@ -403,6 +410,19 @@ export default function StudentAssessmentPage() {
       .filter((item) => item.question.difficulty === activeSection),
     [questions, activeSection],
   );
+  const activeSectionIndex = sectionQuestions.findIndex((item) => item.index === currentIndex);
+  const isLastQuestionInSection = activeSectionIndex === sectionQuestions.length - 1;
+  const nextSection = sectionPosition < sectionOrder.length - 1 ? sectionOrder[sectionPosition + 1] : null;
+  const activeSectionComplete = sectionQuestions.length === 30 &&
+    sectionQuestions.every(({ question }) => isAnswered(answers[question.id]));
+  const unlockedSectionIndex = sectionOrder.reduce((highest, section, index) => {
+    if (index === 0) return 0;
+    const priorQuestions = questions.filter((question) => question.difficulty === sectionOrder[index - 1]);
+    return priorQuestions.length === 30 &&
+      priorQuestions.every((question) => isAnswered(answers[question.id]))
+      ? index
+      : highest;
+  }, 0);
   const sectionAnsweredCount = sectionQuestions.filter(
     ({ question }) => isAnswered(answers[question.id]),
   ).length;
@@ -960,16 +980,49 @@ export default function StudentAssessmentPage() {
   );
 
   const changeSection = (section: Difficulty) => {
-    setActiveSection(section);
+    const requestedIndex = sectionOrder.indexOf(section);
+    if (requestedIndex < 0 || requestedIndex > unlockedSectionIndex) return;
     const first = questions.findIndex((question) => question.difficulty === section);
-    if (first >= 0) setCurrentIndex(first);
+    if (first >= 0) {
+      setActiveSection(section);
+      setCurrentIndex(first);
+    }
   };
 
   const navigateToQuestion = (index: number) => {
     const question = questions[index];
-    if (!question) return;
+    if (!question || question.difficulty !== activeSection) return;
     setCurrentIndex(index);
-    setActiveSection(question.difficulty);
+  };
+
+  const goToNext = () => {
+    if (!currentQuestion) return;
+    if (!isLastQuestionInSection) {
+      const next = sectionQuestions[activeSectionIndex + 1];
+      if (next) setCurrentIndex(next.index);
+      return;
+    }
+    if (!activeSectionComplete) {
+      setError("Please answer all 30 questions in this section before moving to the next section.");
+      return;
+    }
+    if (nextSection) {
+      const nextIndex = questions.findIndex((question) => question.difficulty === nextSection);
+      if (nextIndex >= 0) {
+        setError("");
+        setActiveSection(nextSection);
+        setCurrentIndex(nextIndex);
+      }
+      return;
+    }
+    setConfirmSubmit(true);
+  };
+
+  const goToPrevious = () => {
+    if (activeSectionIndex > 0) {
+      const previous = sectionQuestions[activeSectionIndex - 1];
+      if (previous) setCurrentIndex(previous.index);
+    }
   };
 
   const retrySave = async () => {
@@ -1280,7 +1333,7 @@ export default function StudentAssessmentPage() {
             <GraduationCap className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-extrabold sm:text-base">CyberNet Careers · JEE-style Assessment</h1>
+            <h1 className="truncate text-sm font-extrabold sm:text-base">CyberNet Careers · Assessment</h1>
             <p className="truncate text-xs text-slate-500">{assessment?.domain || studentDomain || "Technical Assessment"} · 90 MCQs</p>
           </div>
         </div>
@@ -1305,8 +1358,12 @@ export default function StudentAssessmentPage() {
                 const count = questions.filter((question) => question.difficulty === section).length;
                 const answered = questions.filter((question) => question.difficulty === section && isAnswered(answers[question.id])).length;
                 const active = activeSection === section;
+                const locked = sectionOrder.indexOf(section) > unlockedSectionIndex;
+                const complete = count === 30 && answered === 30;
                 return (
-                  <button key={section} type="button" onClick={() => changeSection(section)} className={`rounded-xl border px-4 py-2 text-xs font-extrabold capitalize transition sm:text-sm ${active ? "border-blue-600 bg-blue-600 text-white shadow-md shadow-blue-600/20" : "border-slate-200 bg-white text-slate-600 hover:border-blue-300"}`}>
+                  <button key={section} type="button" onClick={() => changeSection(section)} disabled={locked || busy} aria-current={active ? "step" : undefined} className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-extrabold capitalize transition sm:text-sm ${active ? "border-blue-600 bg-blue-600 text-white shadow-md shadow-blue-600/20" : complete ? "border-emerald-200 bg-emerald-50 text-emerald-800" : locked ? "cursor-not-allowed border-slate-100 bg-slate-100 text-slate-400" : "border-slate-200 bg-white text-slate-700 hover:border-blue-300"}`}>
+                    {complete && <CheckCircle2 className="h-4 w-4" />}
+                    {locked && <ShieldCheck className="h-3.5 w-3.5" />}
                     {section} <span className={active ? "text-blue-100" : "text-slate-400"}>{answered}/{count || 30}</span>
                   </button>
                 );
@@ -1319,8 +1376,8 @@ export default function StudentAssessmentPage() {
 
           <div className="mb-3 flex shrink-0 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
             <div className="min-w-0">
-              <p className="text-xs font-bold uppercase tracking-wider text-blue-700">{activeSection} section · 30 questions</p>
-              <p className="mt-1 text-xs text-slate-500">{sectionAnsweredCount}/30 answered in this section</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-blue-700">{activeSection} section · Questions {sectionPosition * 30 + 1}–{sectionPosition * 30 + 30}</p>
+              <p className="mt-1 text-xs text-slate-500">{sectionAnsweredCount}/30 answered in this section · Complete all questions to unlock the next section</p>
             </div>
             <span className="shrink-0 rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700">1 mark · No negative marking</span>
           </div>
@@ -1345,12 +1402,23 @@ export default function StudentAssessmentPage() {
           </article>
 
           <div className="mt-3 flex shrink-0 items-center justify-between gap-3">
-            <button type="button" disabled={currentIndex === 0 || busy} onClick={() => navigateToQuestion(currentIndex - 1)} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 disabled:opacity-40"><ArrowLeft className="h-4 w-4" /> Previous</button>
-            {currentIndex < questions.length - 1 ? (
-              <button type="button" onClick={() => navigateToQuestion(currentIndex + 1)} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-extrabold text-white hover:bg-blue-700">Save & Next <ArrowRight className="h-4 w-4" /></button>
-            ) : (
-              <button type="button" onClick={() => setConfirmSubmit(true)} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-extrabold text-white">Submit Assessment</button>
-            )}
+            <button type="button" disabled={activeSectionIndex <= 0 || busy} onClick={goToPrevious} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 disabled:opacity-40"><ArrowLeft className="h-4 w-4" /> Previous</button>
+            <div className="flex items-center gap-2">
+              {isLastQuestionInSection && nextSection && (
+                <span className="hidden text-xs font-semibold text-slate-500 sm:inline">
+                  {activeSectionComplete ? "Section complete" : `${30 - sectionAnsweredCount} answers remaining`}
+                </span>
+              )}
+              {nextSection ? (
+                <button type="button" disabled={busy || (isLastQuestionInSection && !activeSectionComplete)} onClick={goToNext} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
+                  {isLastQuestionInSection ? `Continue to ${nextSection}` : "Save & Next"} <ArrowRight className="h-4 w-4" />
+                </button>
+              ) : isLastQuestionInSection ? (
+                <button type="button" disabled={busy || !activeSectionComplete} onClick={() => setConfirmSubmit(true)} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-40">Submit Assessment</button>
+              ) : (
+                <button type="button" disabled={busy} onClick={goToNext} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:opacity-40">Save & Next <ArrowRight className="h-4 w-4" /></button>
+              )}
+            </div>
           </div>
           {error && <div role="alert" className="mt-2 shrink-0 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{error}</div>}
         </section>

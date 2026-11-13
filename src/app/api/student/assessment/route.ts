@@ -652,6 +652,10 @@ async function finalizeAttempt(
     throw new Error("ASSESSMENT_ANSWER_OUTSIDE_SNAPSHOT");
   }
 
+  if (submittedBy === "student" && mergedAnswers.length !== CONFIG.questionCount) {
+    throw new Error(`ASSESSMENT_ALL_QUESTIONS_REQUIRED:${CONFIG.questionCount - mergedAnswers.length}`);
+  }
+
   const now = new Date();
   const submittedAnswers: MCQAnswer[] = mergedAnswers.map((answer) => ({
     questionId: answer.questionId,
@@ -751,7 +755,7 @@ async function loadAttemptForStudent(
   studentId: Types.ObjectId,
 ): Promise<AnyRecord | null> {
   const Attempt = await getAssessmentAttemptModel();
-  return await Attempt.findOne({ id: attemptId, studentId })
+  return await Attempt.findOne({ attemptId, studentId })
     .lean()
     .exec() as unknown as AnyRecord | null;
 }
@@ -1259,6 +1263,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     if (error instanceof Error && error.message === "ASSESSMENT_ANSWER_OUTSIDE_SNAPSHOT") {
       return failure("The saved answers do not match this assessment attempt. Contact support.", "ASSESSMENT_ANSWER_INVALID", 409);
+    }
+
+    if (error instanceof Error && error.message.startsWith("ASSESSMENT_ALL_QUESTIONS_REQUIRED:")) {
+      const remaining = Number(error.message.split(":")[1]);
+      return failure(
+        `Please answer all 90 questions before submitting. ${Number.isFinite(remaining) ? remaining : "Some"} questions remain unanswered.`,
+        "ASSESSMENT_INCOMPLETE",
+        400,
+      );
     }
 
     if (error instanceof Error && error.message === "ASSESSMENT_STUDENT_RESULT_SYNC_FAILED") {

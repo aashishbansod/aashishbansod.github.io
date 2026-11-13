@@ -128,6 +128,8 @@ type StudentRecord = {
 
   applicationStatus?: unknown;
 
+  adminApprovalStatus?: unknown;
+
   assessmentStatus?: unknown;
 
   resultStatus?: unknown;
@@ -181,6 +183,7 @@ type InternshipRecord = {
   price?: unknown;
 
   priceInPaise?: unknown;
+  adminApprovalStatus?: unknown;
 
   currency?: unknown;
 
@@ -528,7 +531,13 @@ async function parseRequestBody(request: NextRequest): Promise<CreateOrderBody |
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 
-  return parsed as CreateOrderBody;
+  const record = parsed as Record<string, unknown>;
+  const allowedFields = new Set(["internshipId", "planCode"]);
+  if (Object.keys(record).some((key) => !allowedFields.has(key))) {
+    throw Object.assign(new Error("Request contains unsupported fields."), { status: 400 });
+  }
+
+  return record as CreateOrderBody;
 
 }
 
@@ -698,10 +707,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     }
 
-    if (normalizeStatus(student.applicationStatus) !== "approved") {
-
+    if (
+      normalizeStatus(student.applicationStatus) !== "approved" &&
+      normalizeStatus(student.adminApprovalStatus) !== "approved"
+    ) {
       return jsonResponse({ success: false, code: "APPLICATION_NOT_APPROVED", message: "Your application must be approved first." }, 403);
-
     }
 
     if (normalizeStatus(student.assessmentStatus) !== "passed" || normalizeStatus(student.resultStatus) !== "passed") {
@@ -744,12 +754,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     }
 
+    const existingOrderId = cleanString(student.razorpayOrderId);
     const selectionDeadlineValue = student.internshipSelectionDeadlineAt;
-    const selectionDeadline = selectionDeadlineValue ? new Date(String(selectionDeadlineValue)) : null;
-    if (
+    const selectionDeadline = selectionDeadlineValue
+      ? new Date(String(selectionDeadlineValue))
+      : null;
+
+    if (!selectionDeadline || Number.isNaN(selectionDeadline.getTime())) {
+      return jsonResponse({
+        success: false,
+        code: "SELECTION_SESSION_NOT_INITIALIZED",
+        message: "Your internship selection session is not initialized. Return to internship selection or contact support.",
+      }, 409);
+    }
+
+    const selectionWindowExpired =
       student.internshipSelectionWindowExpired === true ||
-      (selectionDeadline && !Number.isNaN(selectionDeadline.getTime()) && selectionDeadline.getTime() <= Date.now())
-    ) {
+      selectionDeadline.getTime() <= Date.now();
+
+    if (selectionWindowExpired && existingOrderId) {
+      return jsonResponse({
+        success: false,
+        code: "PAYMENT_ORDER_REQUIRES_RECONCILIATION",
+        message: "An existing payment order must be reconciled before another payment order can be created.",
+        data: {
+          paymentStatus,
+          dashboardStatus: "locked",
+          dashboardLoginEnabled: false,
+        },
+      }, 409);
+    }
+
+    if (selectionWindowExpired) {
       return jsonResponse({
         success: false,
         code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
@@ -873,11 +909,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const publicStudentId = cleanString(student.studentId) || dbStudentId;
 
-    const existingOrderId = cleanString(student.razorpayOrderId);
-
     let order: RazorpayOrder | null = null;
-
-    if (existingOrderId && paymentStatus === "pending") {
+    if (existingOrderId) {
 
       try {
 
@@ -895,26 +928,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
         const existingStatus = normalizeStatus(existing.status);
 
+        if (existingStatus === "paid") {
+          return jsonResponse({
+            success: false,
+            code: "ORDER_ALREADY_PAID",
+            message: "This order is already paid. Please complete payment verification before creating another order.",
+          }, 409);
+        }
+
         if (
-
           existingId === existingOrderId &&
-
           existingAmount === plan.priceInPaise &&
-
           existingCurrency === "INR" &&
-
           orderMatches(existing, publicStudentId, internshipId, planCode) &&
-
           ["created", "attempted"].includes(existingStatus)
-
         ) {
-
+          if (paymentStatus !== "pending") {
+            return jsonResponse({
+              success: false,
+              code: "PAYMENT_STATE_RECONCILIATION_REQUIRED",
+              message: "The existing payment order is still active but the student payment state is inconsistent. Contact support before retrying.",
+            }, 409);
+          }
           order = existing;
-
-        } else if (existingStatus === "paid") {
-
-          return jsonResponse({ success: false, code: "ORDER_ALREADY_PAID", message: "This order is already paid. Please complete payment verification." }, 409);
-
+        } else if (!["failed", "cancelled", "canceled", "expired"].includes(existingStatus)) {
+          return jsonResponse({
+            success: false,
+            code: "EXISTING_ORDER_REQUIRES_RECONCILIATION",
+            message: "The previous payment order is not in a safely replaceable state. Please contact support before retrying.",
+          }, 409);
         }
 
       } catch (error) {
@@ -1015,8 +1057,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     }
 
-    const expectedOrderId = cleanString(student.razorpayOrderId);
-
+    const expectedOrderId = existingOrderId;
     const primaryPersistResult = await Student.updateOne(
       {
         _id: student._id,
@@ -1026,6 +1067,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         paymentAmount: student.paymentAmount,
         paymentCurrency: student.paymentCurrency,
         razorpayOrderId: expectedOrderId || { $in: ["", null] },
+        internshipSelectionWindowExpired: { $ne: true },
+        internshipSelectionDeadlineAt: { $gt: new Date() },
       },
       {
         $set: {

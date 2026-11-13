@@ -21,17 +21,29 @@ type PlanCode = "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
 
 
 type Profile = {
-
-  studentId?: string; fullName?: string; email?: string; dateOfBirth?: string | null;
-
-  applicationStatus?: string; adminApprovalStatus?: string; assessmentStatus?: string;
-
-  assessmentPassed?: boolean; resultStatus?: string; internshipApplicationAllowed?: boolean;
-
-  assessmentDomain?: string; internshipDomain?: string; domain?: string;
-
-  selectedDomain?: string; selectedInternshipDomain?: string; internshipTrack?: string;
-
+  studentId?: string;
+  fullName?: string;
+  email?: string;
+  dateOfBirth?: string | null;
+  applicationStatus?: string;
+  adminApprovalStatus?: string;
+  assessmentStatus?: string;
+  assessmentPassed?: boolean;
+  resultStatus?: string;
+  internshipApplicationAllowed?: boolean;
+  assessmentDomain?: string;
+  internshipDomain?: string;
+  domain?: string;
+  selectedDomain?: string;
+  selectedInternshipDomain?: string;
+  internshipTrack?: string;
+  internshipSelectionWindowStartedAt?: string | Date | null;
+  internshipSelectionDeadlineAt?: string | Date | null;
+  internshipSelectionExpiredAt?: string | Date | null;
+  internshipSelectionWindowExpired?: boolean;
+  paymentStatus?: string;
+  razorpayOrderId?: string | null;
+  razorpayPaymentId?: string | null;
 };
 
 
@@ -396,6 +408,9 @@ export default function StudentInternshipsPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const [formError, setFormError] = useState("");
+  const [backingOut, setBackingOut] = useState(false);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const [sessionError, setSessionError] = useState("");
 
   const loadData = useCallback(async (refresh = false) => {
 
@@ -450,7 +465,92 @@ export default function StudentInternshipsPage() {
 
   useEffect(() => { void loadData(); }, [loadData]);
 
-  const canSelect = Boolean(profile && approved(profile) && passed(profile) && profile.internshipApplicationAllowed !== false);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
+    const refreshOnReturn = () => { void loadData(true); };
+    window.addEventListener("pageshow", refreshOnReturn);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pageshow", refreshOnReturn);
+    };
+  }, [loadData]);
+
+  const deadlineMs = profile?.internshipSelectionDeadlineAt
+    ? profile.internshipSelectionDeadlineAt instanceof Date
+      ? profile.internshipSelectionDeadlineAt.getTime()
+      : new Date(profile.internshipSelectionDeadlineAt).getTime()
+    : Number.NaN;
+  const serverSessionExpired = profile?.internshipSelectionWindowExpired === true ||
+    Boolean(profile?.internshipSelectionExpiredAt) ||
+    (Number.isFinite(deadlineMs) && deadlineMs <= clockNow);
+  const paymentInProgress = Boolean(
+    profile &&
+    !["paid", "refunded"].includes(status(profile.paymentStatus)) &&
+    str(profile.razorpayOrderId) &&
+    !str(profile.razorpayPaymentId)
+  );
+  const hasUnpaidSession = Boolean(
+    profile &&
+    profile.internshipSelectionWindowStartedAt &&
+    !serverSessionExpired &&
+    !paymentInProgress &&
+    !["paid", "refunded"].includes(status(profile.paymentStatus)) &&
+    !str(profile.razorpayPaymentId)
+  );
+  const remainingSeconds = Number.isFinite(deadlineMs)
+    ? Math.max(0, Math.floor((deadlineMs - clockNow) / 1000))
+    : 0;
+  const countdown = `${String(Math.floor(remainingSeconds / 3600)).padStart(2, "0")}:${String(Math.floor((remainingSeconds % 3600) / 60)).padStart(2, "0")}:${String(remainingSeconds % 60).padStart(2, "0")}`;
+
+  const expireSelectionSession = useCallback(async () => {
+    if (!hasUnpaidSession) return true;
+    setBackingOut(true);
+    setSessionError("");
+    try {
+      const response = await fetch("/api/student/internships/select", {
+        method: "DELETE",
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (response.status === 401) {
+        router.replace("/login?next=/student/internships");
+        return false;
+      }
+      if (!response.ok || !payload || typeof payload !== "object" || (payload as Payload).success !== true) {
+        throw new Error(getError(payload, "Unable to expire the internship selection session."));
+      }
+      setProfile(current => current ? {
+        ...current,
+        internshipSelectionWindowExpired: true,
+        internshipSelectionExpiredAt: new Date().toISOString(),
+        internshipApplicationAllowed: false,
+      } : current);
+      return true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unable to expire the session.";
+      setSessionError(message);
+      setFormError(message);
+      return false;
+    } finally {
+      setBackingOut(false);
+    }
+  }, [hasUnpaidSession, router]);
+
+  const handleBack = useCallback(async () => {
+    if (submitting || backingOut) return;
+    if (paymentInProgress) {
+      setSessionError("A Razorpay order is already linked to this selection. Its final payment status must be reconciled before the session can be expired.");
+      return;
+    }
+    const expired = await expireSelectionSession();
+    if (!expired) return;
+    if (typeof window !== "undefined" && window.history.length > 1) router.back();
+    else router.push("/student/dashboard");
+  }, [submitting, backingOut, paymentInProgress, expireSelectionSession, router]);
+
+  const canSelect = Boolean(profile && approved(profile) && passed(profile) && profile.internshipApplicationAllowed !== false && !serverSessionExpired);
 
 
 
@@ -527,11 +627,10 @@ export default function StudentInternshipsPage() {
   }
 
   function closeModal() {
-
-    if (submitting) return;
-
-    setChosenProgram(null); setChosenPlan(null); setFormError("");
-
+    if (submitting || backingOut) return;
+    setChosenProgram(null);
+    setChosenPlan(null);
+    setFormError("");
   }
 
   async function submitSelection(e: FormEvent<HTMLFormElement>) {
@@ -612,11 +711,22 @@ export default function StudentInternshipsPage() {
 
           <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">Select a program from your assigned domain and choose the duration that fits your goals.</p>
 
+          {hasUnpaidSession && <div className="mt-5 flex flex-col items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-center sm:flex-row sm:justify-center"><span className="inline-flex items-center gap-2 text-sm font-bold text-amber-900"><Clock3 size={16}/> Selection session active</span><span className="font-mono text-lg font-black tabular-nums text-amber-950">{countdown}</span><span className="text-xs text-amber-800">Time remaining · change your plan before payment</span></div>}
+
+          {serverSessionExpired && <div role="status" className="mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">Your internship selection session has expired. A new selection is not available from this session.</div>}
+
+          {sessionError && <div role="alert" className="mt-3 max-w-xl rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{sessionError}</div>}
+
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <button onClick={() => void handleBack()} disabled={backingOut || submitting} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:border-red-200 hover:text-red-700 disabled:opacity-60">
+            {backingOut ? <LoaderCircle size={16} className="animate-spin"/> : <ArrowRight size={16} className="rotate-180"/>} Back & expire session
+          </button>
           <button onClick={() => void loadData(true)} disabled={refreshing} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold shadow-sm hover:border-blue-200 hover:text-blue-700 disabled:opacity-60">
 
             <RefreshCw size={16} className={refreshing ? "animate-spin" : ""}/>{refreshing ? "Refreshing…" : "Refresh programs"}
 
           </button>
+          </div>
 
         </div>
 
@@ -638,7 +748,7 @@ export default function StudentInternshipsPage() {
 
     <section className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6 lg:px-8 lg:py-9"><div className="mb-7 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 lg:grid-cols-[minmax(240px,1fr)_250px_190px]"><label className="relative"><span className="sr-only">Search programs</span><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><input value={search} onChange={e => setSearch(e.target.value)} type="search" placeholder="Search domains, skills or technologies…" className="h-12 w-full rounded-xl border bg-slate-50 pl-11 pr-4 text-sm outline-none focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10"/></label><label className="relative"><span className="sr-only">Domain filter</span><select value={domainFilter} onChange={e => setDomainFilter(e.target.value)} className="h-12 w-full appearance-none rounded-xl border bg-white px-4 pr-9 text-sm font-semibold outline-none focus:border-blue-500"><option value="ALL">All domains</option>{domains.map(d => <option key={d} value={d}>{d}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/></label><label className="relative"><span className="sr-only">Mode filter</span><select value={modeFilter} onChange={e => setModeFilter(e.target.value)} className="h-12 w-full appearance-none rounded-xl border bg-white px-4 pr-9 text-sm font-semibold outline-none focus:border-blue-500"><option value="ALL">All modes</option><option value="REMOTE">Remote</option><option value="ONSITE">On-site</option><option value="HYBRID">Hybrid</option><option value="OTHER">Other</option></select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/></label></div>
 
-    {domainPrograms.length === 0 ? <Empty title={`No active programs for ${assignedDomain}`} message="Only programs matching your assigned domain can be shown. Ask Student Operations to check domain mapping or program availability." onClick={() => void loadData(true)} /> : filtered.length === 0 ? <Empty title="No matching programs" message="Try another search or clear the filters." onClick={() => {setSearch("");setDomainFilter("ALL");setModeFilter("ALL");}}/> : <div className="space-y-10">{groups.map(([domain, items]) => { const Icon = iconFor(domain); const assigned = Boolean(assignedDomain && domain.toLowerCase() === assignedDomain.toLowerCase()); return <section key={domain}><div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-700/15"><Icon size={23}/></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-black tracking-tight sm:text-2xl">{domain}</h2>{assigned && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-emerald-700">Your assessment domain</span>}</div><p className="mt-1 text-sm text-slate-500">{items.length} available {items.length === 1 ? "program" : "programs"}</p></div></div><span className="inline-flex items-center gap-1.5 self-start rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 sm:self-auto"><ShieldCheck size={14} className="text-emerald-600"/> Active programs only</span></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{items.map(p => {const cheapest = Math.min(...p.plans.map(x => x.price)); const isPopular = p.plans.some(x => x.planCode === "THREE_MONTHS"); return <article key={p.id} className={`group relative flex min-w-0 flex-col overflow-hidden rounded-3xl border bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-950/10 ${isPopular ? "border-blue-500 ring-2 ring-blue-500/20 shadow-lg shadow-blue-600/10" : "border-slate-200 hover:border-blue-200"}`}><div className={`h-2 ${isPopular ? "bg-gradient-to-r from-blue-700 via-indigo-600 to-cyan-400" : "bg-gradient-to-r from-slate-300 via-slate-200 to-slate-300"}`}/>{isPopular && <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-700 px-3 py-2.5 text-center text-xs font-black uppercase tracking-[.12em] text-white shadow-sm"><Sparkles size={15} className="shrink-0"/> Most Popular Internship <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] tracking-normal">₹999 · 3 Months</span></div>}<div className="flex flex-1 flex-col p-5 sm:p-6"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><Icon size={22}/></div><div className="min-w-0"><h3 className="break-words text-lg font-black leading-snug">{p.title}</h3><p className="mt-1 text-xs font-bold text-blue-700">{p.domain}</p></div></div><p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">{p.description}</p><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><Laptop size={13} className="mr-1 inline"/> Mode</p><p className="mt-1 text-sm font-bold">{modeName(p.mode)}</p></div><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><MapPin size={13} className="mr-1 inline"/> Location</p><p className="mt-1 truncate text-sm font-bold">{p.location}</p></div></div>{(p.skills.length > 0 || p.technologies.length > 0) && <div className="mt-4"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Skills & technologies</p><div className="mt-2 flex flex-wrap gap-1.5">{[...p.skills,...p.technologies].filter((s,i,a)=>a.indexOf(s)===i).slice(0,5).map(s=><span key={s} className="rounded-lg border bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">{s}</span>)}</div></div>}<div className="mt-5 flex items-end justify-between gap-3 border-t border-slate-100 pt-4"><div><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Plans from</p><p className="mt-1 text-2xl font-black tracking-tight">{money(cheapest,p.plans[0]?.currency || "INR")}</p><p className="mt-1 text-xs text-slate-500">{p.plans.length} duration option{p.plans.length===1?"":"s"}</p>{isPopular && <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-extrabold text-blue-800"><Sparkles size={12}/> Best value · 3-month plan available</p>}</div><button onClick={()=>openProgram(p)} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-blue-600/15 hover:bg-blue-700">Select <ArrowRight size={16}/></button></div></div></article>})}</div></section>})}</div>}
+    {domainPrograms.length === 0 ? <Empty title={`No active programs for ${assignedDomain}`} message="Only programs matching your assigned domain can be shown. Ask Student Operations to check domain mapping or program availability." onClick={() => void loadData(true)} /> : filtered.length === 0 ? <Empty title="No matching programs" message="Try another search or clear the filters." onClick={() => {setSearch("");setDomainFilter("ALL");setModeFilter("ALL");}}/> : <div className="space-y-10">{groups.map(([domain, items]) => { const Icon = iconFor(domain); const assigned = Boolean(assignedDomain && domain.toLowerCase() === assignedDomain.toLowerCase()); return <section key={domain}><div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-700/15"><Icon size={23}/></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-black tracking-tight sm:text-2xl">{domain}</h2>{assigned && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-emerald-700">Your assessment domain</span>}</div><p className="mt-1 text-sm text-slate-500">{items.length} available {items.length === 1 ? "program" : "programs"}</p></div></div><span className="inline-flex items-center gap-1.5 self-start rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 sm:self-auto"><ShieldCheck size={14} className="text-emerald-600"/> Active programs only</span></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{items.map(p => {const cheapest = Math.min(...p.plans.map(x => x.price)); const isPopular = p.plans.some(x => x.planCode === "THREE_MONTHS"); return <article key={p.id} className={`group relative flex min-w-0 flex-col overflow-hidden rounded-3xl border bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-950/10 ${isPopular ? "border-blue-500 ring-2 ring-blue-500/20 shadow-lg shadow-blue-600/10" : "border-slate-200 hover:border-blue-200"}`}><div className={`h-2 ${isPopular ? "bg-gradient-to-r from-blue-700 via-indigo-600 to-cyan-400" : "bg-gradient-to-r from-slate-300 via-slate-200 to-slate-300"}`}/>{isPopular && <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-700 px-3 py-2.5 text-center text-xs font-black uppercase tracking-[.12em] text-white shadow-sm"><Sparkles size={15} className="shrink-0"/> Most Popular Internship <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] tracking-normal">₹999 · 3 Months</span></div>}<div className="flex flex-1 flex-col p-5 sm:p-6"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><Icon size={22}/></div><div className="min-w-0"><h3 className="break-words text-lg font-black leading-snug">{p.title}</h3><p className="mt-1 text-xs font-bold text-blue-700">{p.domain}</p></div></div><p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">{p.description}</p><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><Laptop size={13} className="mr-1 inline"/> Mode</p><p className="mt-1 text-sm font-bold">{modeName(p.mode)}</p></div><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><MapPin size={13} className="mr-1 inline"/> Location</p><p className="mt-1 truncate text-sm font-bold">{p.location}</p></div></div>{(p.skills.length > 0 || p.technologies.length > 0) && <div className="mt-4"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Skills & technologies</p><div className="mt-2 flex flex-wrap gap-1.5">{[...p.skills,...p.technologies].filter((s,i,a)=>a.indexOf(s)===i).slice(0,5).map(s=><span key={s} className="rounded-lg border bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">{s}</span>)}</div></div>}<div className="mt-5 flex items-end justify-between gap-3 border-t border-slate-100 pt-4"><div><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Plans from</p><p className="mt-1 text-2xl font-black tracking-tight">{money(cheapest,p.plans[0]?.currency || "INR")}</p><p className="mt-1 text-xs text-slate-500">{p.plans.length} duration option{p.plans.length===1?"":"s"}</p>{isPopular && <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-extrabold text-blue-800"><Sparkles size={12}/> Best value · 3-month plan available</p>}</div><button onClick={()=>openProgram(p)} disabled={serverSessionExpired} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-blue-600/15 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">Select <ArrowRight size={16}/></button></div></div></article>})}</div></section>})}</div>}
 
     <div className="mt-10 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-950"><ShieldCheck className="mt-0.5 shrink-0 text-blue-700" size={19}/><p><strong>Secure enrollment:</strong> selecting a plan does not activate your dashboard. Payment must be verified and Student Operations must approve your profile. Your Internship ID and temporary password are generated securely by the server after approval.</p></div>
 
@@ -648,7 +758,7 @@ export default function StudentInternshipsPage() {
 
 {plan.planCode === "THREE_MONTHS" && <span className="absolute inset-x-0 top-0 flex items-center justify-center rounded-t-[14px] bg-gradient-to-r from-blue-600 to-indigo-600 py-1 text-[10px] font-black uppercase tracking-wider text-white"><Sparkles size={11} className="mr-1"/> Most popular</span>}
 
-<p className={`text-xs font-bold ${plan.planCode === "THREE_MONTHS" ? "text-blue-700" : "text-slate-500"}`}>{cfg.tier}</p><p className="mt-2 text-sm font-extrabold">{plan.duration}</p><p className="mt-2 text-2xl font-black">{money(plan.price,plan.currency)}</p><p className="mt-2 flex items-center gap-1 text-xs font-semibold text-slate-500"><Clock3 size={13}/>{plan.months} month{plan.months===1?"":"s"}</p>{active&&<span className="absolute right-3 bottom-3 grid h-5 w-5 place-items-center rounded-full bg-blue-600 text-white"><Check size={12}/></span>}</button>})}</div></div><div><label htmlFor="student-dob" className="mb-2 block text-sm font-extrabold">Date of birth</label><input id="student-dob" type="date" required max={localToday()} value={dob} onChange={e=>setDob(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"/><p className="mt-2 text-xs leading-5 text-slate-500">Sent in the secure request body, never in the URL. Your date of birth will not be used as your login password.</p></div>{formError&&<div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{formError}</div>}<div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><p className="flex items-center gap-2 font-extrabold"><CreditCard size={15}/> Payment is next</p><p className="mt-1">Dashboard access stays locked until payment verification and Student Operations approval. Your Internship ID and a temporary login credential are issued only after approval.</p></div><div className="flex flex-col-reverse gap-3 border-t pt-5 sm:flex-row sm:justify-end"><button type="button" onClick={closeModal} disabled={submitting} className="rounded-xl border px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={submitting||!chosenPlan||!validDob(dob)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting?<><LoaderCircle size={17} className="animate-spin"/> Saving selection…</>:<>Continue to payment <ArrowRight size={17}/></>}</button></div></form></section></div>}
+<p className={`text-xs font-bold ${plan.planCode === "THREE_MONTHS" ? "text-blue-700" : "text-slate-500"}`}>{cfg.tier}</p><p className="mt-2 text-sm font-extrabold">{plan.duration}</p><p className="mt-2 text-2xl font-black">{money(plan.price,plan.currency)}</p><p className="mt-2 flex items-center gap-1 text-xs font-semibold text-slate-500"><Clock3 size={13}/>{plan.months} month{plan.months===1?"":"s"}</p>{active&&<span className="absolute right-3 bottom-3 grid h-5 w-5 place-items-center rounded-full bg-blue-600 text-white"><Check size={12}/></span>}</button>})}</div></div><div><label htmlFor="student-dob" className="mb-2 block text-sm font-extrabold">Date of birth</label><input id="student-dob" type="date" required max={localToday()} value={dob} onChange={e=>setDob(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"/><p className="mt-2 text-xs leading-5 text-slate-500">Sent in the secure request body, never in the URL. Your date of birth will not be used as your login password.</p></div>{formError&&<div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{formError}</div>}<div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><p className="flex items-center gap-2 font-extrabold"><CreditCard size={15}/> Payment is next</p><p className="mt-1">Dashboard access stays locked until payment verification and Student Operations approval. Your Internship ID and a temporary login credential are issued only after approval.</p>{hasUnpaidSession && <p className="mt-2 font-bold">Your current session has {countdown} remaining. You can change the plan while this session is active.</p>}</div><div className="flex flex-col-reverse gap-3 border-t pt-5 sm:flex-row sm:justify-end"><button type="button" onClick={closeModal} disabled={submitting} className="rounded-xl border px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={submitting||!chosenPlan||!validDob(dob)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting?<><LoaderCircle size={17} className="animate-spin"/> Saving selection…</>:<>Continue to payment <ArrowRight size={17}/></>}</button></div></form></section></div>}
 
   </main>;
 

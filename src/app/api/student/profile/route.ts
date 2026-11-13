@@ -680,18 +680,36 @@ function buildStudentProfile(
       student.internshipApplicationAllowed === true,
 
     internshipTrack:
-
       stringValue(student.internshipTrack),
+    selectedInternshipDomain:
+      stringValue(student.selectedInternshipDomain),
+    internshipDomain:
+      stringValue(student.internshipDomain),
+    assessmentDomain:
+      stringValue(student.assessmentDomain),
+    selectedDomain:
+      stringValue(student.selectedDomain),
+    domain:
+      stringValue(student.domain),
 
     internshipPlan:
-
       stringValue(student.internshipPlan),
 
     selectedDuration,
-
     internshipSelectionAt:
-
       dateValue(student.internshipSelectionAt),
+    internshipSelectionWindowStartedAt:
+      dateValue(student.internshipSelectionWindowStartedAt),
+    internshipSelectionDeadlineAt:
+      dateValue(student.internshipSelectionDeadlineAt),
+    internshipSelectionExpiredAt:
+      dateValue(student.internshipSelectionExpiredAt),
+    internshipSelectionWindowExpired:
+      student.internshipSelectionWindowExpired === true ||
+      Boolean(
+        student.internshipSelectionDeadlineAt &&
+        new Date(String(student.internshipSelectionDeadlineAt)).getTime() <= Date.now()
+      ),
 
     internshipDurationDays: numberValue(student.internshipDurationDays),
     internshipStartedAt: dateValue(student.internshipStartedAt),
@@ -723,8 +741,9 @@ function buildStudentProfile(
       null,
 
     razorpayOrderId:
-
       stringValue(student.razorpayOrderId) || null,
+    razorpayPaymentId:
+      stringValue(student.razorpayPaymentId) || null,
 
     paymentCompletedAt:
 
@@ -927,12 +946,18 @@ export async function GET() {
           "internshipEligible",
 
           "internshipTrack",
-
+          "selectedInternshipDomain",
+          "internshipDomain",
+          "assessmentDomain",
+          "selectedDomain",
+          "domain",
           "internshipPlan",
-
           "selectedDuration",
-
           "internshipSelectionAt",
+          "internshipSelectionWindowStartedAt",
+          "internshipSelectionDeadlineAt",
+          "internshipSelectionExpiredAt",
+          "internshipSelectionWindowExpired",
 
           "internshipDurationDays",
             "internshipStartedAt",
@@ -1928,12 +1953,18 @@ export async function PUT(
             "internshipEligible",
 
             "internshipTrack",
-
+            "selectedInternshipDomain",
+            "internshipDomain",
+            "assessmentDomain",
+            "selectedDomain",
+            "domain",
             "internshipPlan",
-
             "selectedDuration",
-
             "internshipSelectionAt",
+            "internshipSelectionWindowStartedAt",
+            "internshipSelectionDeadlineAt",
+            "internshipSelectionExpiredAt",
+            "internshipSelectionWindowExpired",
 
             "internshipDurationDays",
             "internshipStartedAt",

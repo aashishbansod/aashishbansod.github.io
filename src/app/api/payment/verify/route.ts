@@ -133,6 +133,8 @@ type StudentRecord = {
 
   applicationStatus?: unknown;
 
+  adminApprovalStatus?: unknown;
+
   assessmentStatus?: unknown;
 
   resultStatus?: unknown;
@@ -505,7 +507,21 @@ async function parseBody(request: NextRequest): Promise<VerifyBody | null> {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("INVALID_BODY");
   }
-  return parsed as VerifyBody;
+
+  const record = parsed as Record<string, unknown>;
+  const allowedFields = new Set([
+    "internshipId",
+    "planCode",
+    "razorpayOrderId",
+    "razorpayPaymentId",
+    "razorpaySignature",
+  ]);
+
+  if (Object.keys(record).some((key) => !allowedFields.has(key))) {
+    throw new Error("UNSUPPORTED_FIELDS");
+  }
+
+  return record as VerifyBody;
 }
 
 
@@ -703,7 +719,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
       if (code === "REQUEST_TOO_LARGE") return fail("Request body is too large.", code, 413);
 
-      return fail(code === "INVALID_JSON" ? "Invalid JSON request body." : "Request body must be a JSON object.", code || "INVALID_BODY", 400);
+      return fail(
+        code === "INVALID_JSON"
+          ? "Invalid JSON request body."
+          : code === "UNSUPPORTED_FIELDS"
+            ? "Request contains unsupported fields."
+            : "Request body must be a JSON object.",
+        code || "INVALID_BODY",
+        400,
+      );
 
     }
 
@@ -751,7 +775,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     if (student.emailVerified !== true) return fail("Please verify your email before payment.", "EMAIL_NOT_VERIFIED", 403);
 
-    if (statusOf(student.applicationStatus) !== "approved") return fail("Your application has not been approved.", "APPLICATION_NOT_APPROVED", 403);
+    if (
+      statusOf(student.applicationStatus) !== "approved" &&
+      statusOf(student.adminApprovalStatus) !== "approved"
+    ) {
+      return fail("Your application has not been approved.", "APPLICATION_NOT_APPROVED", 403);
+    }
 
     if (statusOf(student.assessmentStatus) !== "passed" || statusOf(student.resultStatus) !== "passed") {
 

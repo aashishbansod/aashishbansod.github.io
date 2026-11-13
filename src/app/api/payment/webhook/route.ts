@@ -642,6 +642,69 @@ async function handleCapturedPayment(
     if (!result.success) {
       if (result.code === "PAYMENT_ALREADY_VERIFIED") {
         duplicate = true;
+      } else if (result.code === "INTERNSHIP_SELECTION_WINDOW_EXPIRED") {
+        const reconciliationAt = new Date();
+        const reconciliation = await StudentModel.updateOne(
+          {
+            _id: student._id,
+            razorpayOrderId: orderId,
+            paymentStatus: { $in: ["pending", "paid"] },
+            $or: [
+              { razorpayPaymentId: "" },
+              { razorpayPaymentId: paymentId },
+              { razorpayPaymentId: { $exists: false } },
+              { razorpayPaymentId: null },
+            ],
+          },
+          {
+            $set: {
+              paymentStatus: "paid",
+              razorpayPaymentId: paymentId,
+              paymentCompletedAt: reconciliationAt,
+              internshipStatus: "pending-review",
+              studentOpsApprovalStatus: "pending",
+              studentOpsStatus: "pending-review",
+              dashboardStatus: "locked",
+              dashboardLoginEnabled: false,
+              dashboardCredentialsGenerated: false,
+              operationsSyncStatus: "pending",
+              operationsSyncError:
+                "Captured payment requires manual reconciliation because the internship selection window expired.",
+            },
+          },
+        ).exec();
+
+        if (reconciliation.matchedCount === 0) {
+          const latest = await StudentModel.findById(student._id)
+            .select("paymentStatus razorpayOrderId razorpayPaymentId")
+            .lean()
+            .exec();
+
+          const alreadyReconciled =
+            clean(latest?.paymentStatus).toLowerCase() === "paid" &&
+            clean(latest?.razorpayOrderId) === orderId &&
+            clean(latest?.razorpayPaymentId) === paymentId;
+
+          if (!alreadyReconciled) {
+            console.error("[RAZORPAY WEBHOOK] Captured payment reconciliation failed", {
+              studentId: textValue(student.studentId),
+              orderId,
+              paymentId,
+            });
+
+            return response(
+              {
+                success: false,
+                code: "CAPTURED_PAYMENT_RECONCILIATION_REQUIRED",
+                message:
+                  "Razorpay captured the payment, but the student payment record requires manual reconciliation.",
+              },
+              500,
+            );
+          }
+        }
+
+        duplicate = false;
       } else {
         console.error("[RAZORPAY WEBHOOK] Payment commit failed", {
           studentId: textValue(student.studentId),

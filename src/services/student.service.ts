@@ -2724,10 +2724,14 @@ export async function selectInternship(
 
     const selectedPlan = INTERNSHIP_PLANS[plan];
     const selectedAt = new Date();
-    const expectedVersion = Number(student.__v ?? 0);
+    const selectionStartedAt =
+      dateOrNull(student.internshipSelectionWindowStartedAt) ||
+      dateOrNull(student.assessmentEvaluatedAt) ||
+      dateOrNull(student.resultDeclaredAt) ||
+      dateOrNull(student.assessmentSubmittedAt) ||
+      selectedAt;
     const atomicFilter: Record<string, unknown> = {
       _id: student._id,
-      __v: expectedVersion,
       applicationStatus: student.applicationStatus,
       assessmentStatus: student.assessmentStatus,
       internshipApplicationAllowed: true,
@@ -2760,7 +2764,7 @@ export async function selectInternship(
           internshipDurationMonths: selectedPlan.durationMonths,
           internshipDurationDays: selectedPlan.durationDays,
           internshipSelectionAt: selectedAt,
-          internshipSelectionWindowStartedAt: student.internshipSelectionWindowStartedAt,
+          internshipSelectionWindowStartedAt: selectionStartedAt,
           internshipSelectionDeadlineAt: selectionDeadline,
           internshipSelectionWindowExpired: false,
           internshipSelectionExpiredAt: null,
@@ -2774,7 +2778,6 @@ export async function selectInternship(
           dashboardStatus: "locked",
           dashboardLoginEnabled: false,
         },
-        $inc: { __v: 1 },
       },
       {
         new: true,
@@ -2835,6 +2838,148 @@ export async function selectInternship(
   } catch (error) {
     return handleServiceError(
       "[StudentService] selectInternship",
+      error,
+    );
+  }
+}
+
+
+export async function abandonInternshipSelection(
+  input: {
+    studentId: string;
+  },
+): Promise<ServiceResult> {
+  try {
+    await ensureDatabase();
+
+    const studentId = assertNonEmpty(input.studentId, "Student ID");
+    const student = await findStudentById(studentId);
+
+    if (!student) {
+      return {
+        success: false,
+        message: "Student account was not found.",
+        code: "STUDENT_NOT_FOUND",
+      };
+    }
+
+    if (isStatus(student.paymentStatus, "paid")) {
+      return {
+        success: false,
+        message: "Verified payment cannot be expired or reversed from the internship selection screen.",
+        code: "PAYMENT_ALREADY_VERIFIED",
+      };
+    }
+
+    if (isStatus(student.paymentStatus, "refunded")) {
+      return {
+        success: false,
+        message: "A refunded payment cannot be changed through internship selection.",
+        code: "PAYMENT_REFUNDED",
+      };
+    }
+
+    if (cleanString(student.razorpayOrderId)) {
+      return {
+        success: false,
+        message: "A Razorpay payment order already exists. Complete or reconcile that payment before leaving this session.",
+        code: "PAYMENT_ORDER_ALREADY_CREATED",
+      };
+    }
+
+    if (
+      !isStatus(student.applicationStatus, "approved") ||
+      !isStatus(student.assessmentStatus, "passed")
+    ) {
+      return {
+        success: false,
+        message: "Internship selection is not available for this student.",
+        code: "INTERNSHIP_NOT_AVAILABLE",
+      };
+    }
+
+    if (student.internshipSelectionWindowExpired === true) {
+      return {
+        success: true,
+        message: "The internship selection session is already expired.",
+        code: "INTERNSHIP_SELECTION_ALREADY_EXPIRED",
+        data: {
+          expired: true,
+          paymentStatus: cleanString(student.paymentStatus) || "unpaid",
+        },
+      };
+    }
+
+    const now = new Date();
+    const updatedStudent = await StudentModel.findOneAndUpdate(
+      {
+        _id: student._id,
+        paymentStatus: { $nin: ["paid", "refunded"] },
+        internshipSelectionWindowExpired: { $ne: true },
+        $and: [
+          {
+            $or: [
+              { razorpayPaymentId: { $exists: false } },
+              { razorpayPaymentId: null },
+              { razorpayPaymentId: "" },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          internshipSelectionWindowExpired: true,
+          internshipSelectionExpiredAt: now,
+          internshipStatus: "expired",
+          internshipApplicationAllowed: false,
+        },
+      },
+      {
+        new: true,
+        runValidators: true,
+        context: "query",
+      },
+    ).exec();
+
+    if (!updatedStudent) {
+      const latestStudent = await findStudentById(studentId);
+
+      if (latestStudent && isStatus(latestStudent.paymentStatus, "paid")) {
+        return {
+          success: false,
+          message: "Verified payment cannot be expired or reversed from the internship selection screen.",
+          code: "PAYMENT_ALREADY_VERIFIED",
+        };
+      }
+
+      return {
+        success: false,
+        message: "The internship session could not be expired because the student record changed. Refresh and try again.",
+        code: "INTERNSHIP_SELECTION_EXPIRE_CONFLICT",
+      };
+    }
+
+    try {
+      await syncStudentOperationsRecord(updatedStudent.toObject());
+    } catch (syncError) {
+      console.error("[StudentService] Abandoned internship selection mirror sync failed:", syncError);
+    }
+
+    return {
+      success: true,
+      message: "Internship selection session expired successfully.",
+      code: "INTERNSHIP_SELECTION_EXPIRED",
+      data: {
+        studentId: updatedStudent.studentId,
+        expired: true,
+        expiredAt: updatedStudent.internshipSelectionExpiredAt,
+        paymentStatus: updatedStudent.paymentStatus,
+        internshipStatus: updatedStudent.internshipStatus,
+      },
+    };
+  } catch (error) {
+    return handleServiceError(
+      "[StudentService] abandonInternshipSelection",
       error,
     );
   }
@@ -5790,6 +5935,7 @@ const studentService = {
   submitAssessmentResult,
 
   selectInternship,
+  abandonInternshipSelection,
 
   markPaymentPending,
   recordVerifiedPayment,

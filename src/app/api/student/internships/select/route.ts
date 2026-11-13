@@ -15,6 +15,7 @@ import {
   selectInternship,
   type InternshipPlan,
 } from "@/services/internship.service";
+import { abandonInternshipSelection } from "@/services/student.service";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -206,7 +207,9 @@ async function findMainStudent(userId: string) {
           "assessmentStatus resultStatus internshipApplicationAllowed " +
           "loginEnabled accountLocked lockedUntil internshipPlan internshipTrack " +
           "selectedInternshipDomain internshipDomain assessmentDomain selectedDomain " +
-          "paymentStatus internshipStatus dateOfBirth razorpayOrderId",
+          "paymentStatus internshipStatus dateOfBirth razorpayOrderId " +
+          "internshipSelectionWindowStartedAt internshipSelectionDeadlineAt " +
+          "internshipSelectionExpiredAt internshipSelectionWindowExpired razorpayPaymentId",
       )
       .lean()
       .exec();
@@ -218,7 +221,9 @@ async function findMainStudent(userId: string) {
         "assessmentStatus resultStatus internshipApplicationAllowed " +
         "loginEnabled accountLocked lockedUntil internshipPlan internshipTrack " +
         "selectedInternshipDomain internshipDomain assessmentDomain selectedDomain " +
-        "paymentStatus internshipStatus dateOfBirth razorpayOrderId",
+        "paymentStatus internshipStatus dateOfBirth razorpayOrderId " +
+          "internshipSelectionWindowStartedAt internshipSelectionDeadlineAt " +
+          "internshipSelectionExpiredAt internshipSelectionWindowExpired razorpayPaymentId",
     )
     .lean()
     .exec();
@@ -539,6 +544,82 @@ export async function POST(request: NextRequest) {
     }
     const existingPaymentStatus = normalizeStatus(student.paymentStatus);
     const existingInternshipStatus = normalizeStatus(student.internshipStatus);
+    const selectionDeadline = student.internshipSelectionDeadlineAt
+      ? new Date(student.internshipSelectionDeadlineAt as string | number | Date)
+      : null;
+    const selectionDeadlineExpired =
+      Boolean(
+        selectionDeadline &&
+        Number.isFinite(selectionDeadline.getTime()) &&
+        selectionDeadline.getTime() <= Date.now()
+      );
+
+    if (
+      student.internshipSelectionWindowExpired === true ||
+      selectionDeadlineExpired
+    ) {
+      if (cleanString(student.razorpayOrderId, 100)) {
+        return json(
+          {
+            success: false,
+            code: "PAYMENT_ORDER_REQUIRES_RECONCILIATION",
+            message:
+              "A payment order is already associated with this selection. Its final payment status must be confirmed before the session can be expired.",
+            data: {
+              expired: false,
+              paymentStatus: existingPaymentStatus || "pending",
+              dashboardStatus: "locked",
+              dashboardLoginEnabled: false,
+            },
+          },
+          409,
+          requestId,
+        );
+      }
+
+      if (student.internshipSelectionWindowExpired !== true) {
+        const expiryResult = await abandonInternshipSelection({
+          studentId: cleanString(student.studentId, 100),
+        });
+
+        if (!expiryResult.success) {
+          const expiryCode = cleanString(expiryResult.code, 100);
+          return json(
+            {
+              success: false,
+              code: expiryCode || "INTERNSHIP_SELECTION_EXPIRE_CONFLICT",
+              message:
+                expiryResult.message ||
+                "The expired selection session could not be finalized. Refresh and contact support if the issue continues.",
+            },
+            expiryCode === "PAYMENT_ALREADY_VERIFIED" ||
+            expiryCode === "PAYMENT_ORDER_ALREADY_CREATED" ||
+            expiryCode === "INTERNSHIP_SELECTION_EXPIRE_CONFLICT"
+              ? 409
+              : 422,
+            requestId,
+          );
+        }
+      }
+
+      return json(
+        {
+          success: false,
+          code: "INTERNSHIP_SELECTION_SESSION_EXPIRED",
+          message:
+            "Your 72-hour internship selection session has expired. Contact support to request a new selection window.",
+          data: {
+            expired: true,
+            deadlineAt: selectionDeadline,
+            paymentStatus: existingPaymentStatus || "unpaid",
+            dashboardStatus: "locked",
+            dashboardLoginEnabled: false,
+          },
+        },
+        410,
+        requestId,
+      );
+    }
     if (
       existingPaymentStatus === "paid" ||
       [
@@ -634,10 +715,36 @@ export async function POST(request: NextRequest) {
       );
     }
     if (terminalPaymentState && cleanString(student.razorpayOrderId, 100)) {
-      await StudentModel.updateOne(
-        { _id: (student as { _id?: unknown })._id },
-        { $unset: { razorpayOrderId: 1 } },
+      const clearOrderResult = await StudentModel.updateOne(
+        {
+          _id: (student as { _id?: unknown })._id,
+          razorpayOrderId: cleanString(student.razorpayOrderId, 100),
+          paymentStatus: {
+            $in: ["failed", "cancelled", "canceled", "expired"],
+          },
+          $or: [
+            { razorpayPaymentId: { $exists: false } },
+            { razorpayPaymentId: null },
+            { razorpayPaymentId: "" },
+          ],
+        },
+        {
+          $unset: { razorpayOrderId: 1 },
+        },
       ).exec();
+
+      if (Number(clearOrderResult.matchedCount ?? 0) !== 1) {
+        return json(
+          {
+            success: false,
+            code: "PAYMENT_ORDER_RECONCILIATION_REQUIRED",
+            message:
+              "The previous payment attempt could not be safely cleared. Refresh the page and check your payment status before changing the plan.",
+          },
+          409,
+          requestId,
+        );
+      }
     }
     const result = await selectInternship({
       studentId: cleanString(student.studentId, 100),
@@ -784,13 +891,113 @@ export async function PATCH() {
     405,
   );
 }
-export async function DELETE() {
-  return json(
-    {
-      success: false,
-      code: "METHOD_NOT_ALLOWED",
-      message: "Method not allowed.",
-    },
-    405,
-  );
+export async function DELETE(request: NextRequest) {
+  const requestId = getRequestId(request);
+
+  try {
+    if (!isTrustedOrigin(request)) {
+      return json(
+        {
+          success: false,
+          code: "UNTRUSTED_ORIGIN",
+          message: "Request origin could not be verified.",
+        },
+        403,
+        requestId,
+      );
+    }
+
+    const authenticated = await authenticateMainStudent(request);
+    if (!authenticated) {
+      return json(
+        {
+          success: false,
+          code: "STUDENT_AUTH_REQUIRED",
+          message: "Please log in using your main student credentials.",
+        },
+        401,
+        requestId,
+      );
+    }
+
+    await connectDB();
+
+    const student = await findMainStudent(authenticated.userId);
+    if (!student || !cleanString(student.studentId, 100)) {
+      return json(
+        {
+          success: false,
+          code: "STUDENT_NOT_FOUND",
+          message: "Your student account could not be found.",
+        },
+        404,
+        requestId,
+      );
+    }
+
+    if (student.accountLocked === true || student.loginEnabled === false) {
+      return json(
+        {
+          success: false,
+          code: "STUDENT_ACCOUNT_UNAVAILABLE",
+          message: "Your student account is currently unavailable.",
+        },
+        403,
+        requestId,
+      );
+    }
+
+    const result = await abandonInternshipSelection({
+      studentId: cleanString(student.studentId, 100),
+    });
+
+    if (!result.success) {
+      const code = cleanString(result.code, 100);
+      const status =
+        code === "STUDENT_NOT_FOUND" ? 404 :
+        code === "PAYMENT_ALREADY_VERIFIED" ||
+        code === "PAYMENT_REFUNDED" ? 409 :
+        code === "PAYMENT_ORDER_ALREADY_CREATED" ||
+        code === "INTERNSHIP_SELECTION_EXPIRE_CONFLICT" ? 409 :
+        code.includes("NOT_AVAILABLE") ? 403 : 422;
+
+      return json(
+        {
+          success: false,
+          code: code || "INTERNSHIP_SELECTION_ABANDON_FAILED",
+          message: result.message || "The internship selection session could not be expired.",
+        },
+        status,
+        requestId,
+      );
+    }
+
+    return json(
+      {
+        success: true,
+        code: cleanString(result.code, 100) || "INTERNSHIP_SELECTION_EXPIRED",
+        message: result.message || "Internship selection session expired successfully.",
+        data: result.data && typeof result.data === "object"
+          ? result.data as Record<string, unknown>
+          : { expired: true },
+      },
+      200,
+      requestId,
+    );
+  } catch (error) {
+    console.error("[STUDENT INTERNSHIP SELECT DELETE API]", {
+      requestId,
+      error: error instanceof Error ? error.message : "Unknown server error",
+    });
+
+    return json(
+      {
+        success: false,
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Unable to expire the internship selection session right now.",
+      },
+      500,
+      requestId,
+    );
+  }
 }

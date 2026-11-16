@@ -527,6 +527,14 @@ async function syncStudentOperationsRecord(
     );
   }
 
+  if (
+    !isStatus(student.paymentStatus, "paid") ||
+    !cleanString(student.razorpayOrderId) ||
+    !cleanString(student.razorpayPaymentId)
+  ) {
+    return;
+  }
+
   const studentId = normalizeId(student.studentId);
   const applicationId = normalizeId(student.applicationId);
 
@@ -3326,26 +3334,6 @@ export async function recordVerifiedPayment(
     }
 
 
-    const selectionDeadline = ensureInternshipSelectionDeadline(student);
-    const now = new Date();
-    if (
-      student.internshipSelectionWindowExpired === true ||
-      selectionDeadline.getTime() <= now.getTime()
-    ) {
-      expireUnpaidSelectionJourney(student, now);
-      await student.save();
-      try {
-        await syncStudentOperationsRecord(student.toObject());
-      } catch (syncError) {
-        console.error("[StudentService] Expired payment verification mirror sync failed:", syncError);
-      }
-      return {
-        success: false,
-        message: "The 72-hour selection/payment window expired before payment was accepted. Contact support for payment reconciliation.",
-        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
-      };
-    }
-
     if (!cleanString(student.razorpayOrderId) || student.razorpayOrderId !== orderId) {
       return {
         success: false,
@@ -3676,10 +3664,10 @@ export async function approveStudentOperations(
       internshipEndsAt;
 
     student.dashboardLoginEnabled =
-      true;
+      false;
 
     student.dashboardLoginEnabledAt =
-      now;
+      null;
 
     student.dashboardPasswordChangedAt =
       null;
@@ -3697,10 +3685,10 @@ export async function approveStudentOperations(
       null;
 
     student.dashboardStatus =
-      "active";
+      "locked";
 
     student.dashboardActivatedAt =
-      now;
+      null;
 
     student.dashboardDeactivatedAt =
       null;
@@ -3748,6 +3736,18 @@ export async function approveStudentOperations(
         true;
 
       student.dashboardCredentialsEmailSentAt =
+        new Date();
+
+      student.dashboardLoginEnabled =
+        true;
+
+      student.dashboardLoginEnabledAt =
+        new Date();
+
+      student.dashboardStatus =
+        "active";
+
+      student.dashboardActivatedAt =
         new Date();
 
       await student.save();
@@ -3801,7 +3801,7 @@ export async function approveStudentOperations(
       return {
         success: true,
         message:
-          "Student approved and dashboard activated, but the new dashboard credential email failed. Use dashboard credential resend.",
+          "Student Operations approval is complete, but dashboard access remains locked because the credential email failed. Resend credentials to activate access.",
         code:
           "DASHBOARD_CREDENTIAL_EMAIL_FAILED",
         data: {
@@ -3970,10 +3970,10 @@ export async function generateDashboardCredentials(
       internshipEndsAt;
 
     student.dashboardLoginEnabled =
-      true;
+      false;
 
     student.dashboardLoginEnabledAt =
-      credentialGeneratedAt;
+      null;
 
     student.dashboardPasswordChangedAt =
       null;
@@ -3991,10 +3991,10 @@ export async function generateDashboardCredentials(
       null;
 
     student.dashboardStatus =
-      "active";
+      "locked";
 
     student.dashboardActivatedAt =
-      credentialGeneratedAt;
+      null;
 
     await student.save();
 
@@ -4041,6 +4041,18 @@ export async function generateDashboardCredentials(
         student.dashboardCredentialsEmailSentAt =
           new Date();
 
+        student.dashboardLoginEnabled =
+          true;
+
+        student.dashboardLoginEnabledAt =
+          new Date();
+
+        student.dashboardStatus =
+          "active";
+
+        student.dashboardActivatedAt =
+          new Date();
+
         await student.save();
 
         try {
@@ -4073,7 +4085,7 @@ export async function generateDashboardCredentials(
         return {
           success: true,
           message:
-            "Dashboard credentials were generated but email delivery failed.",
+            "Dashboard credentials were generated, but dashboard access remains locked until the credential email is delivered.",
           code:
             "DASHBOARD_CREDENTIAL_EMAIL_FAILED",
           data: {
@@ -4088,9 +4100,9 @@ export async function generateDashboardCredentials(
     return {
       success: true,
       message:
-        "Dashboard credentials generated successfully.",
+        "Dashboard credentials generated. Dashboard access remains locked until credentials are emailed.",
       code:
-        "DASHBOARD_ACTIVATED",
+        "DASHBOARD_CREDENTIALS_GENERATED_LOCKED",
       data: {
         dashboardStudentId,
         credentialsSent:

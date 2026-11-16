@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import mongoose from "mongoose";
 import connectDB from "@/lib/db";
 import StudentModel from "@/models/Student";
-import { getAssessmentAttemptModel } from "@/models/AssessmentAttempt";
+import { ASSESSMENT_CONSTANTS, getAssessmentAttemptModel } from "@/models/AssessmentAttempt";
 import {
   AUTH_COOKIE_NAME,
   STUDENT_AUTH_COOKIE_NAME,
@@ -12,14 +12,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-const MCQ_COUNT = 30;
-const CODING_COUNT = 2;
-const MCQ_TOTAL_MARKS = 60;
-const CODING_TOTAL_MARKS = 40;
+const MCQ_COUNT = ASSESSMENT_CONSTANTS.MCQ_COUNT;
+const CODING_COUNT = ASSESSMENT_CONSTANTS.CODING_COUNT;
+const MCQ_TOTAL_MARKS = ASSESSMENT_CONSTANTS.MCQ_TOTAL_MARKS;
+const CODING_TOTAL_MARKS = ASSESSMENT_CONSTANTS.CODING_TOTAL_MARKS;
 const TOTAL_QUESTIONS = MCQ_COUNT + CODING_COUNT;
-const TOTAL_MARKS = MCQ_TOTAL_MARKS + CODING_TOTAL_MARKS;
-const PASSING_MARKS = 40;
-const PASSING_PERCENTAGE = 40;
+const TOTAL_MARKS = ASSESSMENT_CONSTANTS.TOTAL_MARKS;
+const PASSING_MARKS = ASSESSMENT_CONSTANTS.PASSING_MARKS;
+const PASSING_PERCENTAGE = ASSESSMENT_CONSTANTS.PASSING_PERCENTAGE;
 type AnyRecord = Record<string, unknown>;
 type StudentRecord = {
   _id?: unknown;
@@ -146,8 +146,15 @@ function planPrice(plan: string): number {
 }
 function validScore(value: unknown): number | null {
   const score = numberOrNull(value);
-  if (score === null || score < 0 || score > TOTAL_MARKS) return null;
-  return Number(score.toFixed(2));
+  if (
+    score === null ||
+    !Number.isSafeInteger(score) ||
+    score < 0 ||
+    score > TOTAL_MARKS
+  ) {
+    return null;
+  }
+  return score;
 }
 function percentage(score: number): number {
   return Number(((score / TOTAL_MARKS) * 100).toFixed(2));
@@ -206,6 +213,7 @@ function baseAssessment() {
     totalMarks: TOTAL_MARKS,
     passingMarks: PASSING_MARKS,
     passingPercentage: PASSING_PERCENTAGE,
+    durationMinutes: ASSESSMENT_CONSTANTS.TOTAL_DURATION_MINUTES,
   };
 }
 function eligibilityPayload(passed: boolean) {
@@ -218,19 +226,6 @@ function eligibilityPayload(passed: boolean) {
 }
 function isFinalStatus(status: string): boolean {
   return status === "passed" || status === "failed";
-}
-function isCodingEvaluationPending(attempt: AttemptRecord): boolean {
-  const answers = Array.isArray(attempt.codingAnswers)
-    ? (attempt.codingAnswers as AnyRecord[])
-    : [];
-  return answers.some((answer) => {
-    const code = cleanString(answer?.code);
-    const status = statusOf(answer?.status);
-    return (
-      code.length > 0 &&
-      ["submitted", "evaluating", "not-submitted", "pending", "pending-evaluation"].includes(status)
-    );
-  });
 }
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
@@ -456,20 +451,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       });
     }
     const rawAttemptScore = validScore(attempt.totalScore);
-    const codingEvaluationPending = isCodingEvaluationPending(attempt);
     const pendingAttemptStatus = ["submitted", "evaluating", "pending"].includes(attemptStatus);
-    const score = pendingAttemptStatus || codingEvaluationPending
-      ? null
-      : (rawAttemptScore ?? studentScore);
-    if (
-      ["submitted", "evaluating", "pending"].includes(attemptStatus) ||
-      (codingEvaluationPending && !isFinalStatus(attemptStatus))
-    ) {
-      if (
-        score === null ||
-        ["submitted", "evaluating", "pending"].includes(attemptStatus) ||
-        codingEvaluationPending
-      ) {
+    const score = pendingAttemptStatus ? null : (rawAttemptScore ?? studentScore);
+    if (pendingAttemptStatus) {
+      if (score === null || pendingAttemptStatus) {
         return jsonResponse({
           success: true,
           message: "Assessment submitted successfully. The final evaluation is pending.",

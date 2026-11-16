@@ -311,10 +311,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return fail("Request body must be a JSON object.", "INVALID_BODY", 400);
     }
 
+    const allowedKeys = new Set(["attemptId", "event"]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      return fail("The request contains unsupported fields.", "UNSUPPORTED_PAYLOAD", 400);
+    }
+
     const attemptId = cleanText(body.attemptId, 100);
     const event = cleanText(body.event, 40).toLowerCase() as EventType;
 
-    if (!attemptId) {
+    if (!attemptId || attemptId.length < 16) {
       return fail("A valid attemptId is required.", "ATTEMPT_ID_REQUIRED", 400);
     }
 
@@ -324,8 +329,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const auth = await authenticateStudent(request);
     if (!auth.valid) return auth.response;
-
-    await connectDB();
 
     const Attempt = await getAssessmentAttemptModel();
     const field = EVENT_FIELDS[event];

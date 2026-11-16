@@ -1,5 +1,9 @@
 
-import type { Connection, Model, InferSchemaType } from "mongoose";
+import type {
+  Connection,
+  Model,
+  InferSchemaType,
+} from "mongoose";
 import { Schema } from "mongoose";
 import { connectStudentDB } from "@/lib/student-db";
 
@@ -17,20 +21,51 @@ const boundedPercentage = {
   default: 0,
 } as const;
 
+const nonNegativeNumber = {
+  type: Number,
+  min: [0, "Value cannot be negative."],
+  default: 0,
+} as const;
+
+const approvalStatuses = [
+  "pending",
+  "approved",
+  "rejected",
+] as const;
+
+const operationsStatuses = [
+  "not-ready",
+  "payment-pending",
+  "pending-review",
+  "approved",
+  "active",
+  "suspended",
+  "completed",
+  "expired",
+] as const;
+
+const dashboardStatuses = [
+  "locked",
+  "pending",
+  "active",
+  "suspended",
+  "completed",
+] as const;
+
 const StudentOperationsSchema = new Schema(
   {
     mainStudentId: {
       type: String,
       required: [true, "Main database student ID is required."],
       trim: true,
-      minlength: [1, "Main database student ID cannot be empty."],
-      maxlength: [100, "Main student ID cannot exceed 100 characters."],
+      minlength: 1,
+      maxlength: 100,
     },
     applicationId: {
       type: String,
       trim: true,
       uppercase: true,
-      maxlength: [50, "Application ID cannot exceed 50 characters."],
+      maxlength: 50,
       default: "",
       index: true,
     },
@@ -38,7 +73,7 @@ const StudentOperationsSchema = new Schema(
       type: String,
       trim: true,
       uppercase: true,
-      maxlength: [50, "Student ID cannot exceed 50 characters."],
+      maxlength: 50,
       default: "",
       index: true,
     },
@@ -46,20 +81,20 @@ const StudentOperationsSchema = new Schema(
       type: String,
       trim: true,
       uppercase: true,
-      maxlength: [60, "Dashboard student ID cannot exceed 60 characters."],
+      maxlength: 60,
       default: "",
     },
     fullName: {
       type: String,
       required: [true, "Student full name is required."],
       trim: true,
-      minlength: [2, "Student full name must contain at least 2 characters."],
-      maxlength: [120, "Student full name cannot exceed 120 characters."],
+      minlength: 2,
+      maxlength: 120,
     },
     phone: {
       type: String,
       trim: true,
-      maxlength: [30, "Phone number cannot exceed 30 characters."],
+      maxlength: 30,
       default: "",
     },
     email: {
@@ -67,13 +102,56 @@ const StudentOperationsSchema = new Schema(
       required: [true, "Student email is required."],
       trim: true,
       lowercase: true,
-      maxlength: [254, "Student email cannot exceed 254 characters."],
-      match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email address."],
+      maxlength: 254,
+      match: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+    },
+
+    applicationStatus: {
+      type: String,
+      trim: true,
+      default: "pending",
+      maxlength: 40,
+      index: true,
+    },
+    adminApprovalStatus: {
+      type: String,
+      trim: true,
+      default: "pending",
+      maxlength: 40,
+      index: true,
+    },
+    assessmentStatus: {
+      type: String,
+      trim: true,
+      default: "not-started",
+      maxlength: 40,
+      index: true,
+    },
+    assessmentScore: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: null,
+    },
+    resultStatus: {
+      type: String,
+      trim: true,
+      default: "not-declared",
+      maxlength: 40,
+      index: true,
+    },
+
+    internshipStatus: {
+      type: String,
+      trim: true,
+      default: "not-started",
+      maxlength: 50,
+      index: true,
     },
     internshipTrack: {
       type: String,
       trim: true,
-      maxlength: [150, "Internship track cannot exceed 150 characters."],
+      maxlength: 150,
       default: "",
     },
     internshipPlan: {
@@ -83,18 +161,19 @@ const StudentOperationsSchema = new Schema(
     },
     internshipDurationMonths: {
       type: Number,
-      min: [0, "Internship duration cannot be negative."],
-      max: [36, "Internship duration cannot exceed 36 months."],
+      min: 0,
+      max: 36,
       default: 0,
     },
     internshipDurationDays: {
       type: Number,
-      min: [0, "Internship duration cannot be negative."],
-      max: [3650, "Internship duration cannot exceed 3650 days."],
+      min: 0,
+      max: 3650,
       default: 0,
     },
     internshipStartedAt: nullableDate,
     internshipEndsAt: nullableDate,
+
     paymentStatus: {
       type: String,
       enum: ["unpaid", "pending", "paid", "failed", "refunded"],
@@ -103,47 +182,39 @@ const StudentOperationsSchema = new Schema(
     },
     paymentAmount: {
       type: Number,
-      min: [0, "Payment amount cannot be negative."],
+      min: 0,
       default: 0,
     },
     paymentCurrency: {
       type: String,
       trim: true,
       uppercase: true,
-      maxlength: [3, "Payment currency must be a three-letter code."],
+      maxlength: 3,
       default: "INR",
     },
+
     studentOpsApprovalStatus: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
+      enum: approvalStatuses,
       default: "pending",
       index: true,
     },
     studentOpsStatus: {
       type: String,
-      enum: [
-        "not-ready",
-        "payment-pending",
-        "pending-review",
-        "approved",
-        "active",
-        "suspended",
-        "completed",
-        "expired",
-      ],
+      enum: operationsStatuses,
       default: "not-ready",
       index: true,
     },
     operationsApprovalStatus: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
+      enum: approvalStatuses,
       default: "pending",
       index: true,
     },
     operationsApprovedBy: {
       type: String,
       trim: true,
-      maxlength: [100, "Approver ID cannot exceed 100 characters."],
+      maxlength: 100,
       default: "",
     },
     operationsApprovedAt: nullableDate,
@@ -151,27 +222,19 @@ const StudentOperationsSchema = new Schema(
     operationsRejectionReason: {
       type: String,
       trim: true,
-      maxlength: [1000, "Rejection reason cannot exceed 1000 characters."],
+      maxlength: 1000,
       default: "",
     },
     operationsStatus: {
       type: String,
-      enum: [
-        "not-ready",
-        "payment-pending",
-        "pending-review",
-        "approved",
-        "active",
-        "suspended",
-        "completed",
-        "expired",
-      ],
-      default: "pending-review",
+      enum: operationsStatuses,
+      default: "not-ready",
       index: true,
     },
+
     dashboardStatus: {
       type: String,
-      enum: ["locked", "pending", "active", "suspended", "completed"],
+      enum: dashboardStatuses,
       default: "locked",
       index: true,
     },
@@ -185,14 +248,14 @@ const StudentOperationsSchema = new Schema(
       type: String,
       trim: true,
       uppercase: true,
-      maxlength: [60, "Normalized dashboard ID cannot exceed 60 characters."],
+      maxlength: 60,
       default: "",
     },
     dashboardPasswordHash: {
       type: String,
       default: "",
       select: false,
-      maxlength: [255, "Dashboard password hash cannot exceed 255 characters."],
+      maxlength: 255,
     },
     dashboardCredentialsGenerated: {
       type: Boolean,
@@ -208,8 +271,8 @@ const StudentOperationsSchema = new Schema(
     dashboardLastLoginAt: nullableDate,
     dashboardLoginAttempts: {
       type: Number,
+      min: 0,
       default: 0,
-      min: [0, "Login attempts cannot be negative."],
     },
     dashboardAccountLocked: {
       type: Boolean,
@@ -221,13 +284,14 @@ const StudentOperationsSchema = new Schema(
     dashboardDeactivationReason: {
       type: String,
       trim: true,
-      maxlength: [1000, "Deactivation reason cannot exceed 1000 characters."],
+      maxlength: 1000,
       default: "",
     },
+
     sourceVersion: {
       type: Number,
+      min: 1,
       default: 1,
-      min: [1, "Source version must be at least 1."],
     },
     sourceUpdatedAt: nullableDate,
     lastSyncedAt: nullableDate,
@@ -240,50 +304,32 @@ const StudentOperationsSchema = new Schema(
     syncError: {
       type: String,
       trim: true,
-      maxlength: [500, "Sync error cannot exceed 500 characters."],
+      maxlength: 500,
       default: "",
     },
+
     learningStatus: {
       type: String,
       enum: ["not-started", "active", "paused", "completed"],
       default: "not-started",
     },
-    currentLearningDay: {
-      type: Number,
-      default: 0,
-      min: [0, "Current learning day cannot be negative."],
-    },
-    completedLearningDays: {
-      type: Number,
-      default: 0,
-      min: [0, "Completed learning days cannot be negative."],
-    },
+    currentLearningDay: nonNegativeNumber,
+    completedLearningDays: nonNegativeNumber,
     taskCompletionPercentage: boundedPercentage,
     learningProgressPercentage: boundedPercentage,
     attendancePercentage: boundedPercentage,
     currentTaskId: {
       type: String,
       trim: true,
-      maxlength: [100, "Current task ID cannot exceed 100 characters."],
+      maxlength: 100,
       default: "",
     },
     lastTaskAssignedAt: nullableDate,
     lastTaskSubmittedAt: nullableDate,
-    totalTasksAssigned: {
-      type: Number,
-      default: 0,
-      min: [0, "Assigned task count cannot be negative."],
-    },
-    totalTasksSubmitted: {
-      type: Number,
-      default: 0,
-      min: [0, "Submitted task count cannot be negative."],
-    },
-    totalTasksApproved: {
-      type: Number,
-      default: 0,
-      min: [0, "Approved task count cannot be negative."],
-    },
+    totalTasksAssigned: nonNegativeNumber,
+    totalTasksSubmitted: nonNegativeNumber,
+    totalTasksApproved: nonNegativeNumber,
+
     weeklyAssessmentStatus: {
       type: String,
       enum: ["locked", "available", "in-progress", "submitted", "passed", "failed"],
@@ -292,10 +338,11 @@ const StudentOperationsSchema = new Schema(
     weeklyAssessmentScore: {
       type: Number,
       default: null,
-      min: [0, "Assessment score cannot be negative."],
-      max: [100, "Assessment score cannot exceed 100."],
+      min: 0,
+      max: 100,
     },
     weeklyAssessmentSubmittedAt: nullableDate,
+
     saturdayAssessmentStatus: {
       type: String,
       enum: ["locked", "available", "in-progress", "submitted", "passed", "failed"],
@@ -304,21 +351,15 @@ const StudentOperationsSchema = new Schema(
     saturdayAssessmentScore: {
       type: Number,
       default: null,
-      min: [0, "Assessment score cannot be negative."],
-      max: [100, "Assessment score cannot exceed 100."],
+      min: 0,
+      max: 100,
     },
     saturdayAssessmentSubmittedAt: nullableDate,
-    attendanceDaysPresent: {
-      type: Number,
-      default: 0,
-      min: [0, "Present days cannot be negative."],
-    },
-    attendanceDaysAbsent: {
-      type: Number,
-      default: 0,
-      min: [0, "Absent days cannot be negative."],
-    },
+
+    attendanceDaysPresent: nonNegativeNumber,
+    attendanceDaysAbsent: nonNegativeNumber,
     lastAttendanceAt: nullableDate,
+
     projectStatus: {
       type: String,
       enum: [
@@ -337,7 +378,7 @@ const StudentOperationsSchema = new Schema(
     projectFolderReference: {
       type: String,
       trim: true,
-      maxlength: [500, "Project reference cannot exceed 500 characters."],
+      maxlength: 500,
       default: "",
     },
     projectSubmittedAt: nullableDate,
@@ -345,9 +386,10 @@ const StudentOperationsSchema = new Schema(
     projectReviewNotes: {
       type: String,
       trim: true,
-      maxlength: [2000, "Project review notes cannot exceed 2000 characters."],
+      maxlength: 2000,
       default: "",
     },
+
     certificateStatus: {
       type: String,
       enum: ["not-eligible", "eligible", "generated", "verified", "revoked"],
@@ -357,14 +399,15 @@ const StudentOperationsSchema = new Schema(
     certificateId: {
       type: String,
       trim: true,
-      maxlength: [100, "Certificate ID cannot exceed 100 characters."],
+      maxlength: 100,
       default: "",
     },
     certificateGeneratedAt: nullableDate,
+
     notes: {
       type: String,
       trim: true,
-      maxlength: [3000, "Notes cannot exceed 3000 characters."],
+      maxlength: 3000,
       default: "",
     },
   },
@@ -482,10 +525,6 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
     this.internshipTrack = this.internshipTrack.trim();
   }
 
-  if (typeof this.internshipPlan === "string") {
-    this.internshipPlan = this.internshipPlan.trim() as typeof this.internshipPlan;
-  }
-
   if (typeof this.paymentCurrency === "string") {
     this.paymentCurrency = this.paymentCurrency.trim().toUpperCase();
   }
@@ -530,6 +569,22 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
   }
 
   if (
+    this.dashboardLoginEnabled === true &&
+    (
+      this.paymentStatus !== "paid" ||
+      this.studentOpsApprovalStatus !== "approved" ||
+      this.operationsApprovalStatus !== "approved" ||
+      this.dashboardCredentialsGenerated !== true ||
+      !this.dashboardStudentId
+    )
+  ) {
+    this.invalidate(
+      "dashboardLoginEnabled",
+      "Dashboard login requires verified payment, Student Operations approval and generated credentials.",
+    );
+  }
+
+  if (
     this.certificateStatus === "generated" ||
     this.certificateStatus === "verified"
   ) {
@@ -562,7 +617,6 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
       );
     }
   }
-
 });
 
 export type StudentOperationsDocument = InferSchemaType<
@@ -580,7 +634,9 @@ export async function getStudentOperationsModel(): Promise<
   const connection = await connectStudentDB();
 
   if (connection.readyState !== 1 || !connection.db) {
-    throw new Error("Student Operations database connection is not ready.");
+    throw new Error(
+      "Student Operations database connection is not ready.",
+    );
   }
 
   const cached = modelRegistry.get(connection);

@@ -1,6 +1,6 @@
 "use client";
 import Script from "next/script";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -139,6 +139,8 @@ function PaymentPageContent() {
   const [studentEmail, setStudentEmail] = useState("");
   const [applicationId, setApplicationId] = useState("");
   const [orderId, setOrderId] = useState("");
+  const [checkoutExpiresAt, setCheckoutExpiresAt] = useState<number | null>(null);
+  const [checkoutSecondsLeft, setCheckoutSecondsLeft] = useState<number | null>(null);
   const [baseAmountPaise, setBaseAmountPaise] = useState(selectedPlan?.amountPaise || 0);
   const [taxAmountPaise, setTaxAmountPaise] = useState(0);
   const [feeAmountPaise, setFeeAmountPaise] = useState(0);
@@ -151,14 +153,41 @@ function PaymentPageContent() {
   const checkout = useRef<RazorpayInstance | null>(null);
   const paymentStarted = useRef(false);
   const verifyStarted = useRef(false);
+  const countdownInterval = useRef<number | null>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       try { checkout.current?.close?.(); } catch {}
       checkout.current = null;
+      if (countdownInterval.current !== null) window.clearInterval(countdownInterval.current);
+      countdownInterval.current = null;
     };
   }, []);
+  useEffect(() => {
+    if (countdownInterval.current !== null) {
+      window.clearInterval(countdownInterval.current);
+      countdownInterval.current = null;
+    }
+    if (!checkoutExpiresAt) {
+      setCheckoutSecondsLeft(null);
+      return;
+    }
+    const updateCountdown = () => {
+      const remaining = Math.max(0, Math.ceil((checkoutExpiresAt - Date.now()) / 1000));
+      setCheckoutSecondsLeft(remaining);
+      if (remaining === 0 && countdownInterval.current !== null) {
+        window.clearInterval(countdownInterval.current);
+        countdownInterval.current = null;
+      }
+    };
+    updateCountdown();
+    countdownInterval.current = window.setInterval(updateCountdown, 1000);
+    return () => {
+      if (countdownInterval.current !== null) window.clearInterval(countdownInterval.current);
+      countdownInterval.current = null;
+    };
+  }, [checkoutExpiresAt]);
   useEffect(() => {
     if (!internshipId || !planCode) {
       setState("failed");
@@ -178,11 +207,13 @@ function PaymentPageContent() {
     }
     setError("");
     setPaymentUncertain(false);
+    setCheckoutExpiresAt(null);
+    setCheckoutSecondsLeft(null);
   }, [internshipId, planCode]);
   const goBack = useCallback(() => {
-    if (state === "processing" || state === "verifying") return;
+    if (state === "processing" || state === "verifying" || paymentUncertain) return;
     router.push("/student/internships");
-  }, [router, state]);
+  }, [paymentUncertain, router, state]);
   const createOrder = useCallback(async () => {
     if (!internshipId || !planCode) throw new Error("Select an internship plan before continuing.");
     const controller = new AbortController();
@@ -229,6 +260,9 @@ function PaymentPageContent() {
       const internship = obj(data.internship);
       const student = obj(data.student);
       const pricing = obj(data.pricing);
+      const checkoutSession = obj(data.checkoutSession);
+      const checkoutExpiryValue = firstString(data, ["checkoutSessionExpiresAt", "checkoutExpiresAt"]) || firstString(checkoutSession, ["expiresAt"]);
+      const checkoutExpiryTimestamp = checkoutExpiryValue ? Date.parse(checkoutExpiryValue) : Number.NaN;
       const taxes = obj(data.tax);
       const fees = obj(data.fees);
       const titleValue =
@@ -276,6 +310,7 @@ function PaymentPageContent() {
         setTaxLabel(firstString(data, ["taxLabel"]) || firstString(taxes, ["label", "name"]) || "GST / applicable tax");
         setFeeLabel(firstString(data, ["feeLabel"]) || firstString(fees, ["label", "name"]) || "Payment processing fee");
         setTotalAmountPaise(amountPaise);
+        setCheckoutExpiresAt(Number.isFinite(checkoutExpiryTimestamp) ? checkoutExpiryTimestamp : null);
       }
       return {
         orderId: orderIdValue,
@@ -287,6 +322,7 @@ function PaymentPageContent() {
         email,
         name,
         appId,
+        checkoutExpiresAt: Number.isFinite(checkoutExpiryTimestamp) ? checkoutExpiryTimestamp : null,
       };
     } finally {
       window.clearTimeout(timer);
@@ -392,6 +428,10 @@ function PaymentPageContent() {
       if (!mounted.current) return;
       const Razorpay = window.Razorpay;
       if (!Razorpay) throw new Error("Secure checkout is unavailable. Please refresh the page.");
+      try {
+        checkout.current?.close?.();
+      } catch {}
+      checkout.current = null;
       const instance = new Razorpay({
         key: created.keyId,
         amount: created.amountPaise,
@@ -470,15 +510,22 @@ function PaymentPageContent() {
     }
   }, [createOrder, internshipId, planCode, razorpayLoaded, state, verifyPayment]);
   const retry = useCallback(() => {
+    if (paymentUncertain) return;
+    try {
+      checkout.current?.close?.();
+    } catch {}
+    checkout.current = null;
     paymentStarted.current = false;
     verifyStarted.current = false;
     setError("");
     setNotice("");
     setOrderId("");
+    setCheckoutExpiresAt(null);
+    setCheckoutSecondsLeft(null);
     setReceiptEmailSent(false);
     setPaymentUncertain(false);
     setState(razorpayLoaded ? "ready" : "loading");
-  }, [razorpayLoaded]);
+  }, [paymentUncertain, razorpayLoaded]);
   const busy = state === "processing" || state === "verifying";
   const canPay = state === "ready" && razorpayLoaded && Boolean(internshipId && planCode);
   return (
@@ -589,6 +636,23 @@ function PaymentPageContent() {
                         </div>
                       </div>
                     </div>
+                    {checkoutSecondsLeft !== null && state !== "pending" ? (
+                      <div className={`rounded-xl border p-3 ${checkoutSecondsLeft > 0 ? "border-blue-100 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className={`text-xs font-semibold ${checkoutSecondsLeft > 0 ? "text-blue-800" : "text-amber-800"}`}>
+                            {checkoutSecondsLeft > 0 ? "Checkout session time remaining" : "Website checkout session ended"}
+                          </span>
+                          <span className={`font-mono text-sm font-black tabular-nums ${checkoutSecondsLeft > 0 ? "text-blue-900" : "text-amber-900"}`}>
+                            {Math.floor(checkoutSecondsLeft / 60).toString().padStart(2, "0")}:{(checkoutSecondsLeft % 60).toString().padStart(2, "0")}
+                          </span>
+                        </div>
+                        <p className={`mt-1 text-[11px] leading-5 ${checkoutSecondsLeft > 0 ? "text-blue-700" : "text-amber-800"}`}>
+                          {checkoutSecondsLeft > 0
+                            ? "This is the website session timer. Razorpay may still process an already-open checkout; payment verification remains authoritative."
+                            : "The website session timer has ended. You can reopen checkout to obtain a fresh session using the same eligible order. Do not pay again if a previous attempt may have debited your account."}
+                        </p>
+                      </div>
+                    ) : null}
                     {state === "ready" || state === "loading" ? (
                       <button
                         type="button"
@@ -669,7 +733,7 @@ export default function StudentPaymentPage() {
     </Suspense>
   );
 }
-function InfoTile({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function InfoTile({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
     <div className="flex min-w-0 items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4">
       <span className="shrink-0 text-blue-600">{icon}</span>

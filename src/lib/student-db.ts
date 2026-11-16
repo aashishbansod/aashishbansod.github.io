@@ -1,4 +1,6 @@
+
 import type { Connection } from "mongoose";
+
 import {
   connectStudentDB as connectStudentDBFromCore,
   getStudentDBState as getStudentDBStateFromCore,
@@ -7,13 +9,19 @@ import {
 
 const CONNECTED_STATE = 1;
 
-function createConnectionError(state: number): Error {
-  const error = new Error(
-    `Student Operations database connection is not ready. Current connection state: ${state}. Verify STUDENT_MONGODB_URI, STUDENT_MONGODB_DATABASE, MongoDB Atlas Network Access, database user permissions, and cluster availability.`,
-  );
+class StudentDatabaseConnectionError extends Error {
+  readonly code = "STUDENT_DATABASE_NOT_READY";
+  readonly readyState: number;
 
-  error.name = "StudentDatabaseConnectionError";
-  return error;
+  constructor(readyState: number) {
+    super(
+      `Student Operations database connection is not ready. Current connection state: ${readyState}. Verify STUDENT_MONGODB_URI, STUDENT_MONGODB_DATABASE, MongoDB Atlas Network Access, database user permissions, and cluster availability.`,
+    );
+
+    this.name = "StudentDatabaseConnectionError";
+    this.readyState = readyState;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
 }
 
 function assertStudentConnection(
@@ -21,15 +29,19 @@ function assertStudentConnection(
 ): asserts connection is Connection {
   if (
     connection.readyState !== CONNECTED_STATE ||
-    connection.db == null
+    !connection.db
   ) {
-    throw createConnectionError(connection.readyState);
+    throw new StudentDatabaseConnectionError(
+      connection.readyState,
+    );
   }
 }
 
 export async function connectStudentDB(): Promise<Connection> {
   const connection = await connectStudentDBFromCore();
+
   assertStudentConnection(connection);
+
   return connection;
 }
 

@@ -29,6 +29,7 @@ export const revalidate = 0;
 const RAZORPAY_API_BASE = "https://api.razorpay.com/v1";
 
 const RAZORPAY_TIMEOUT_MS = 15_000;
+const CHECKOUT_SESSION_DURATION_MS = 10 * 60 * 1000;
 
 const MAX_BODY_BYTES = 16 * 1024;
 
@@ -1125,11 +1126,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }, 503);
     }
 
+    const checkoutSessionStartedAt = new Date();
+    const checkoutSessionExpiresAt = new Date(checkoutSessionStartedAt.getTime() + CHECKOUT_SESSION_DURATION_MS);
+
     return jsonResponse({
 
       success: true,
 
-      message: "Payment order created successfully.",
+      message: "Payment order prepared. Complete checkout within the displayed session or reopen checkout to continue with the same order.",
 
       data: {
 
@@ -1168,6 +1172,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         receiptEmail: cleanString(student.email),
 
         paymentStatus: "pending",
+
+        checkoutSession: {
+          mode: "website-session",
+          durationSeconds: Math.floor(CHECKOUT_SESSION_DURATION_MS / 1000),
+          startedAt: checkoutSessionStartedAt.toISOString(),
+          expiresAt: checkoutSessionExpiresAt.toISOString(),
+          gatewayOrderExpires: false,
+        },
+
+        checkoutSessionDurationSeconds: Math.floor(CHECKOUT_SESSION_DURATION_MS / 1000),
+        checkoutSessionStartedAt: checkoutSessionStartedAt.toISOString(),
+        checkoutSessionExpiresAt: checkoutSessionExpiresAt.toISOString(),
+        gatewayOrderExpires: false,
 
         operationsSyncPending,
 

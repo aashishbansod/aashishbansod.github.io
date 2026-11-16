@@ -315,28 +315,86 @@ async function syncPaymentLedger(
     throw new Error("Payment ID is already linked to another order.");
   }
 
-  await Payment.findOneAndUpdate(
-    { orderId },
-    {
-      $set: {
-        ...details,
-        amount,
-        status,
-        method: "Razorpay",
-        paymentId,
-        orderId,
-        notes,
-        archivedAt: null,
-        archivedBy: "",
+  const ledgerFilter: JsonObject = {
+    orderId,
+    ...(status === "failed"
+      ? {
+          status: { $nin: ["success", "refunded"] },
+          $or: [
+            { paymentId: "" },
+            { paymentId },
+            { paymentId: { $exists: false } },
+            { paymentId: null },
+          ],
+        }
+      : {
+          status: { $ne: "refunded" },
+          $or: [
+            { paymentId: "" },
+            { paymentId },
+            { paymentId: { $exists: false } },
+            { paymentId: null },
+          ],
+        }),
+  };
+
+  try {
+    const ledger = await Payment.findOneAndUpdate(
+      ledgerFilter,
+      {
+        $set: {
+          ...details,
+          amount,
+          status,
+          method: "Razorpay",
+          paymentId,
+          orderId,
+          notes,
+          archivedAt: null,
+          archivedBy: "",
+        },
       },
-    },
-    {
-      upsert: true,
-      new: true,
-      runValidators: true,
-      setDefaultsOnInsert: true,
+      {
+        upsert: true,
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      }
+    ).select("_id paymentId status").lean().exec();
+
+    if (
+      !ledger ||
+      clean(ledger.paymentId) !== paymentId ||
+      clean(ledger.status).toLowerCase() !== status
+    ) {
+      throw new Error("Payment ledger state could not be safely reconciled.");
     }
-  ).exec();
+  } catch (error) {
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? Number((error as { code?: unknown }).code)
+        : 0;
+
+    if (code === 11000) {
+      const existing = await Payment.findOne({ orderId })
+        .select("_id paymentId status")
+        .lean()
+        .exec();
+
+      if (
+        existing &&
+        clean(existing.paymentId) === paymentId &&
+        (
+          clean(existing.status).toLowerCase() === status ||
+          (status === "failed" && ["success", "refunded"].includes(clean(existing.status).toLowerCase()))
+        )
+      ) {
+        return;
+      }
+    }
+
+    throw error;
+  }
 }
 
 
@@ -462,13 +520,17 @@ async function handleCapturedPayment(
   }).exec();
 
   if (!studentDocument) {
-    console.warn("[RAZORPAY WEBHOOK] Unknown order", { event, orderId });
+    console.warn("[RAZORPAY WEBHOOK] Unknown order; retry required", { event, orderId });
 
-    return response({
-      success: true,
-      handled: false,
-      message: "No matching student order.",
-    });
+    return response(
+      {
+        success: false,
+        handled: false,
+        code: "STUDENT_ORDER_NOT_FOUND",
+        message: "The student order is not available yet. Razorpay should retry this webhook.",
+      },
+      500
+    );
   }
 
   const student = getStudentRecord(studentDocument);
@@ -782,11 +844,15 @@ async function handleFailedPayment(
   }).exec();
 
   if (!studentDocument) {
-    return response({
-      success: true,
-      handled: false,
-      message: "Unknown order acknowledged.",
-    });
+    return response(
+      {
+        success: false,
+        handled: false,
+        code: "STUDENT_ORDER_NOT_FOUND",
+        message: "The student order is not available yet. Razorpay should retry this webhook.",
+      },
+      500
+    );
   }
 
   const student = getStudentRecord(studentDocument);
@@ -886,12 +952,12 @@ async function handleFailedPayment(
       .lean()
       .exec();
 
-    if (clean(latest?.paymentStatus).toLowerCase() === "paid") {
+    if (["paid", "refunded"].includes(clean(latest?.paymentStatus).toLowerCase())) {
       return response({
         success: true,
         handled: true,
         ignored: true,
-        paymentStatus: "paid",
+        paymentStatus: clean(latest?.paymentStatus).toLowerCase(),
       });
     }
 
@@ -903,6 +969,20 @@ async function handleFailedPayment(
       },
       500
     );
+  }
+
+  const latestAfterFailure = await StudentModel.findById(student._id)
+    .select("paymentStatus")
+    .lean()
+    .exec();
+
+  if (clean(latestAfterFailure?.paymentStatus).toLowerCase() !== "failed") {
+    return response({
+      success: true,
+      handled: true,
+      ignored: true,
+      paymentStatus: clean(latestAfterFailure?.paymentStatus).toLowerCase() || "pending",
+    });
   }
 
   await syncApplicationPayment(

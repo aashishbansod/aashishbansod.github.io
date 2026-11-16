@@ -758,7 +758,7 @@ export default function StudentAssessmentPage() {
 
     saveTimerRef.current = setTimeout(() => {
       void saveAnswers().catch(() => undefined);
-    }, 700);
+    }, 250);
 
     return () => {
       if (saveTimerRef.current) {
@@ -896,19 +896,18 @@ export default function StudentAssessmentPage() {
   };
 
   const selectAnswer = (questionId: string, optionId: string) => {
-    if (submittingRef.current) return;
+    if (submittingRef.current || !attemptRef.current?.attemptId) return;
 
-    setAnswers((previous) => {
-      const next = {
-        ...previous,
-        [questionId]: optionId,
-      };
+    const next = {
+      ...answersRef.current,
+      [questionId]: optionId,
+    };
 
-      answersRef.current = next;
-      setSaveState("unsaved");
-
-      return next;
-    });
+    answersRef.current = next;
+    setAnswers(next);
+    setSaveState("saving");
+    setError("");
+    void saveAnswers(next).catch(() => undefined);
   };
 
   const submitAssessment = useCallback(

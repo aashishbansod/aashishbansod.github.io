@@ -1,3 +1,4 @@
+
 import mongoose, {
   type Connection,
   type ConnectOptions,
@@ -7,6 +8,9 @@ const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const MAX_CONNECT_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 750;
 const MAX_RETRY_DELAY_MS = 4000;
+const CONNECTED_STATE = 1;
+const CONNECTING_STATE = 2;
+const DISCONNECTED_STATE = 0;
 
 const CONNECTION_OPTIONS: ConnectOptions = {
   autoIndex: !IS_PRODUCTION,
@@ -44,10 +48,16 @@ declare global {
 }
 
 const mainCache: MainConnectionCache =
-  globalThis.mongooseConnection ?? { conn: null, promise: null };
+  globalThis.mongooseConnection ?? {
+    conn: null,
+    promise: null,
+  };
 
 const studentCache: StudentConnectionCache =
-  globalThis.studentMongooseConnection ?? { conn: null, promise: null };
+  globalThis.studentMongooseConnection ?? {
+    conn: null,
+    promise: null,
+  };
 
 globalThis.mongooseConnection = mainCache;
 globalThis.studentMongooseConnection = studentCache;
@@ -61,12 +71,18 @@ function readFirstEnv(...names: string[]): string {
     const value = readEnv(name);
     if (value) return value;
   }
+
   return "";
 }
 
-function requireMongoUri(uri: string, variableName: string): string {
+function requireMongoUri(
+  uri: string,
+  variableName: string,
+): string {
   if (!uri) {
-    throw new Error(`Missing ${variableName} in environment configuration.`);
+    throw new Error(
+      `Missing ${variableName} in environment configuration.`,
+    );
   }
 
   if (!/^mongodb(?:\+srv)?:\/\//i.test(uri)) {
@@ -77,17 +93,23 @@ function requireMongoUri(uri: string, variableName: string): string {
 
   try {
     const parsed = new URL(uri);
+
     if (!parsed.hostname) {
       throw new Error("Missing MongoDB hostname.");
     }
   } catch {
-    throw new Error(`${variableName} is not a valid MongoDB connection URI.`);
+    throw new Error(
+      `${variableName} is not a valid MongoDB connection URI.`,
+    );
   }
 
   return uri;
 }
 
-function requireDatabaseName(name: string, variableName: string): string {
+function requireDatabaseName(
+  name: string,
+  variableName: string,
+): string {
   const normalized = name.trim();
 
   if (
@@ -103,18 +125,25 @@ function requireDatabaseName(name: string, variableName: string): string {
   return normalized;
 }
 
-function isConnectionConnected(connection: Connection): boolean {
-  return connection.readyState === 1 && Boolean(connection.db);
+function isConnectionConnected(
+  connection: Connection,
+): boolean {
+  return (
+    connection.readyState === CONNECTED_STATE &&
+    Boolean(connection.db)
+  );
 }
 
 function isMainConnected(): boolean {
   return (
-    mongoose.connection.readyState === 1 &&
+    mongoose.connection.readyState === CONNECTED_STATE &&
     Boolean(mongoose.connection.db)
   );
 }
 
-function getMongoErrorDetails(error: unknown): MongoErrorDetails {
+function getMongoErrorDetails(
+  error: unknown,
+): MongoErrorDetails {
   const value = error as
     | {
         name?: unknown;
@@ -126,7 +155,10 @@ function getMongoErrorDetails(error: unknown): MongoErrorDetails {
     | undefined;
 
   const details: MongoErrorDetails = {
-    name: typeof value?.name === "string" ? value.name : "ConnectionError",
+    name:
+      typeof value?.name === "string"
+        ? value.name
+        : "ConnectionError",
     message:
       typeof value?.message === "string"
         ? value.message.slice(0, 500)
@@ -157,15 +189,22 @@ function logConnectionFailure(
   console.error(`[MongoDB:${label}] Connection failed`, {
     name: details.name,
     ...(details.code ? { code: details.code } : {}),
-    ...(details.codeName ? { codeName: details.codeName } : {}),
+    ...(details.codeName
+      ? { codeName: details.codeName }
+      : {}),
     ...(attempt
-      ? { attempt, maxAttempts: MAX_CONNECT_ATTEMPTS }
+      ? {
+          attempt,
+          maxAttempts: MAX_CONNECT_ATTEMPTS,
+        }
       : {}),
   });
 }
 
 function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function isAuthenticationError(error: unknown): boolean {
@@ -184,8 +223,12 @@ function isAuthenticationError(error: unknown): boolean {
   );
 }
 
-function isRetryableConnectionError(error: unknown): boolean {
-  if (isAuthenticationError(error)) return false;
+function isRetryableConnectionError(
+  error: unknown,
+): boolean {
+  if (isAuthenticationError(error)) {
+    return false;
+  }
 
   const details = getMongoErrorDetails(error);
   const name = details.name.toLowerCase();
@@ -213,13 +256,18 @@ function isRetryableConnectionError(error: unknown): boolean {
   );
 }
 
-function createSafeConnectionError(label: string, error: unknown): Error {
+function createSafeConnectionError(
+  label: string,
+  error: unknown,
+): Error {
   const details = getMongoErrorDetails(error);
+
   const wrapped = new Error(
     `Unable to connect to the ${label} database. Check its URI, credentials, Atlas Network Access, DNS, database name and cluster status. Cause: ${details.name}${details.code ? ` (${details.code})` : ""}.`,
   );
 
   wrapped.name = "MongoDBConnectionError";
+
   return wrapped;
 }
 
@@ -231,13 +279,15 @@ function getRetryDelay(attempt: number): number {
 }
 
 async function closeMainConnection(): Promise<void> {
-  if (mongoose.connection.readyState === 0) {
+  const connection = mongoose.connection;
+
+  if (connection.readyState === DISCONNECTED_STATE) {
     mainCache.conn = null;
     return;
   }
 
   try {
-    await mongoose.disconnect();
+    await connection.close();
   } catch (error) {
     logConnectionFailure("Main cleanup", error);
     throw error;
@@ -247,36 +297,54 @@ async function closeMainConnection(): Promise<void> {
 }
 
 async function connectMainWithRetry(): Promise<typeof mongoose> {
-  const uri = requireMongoUri(readEnv("MONGODB_URI"), "MONGODB_URI");
+  const uri = requireMongoUri(
+    readEnv("MONGODB_URI"),
+    "MONGODB_URI",
+  );
+
   const databaseName = requireDatabaseName(
-    readFirstEnv("ADMIN_MONGODB_DATABASE", "MONGODB_DATABASE") ||
-      "cybernet_careers",
+    readFirstEnv(
+      "ADMIN_MONGODB_DATABASE",
+      "MONGODB_DATABASE",
+    ) || "cybernet_careers",
     "ADMIN_MONGODB_DATABASE/MONGODB_DATABASE",
   );
 
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt += 1) {
+  for (
+    let attempt = 1;
+    attempt <= MAX_CONNECT_ATTEMPTS;
+    attempt += 1
+  ) {
     try {
       if (isMainConnected()) {
         mainCache.conn = mongoose;
         return mongoose;
       }
 
-      if (mongoose.connection.readyState === 2) {
+      if (
+        mongoose.connection.readyState === CONNECTING_STATE
+      ) {
         try {
           await mongoose.connection.asPromise();
+
           if (isMainConnected()) {
             mainCache.conn = mongoose;
             return mongoose;
           }
         } catch (error) {
           lastError = error;
-          if (!isRetryableConnectionError(error)) throw error;
+
+          if (!isRetryableConnectionError(error)) {
+            throw error;
+          }
         }
       }
 
-      if (mongoose.connection.readyState !== 0) {
+      if (
+        mongoose.connection.readyState !== DISCONNECTED_STATE
+      ) {
         await closeMainConnection();
       }
 
@@ -286,14 +354,18 @@ async function connectMainWithRetry(): Promise<typeof mongoose> {
       });
 
       if (!isMainConnected()) {
-        throw new Error("Main MongoDB connection did not reach ready state.");
+        throw new Error(
+          "Main MongoDB connection did not reach ready state.",
+        );
       }
 
       mainCache.conn = connected;
+
       return connected;
     } catch (error) {
       lastError = error;
       mainCache.conn = null;
+
       logConnectionFailure("Main", error, attempt);
 
       if (
@@ -303,11 +375,16 @@ async function connectMainWithRetry(): Promise<typeof mongoose> {
         break;
       }
 
-      if (mongoose.connection.readyState !== 0) {
+      if (
+        mongoose.connection.readyState !== DISCONNECTED_STATE
+      ) {
         try {
-          await mongoose.disconnect();
+          await closeMainConnection();
         } catch (cleanupError) {
-          logConnectionFailure("Main retry cleanup", cleanupError);
+          logConnectionFailure(
+            "Main retry cleanup",
+            cleanupError,
+          );
         }
       }
 
@@ -329,6 +406,7 @@ export async function connectDB(): Promise<typeof mongoose> {
   }
 
   const pending = connectMainWithRetry();
+
   mainCache.promise = pending;
 
   try {
@@ -343,19 +421,30 @@ export async function connectDB(): Promise<typeof mongoose> {
 async function closeStudentConnection(
   connection: Connection,
 ): Promise<void> {
-  if (connection.readyState === 0) return;
+  if (connection.readyState === DISCONNECTED_STATE) {
+    return;
+  }
 
   try {
     await connection.close();
   } catch (error) {
-    logConnectionFailure("Student Operations cleanup", error);
+    logConnectionFailure(
+      "Student Operations cleanup",
+      error,
+    );
+
     throw error;
   }
 }
 
-function attachStudentConnectionListeners(connection: Connection): void {
+function attachStudentConnectionListeners(
+  connection: Connection,
+): void {
   connection.on("error", (error: unknown) => {
-    logConnectionFailure("Student Operations runtime", error);
+    logConnectionFailure(
+      "Student Operations runtime",
+      error,
+    );
   });
 
   connection.on("disconnected", () => {
@@ -368,7 +457,9 @@ function attachStudentConnectionListeners(connection: Connection): void {
 
   connection.on("reconnected", () => {
     if (studentCache.conn === connection) {
-      console.info("[MongoDB:Student Operations] Connection restored.");
+      console.info(
+        "[MongoDB:Student Operations] Connection restored.",
+      );
     }
   });
 }
@@ -380,13 +471,18 @@ async function connectStudentWithRetry(): Promise<Connection> {
   );
 
   const databaseName = requireDatabaseName(
-    readEnv("STUDENT_MONGODB_DATABASE") || "cybernet_student",
+    readEnv("STUDENT_MONGODB_DATABASE") ||
+      "cybernet_student",
     "STUDENT_MONGODB_DATABASE",
   );
 
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt += 1) {
+  for (
+    let attempt = 1;
+    attempt <= MAX_CONNECT_ATTEMPTS;
+    attempt += 1
+  ) {
     let connection: Connection | null = null;
 
     try {
@@ -396,17 +492,29 @@ async function connectStudentWithRetry(): Promise<Connection> {
         return existing;
       }
 
-      if (existing && existing.readyState === 2) {
+      if (
+        existing &&
+        existing.readyState === CONNECTING_STATE
+      ) {
         try {
           await existing.asPromise();
-          if (isConnectionConnected(existing)) return existing;
+
+          if (isConnectionConnected(existing)) {
+            return existing;
+          }
         } catch (error) {
           lastError = error;
-          if (!isRetryableConnectionError(error)) throw error;
+
+          if (!isRetryableConnectionError(error)) {
+            throw error;
+          }
         }
       }
 
-      if (existing && existing.readyState !== 0) {
+      if (
+        existing &&
+        existing.readyState !== DISCONNECTED_STATE
+      ) {
         await closeStudentConnection(existing);
       }
 
@@ -430,7 +538,9 @@ async function connectStudentWithRetry(): Promise<Connection> {
       }
 
       attachStudentConnectionListeners(connected);
+
       studentCache.conn = connected;
+
       return connected;
     } catch (error) {
       lastError = error;
@@ -450,7 +560,11 @@ async function connectStudentWithRetry(): Promise<Connection> {
         }
       }
 
-      logConnectionFailure("Student Operations", error, attempt);
+      logConnectionFailure(
+        "Student Operations",
+        error,
+        attempt,
+      );
 
       if (
         attempt >= MAX_CONNECT_ATTEMPTS ||
@@ -463,7 +577,10 @@ async function connectStudentWithRetry(): Promise<Connection> {
     }
   }
 
-  throw createSafeConnectionError("Student Operations", lastError);
+  throw createSafeConnectionError(
+    "Student Operations",
+    lastError,
+  );
 }
 
 export async function connectStudentDB(): Promise<Connection> {
@@ -478,6 +595,7 @@ export async function connectStudentDB(): Promise<Connection> {
   }
 
   const pending = connectStudentWithRetry();
+
   studentCache.promise = pending;
 
   try {
@@ -495,7 +613,8 @@ export function isDBConnected(): boolean {
 
 export function isStudentDBConnected(): boolean {
   return Boolean(
-    studentCache.conn && isConnectionConnected(studentCache.conn),
+    studentCache.conn &&
+      isConnectionConnected(studentCache.conn),
   );
 }
 
@@ -504,28 +623,36 @@ export function getDBState(): number {
 }
 
 export function getStudentDBState(): number {
-  return studentCache.conn?.readyState ?? 0;
+  return studentCache.conn?.readyState ?? DISCONNECTED_STATE;
 }
 
 export async function disconnectDB(): Promise<void> {
   const pendingConnections: Promise<unknown>[] = [];
 
-  if (mainCache.promise) pendingConnections.push(mainCache.promise);
-  if (studentCache.promise) pendingConnections.push(studentCache.promise);
+  if (mainCache.promise) {
+    pendingConnections.push(mainCache.promise);
+  }
+
+  if (studentCache.promise) {
+    pendingConnections.push(studentCache.promise);
+  }
 
   await Promise.allSettled(pendingConnections);
 
   const mainConnection = mongoose.connection;
   const studentConnection = studentCache.conn;
+
   const closeTasks: Promise<unknown>[] = [];
 
-  if (mainConnection.readyState !== 0) {
-    closeTasks.push(mongoose.disconnect());
+  if (
+    mainConnection.readyState !== DISCONNECTED_STATE
+  ) {
+    closeTasks.push(mainConnection.close());
   }
 
   if (
     studentConnection &&
-    studentConnection.readyState !== 0 &&
+    studentConnection.readyState !== DISCONNECTED_STATE &&
     studentConnection !== mainConnection
   ) {
     closeTasks.push(studentConnection.close());
@@ -539,7 +666,9 @@ export async function disconnectDB(): Promise<void> {
   studentCache.promise = null;
 
   const failure = results.find(
-    (result): result is PromiseRejectedResult =>
+    (
+      result,
+    ): result is PromiseRejectedResult =>
       result.status === "rejected",
   );
 

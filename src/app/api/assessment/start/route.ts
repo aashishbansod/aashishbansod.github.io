@@ -18,13 +18,12 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-const ACTIVE_STATUSES = ["in-progress", "coding-in-progress", "submitted", "evaluating"] as const;
+const ACTIVE_STATUSES = ["in-progress", "submitted", "evaluating"] as const;
 const MCQ_DURATION_MS = C.MCQ_DURATION_SECONDS * 1000;
 const CODING_DURATION_MS = C.CODING_DURATION_SECONDS * 1000;
 const TOTAL_DURATION_MS = C.TOTAL_DURATION_SECONDS * 1000;
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_TEXT_LENGTH = 20_000;
-const MAX_CODE_LENGTH = 30_000;
 type AnyRecord = Record<string, any>;
 class InvalidBodyError extends Error {}
 class BodyTooLargeError extends Error {}
@@ -161,30 +160,6 @@ function sanitizeMCQ(raw: AnyRecord, order: number): AttemptQuestion | null {
     options,
   };
 }
-function sanitizeCoding(raw: AnyRecord, order: number): AttemptQuestion | null {
-  const questionId = questionIdOf(raw);
-  const prompt = text(raw.question ?? raw.questionText);
-  const languages = normalizeLanguages(raw.languages);
-  const fallbackLanguage = text(raw.language, 100).toLowerCase();
-  const difficulty = normalizeDifficulty(raw.difficulty) ?? normalizeDifficulty(raw.section);
-  if (languages.length === 0 && fallbackLanguage) languages.push(fallbackLanguage);
-  if (!questionId || !prompt || languages.length === 0 || !difficulty) return null;
-  return {
-    questionId,
-    section: "coding",
-    difficulty,
-    order,
-    marks: C.CODING_MARKS_PER_QUESTION,
-    question: prompt,
-    language: languages[0],
-    languages,
-    starterCode: text(raw.starterCode ?? raw.codeTemplate, MAX_CODE_LENGTH),
-    inputFormat: text(raw.inputFormat, 10_000),
-    outputFormat: text(raw.outputFormat, 10_000),
-    constraints: text(raw.constraints, 10_000),
-    examples: normalizeExamples(raw.examples),
-  };
-}
 function fingerprint(questions: AttemptQuestion[]): string {
   const value = questions.map((q) => `${q.section}:${q.questionId}:${q.marks}`).sort().join("|");
   return createHash("sha256").update(value).digest("hex");
@@ -195,32 +170,21 @@ function createAttemptId(): string {
 }
 function sanitizeStoredAttemptQuestions(value: unknown): AnyRecord[] {
   if (!Array.isArray(value)) return [];
-  return value.filter(isRecord).map((q) => {
-    const section = normalizeStatus(q.section);
-    const base: AnyRecord = {
-      questionId: text(q.questionId, 256),
-      section: section === "coding" ? "coding" : "mcq",
-      difficulty: normalizeDifficulty(q.difficulty) ?? normalizeDifficulty(q.section) ?? "medium",
-      order: Number.isFinite(Number(q.order)) ? Number(q.order) : 0,
-      marks: Number.isFinite(Number(q.marks)) ? Number(q.marks) : 0,
-      question: text(q.question),
-    };
-    if (section === "coding") {
-      const languages = normalizeLanguages(q.languages);
-      const language = text(q.language, 100).toLowerCase();
-      if (languages.length) base.languages = languages;
-      if (language) base.language = language;
-      base.starterCode = text(q.starterCode, MAX_CODE_LENGTH);
-      base.inputFormat = text(q.inputFormat, 10_000);
-      base.outputFormat = text(q.outputFormat, 10_000);
-      base.constraints = text(q.constraints, 10_000);
-      base.examples = normalizeExamples(q.examples);
-    } else {
-      base.options = normalizeOptions(q.options);
-    }
-    return base;
-  }).filter((q) => q.questionId && q.question);
+  return value.filter(isRecord).map((question) => ({
+    questionId: text(question.questionId, 256),
+    section: "mcq",
+    difficulty: normalizeDifficulty(question.difficulty) ?? "medium",
+    order: Number.isSafeInteger(Number(question.order)) ? Number(question.order) : 0,
+    marks: Number.isSafeInteger(Number(question.marks)) ? Number(question.marks) : 0,
+    question: text(question.question),
+    options: normalizeOptions(question.options),
+  })).filter((question) =>
+    question.questionId &&
+    question.question &&
+    question.options.length === 4
+  );
 }
+
 function serializeAttempt(attempt: AnyRecord) {
   const startedAt = asDate(attempt.startedAt);
   const mcqStartedAt = asDate(attempt.mcqStartedAt);
@@ -230,7 +194,7 @@ function serializeAttempt(attempt: AnyRecord) {
   const finalDeadline = asDate(attempt.finalDeadline);
   if (!startedAt || !mcqStartedAt || !mcqDeadline || !codingStartedAt || !codingDeadline || !finalDeadline) throw new Error("INVALID_ATTEMPT_DATES");
   const now = Date.now();
-  const currentPhase = now >= finalDeadline.getTime() ? "completed" : now >= mcqDeadline.getTime() ? "coding" : "mcq";
+  const currentPhase = now >= finalDeadline.getTime() ? "completed" : "mcq";
   return {
     attemptId: text(attempt.attemptId, 128),
     assessmentId: text(attempt.assessmentId, 256),
@@ -288,13 +252,10 @@ function classifyQuestion(row: AnyRecord): "mcq" | "coding" | null {
 }
 async function getQuestionPool(
   assessmentObjectId: mongoose.Types.ObjectId,
-  section: "mcq" | "coding",
   expectedDomainKey: string,
 ): Promise<AnyRecord[]> {
-  const requiredCount = section === "mcq" ? C.MCQ_COUNT : C.CODING_COUNT;
-  const projection = section === "mcq"
-    ? "questionId assessmentId domain domainKey section type question questionText options status isActive order"
-    : "questionId assessmentId domain domainKey section type question questionText inputFormat outputFormat constraints examples testCases starterCode codeTemplate languages language status isActive order";
+  const requiredCount = C.MCQ_COUNT;
+  const projection = "questionId assessmentId domain domainKey section type difficulty question questionText options status isActive order";
   const Question = QuestionModel as any;
   const objectIdRows = await Question.find({ assessmentId: assessmentObjectId }).select(projection).sort({ order: 1, questionId: 1, _id: 1 }).lean().exec();
   let candidates: AnyRecord[] = Array.isArray(objectIdRows) ? objectIdRows : [];
@@ -310,7 +271,7 @@ async function getQuestionPool(
   }
   return candidates.filter((row) => {
     if (
-      classifyQuestion(row) !== section ||
+      classifyQuestion(row) !== "mcq" ||
       normalizeStatus(row.status) !== "published" ||
       row.isActive !== true
     ) {
@@ -326,11 +287,11 @@ async function getQuestionPool(
 async function questionDiagnostics(assessmentObjectId: mongoose.Types.ObjectId): Promise<AnyRecord> {
   const rows = await (QuestionModel as any).aggregate([
     { $match: { assessmentId: { $in: [assessmentObjectId, assessmentObjectId.toString()] } } },
-    { $group: { _id: { section: "$section", type: "$type", status: "$status", isActive: "$isActive" }, count: { $sum: 1 } } },
+    { $group: { _id: { section: "$section", type: "$type", difficulty: "$difficulty", status: "$status", isActive: "$isActive" }, count: { $sum: 1 } } },
   ]).exec();
   return {
     totalCandidateRecords: rows.reduce((sum: number, row: AnyRecord) => sum + Number(row.count ?? 0), 0),
-    byStatus: rows.map((row: AnyRecord) => ({ section: row._id?.section ?? null, type: row._id?.type ?? null, status: row._id?.status ?? null, isActive: row._id?.isActive ?? null, count: Number(row.count ?? 0) })),
+    byStatus: rows.map((row: AnyRecord) => ({ section: row._id?.section ?? null, type: row._id?.type ?? null, difficulty: row._id?.difficulty ?? null, status: row._id?.status ?? null, isActive: row._id?.isActive ?? null, count: Number(row.count ?? 0) })),
   };
 }
 function isDuplicateKey(error: unknown): boolean { return isRecord(error) && error.code === 11000; }
@@ -371,26 +332,6 @@ async function expireAttemptIfNeeded(attempt: AnyRecord): Promise<boolean> {
     } as any,
   ).exec();
   return Number(result.modifiedCount ?? 0) > 0;
-}
-async function transitionToCoding(attempt: AnyRecord): Promise<"active" | "expired"> {
-  const now = new Date();
-  const mcqDeadline = asDate(attempt.mcqDeadline);
-  const finalDeadline = asDate(attempt.finalDeadline);
-  if (!mcqDeadline || !finalDeadline) throw new Error("INVALID_ATTEMPT_DATES");
-  if (now.getTime() >= finalDeadline.getTime()) return "expired";
-  if (now.getTime() >= mcqDeadline.getTime() && attempt.status === "in-progress") {
-    const codingStartedAt = asDate(attempt.codingStartedAt) ?? mcqDeadline;
-    const codingDeadline = asDate(attempt.codingDeadline) ?? new Date(codingStartedAt.getTime() + CODING_DURATION_MS);
-    const Attempt = await getAssessmentAttemptModel();
-    await Attempt.updateOne({ _id: attempt._id, status: "in-progress" } as any, {
-      $set: { status: "coding-in-progress", currentPhase: "coding", codingStartedAt, codingDeadline, lastActivityAt: now },
-    } as any).exec();
-    attempt.status = "coding-in-progress";
-    attempt.currentPhase = "coding";
-    attempt.codingStartedAt = codingStartedAt;
-    attempt.codingDeadline = codingDeadline;
-  }
-  return "active";
 }
 function activeAttemptResponse(attempt: AnyRecord, requestId: string) {
   const data = serializeAttempt(attempt);
@@ -462,8 +403,6 @@ export async function POST(request: NextRequest) {
       const active = existingAttempt.toObject() as unknown as AnyRecord;
       if (await expireAttemptIfNeeded(active)) return fail("Your assessment time has expired. This attempt is now locked.", "ASSESSMENT_EXPIRED", 409);
       if (["submitted", "evaluating"].includes(text(active.status))) return fail("Your assessment has already been submitted and is awaiting evaluation.", "ASSESSMENT_UNDER_EVALUATION", 409);
-      const phase = await transitionToCoding(active);
-      if (phase === "expired") return fail("Your assessment time has expired.", "ASSESSMENT_EXPIRED", 409);
       return activeAttemptResponse(active, requestId);
     }
     const assessment = await findPublishedAssessment(requestedAssessmentId, studentDomainKey);
@@ -474,45 +413,82 @@ export async function POST(request: NextRequest) {
     if (assessmentDomainKey !== studentDomainKey) return fail("Published assessment domain does not match the student's assigned domain.", "ASSESSMENT_DOMAIN_MISMATCH", 503, { studentDomainKey, assessmentDomainKey });
     if (normalizeStatus(assessment.status) !== "published" || assessment.isActive !== true || assessment.isSelectable !== true) return fail("This assessment is not currently available.", "ASSESSMENT_NOT_SELECTABLE", 503);
     if (Number(assessment.totalDurationMinutes) !== C.TOTAL_DURATION_MINUTES) return fail(`Assessment duration must be exactly ${C.TOTAL_DURATION_MINUTES} minutes.`, "INVALID_ASSESSMENT_DURATION", 503);
-    if (Number(assessment.totalQuestions) !== C.MCQ_COUNT + C.CODING_COUNT) return fail(`Assessment must contain exactly ${C.MCQ_COUNT + C.CODING_COUNT} questions.`, "INVALID_ASSESSMENT_QUESTION_COUNT", 503);
-    if (Number(assessment.passingScore) !== C.PASSING_MARKS) return fail(`Assessment passing score must be exactly ${C.PASSING_MARKS}.`, "INVALID_ASSESSMENT_PASSING_SCORE", 503);
+    if (Number(assessment.totalQuestions) !== C.MCQ_COUNT) return fail(`Assessment must contain exactly ${C.MCQ_COUNT} MCQs.`, "INVALID_ASSESSMENT_QUESTION_COUNT", 503);
+    if (Number(assessment.totalMarks) !== C.TOTAL_MARKS) return fail(`Assessment total marks must be exactly ${C.TOTAL_MARKS}.`, "INVALID_ASSESSMENT_TOTAL_MARKS", 503);
+    if (Number(assessment.passingScore) !== C.PASSING_PERCENTAGE) return fail(`Assessment passing percentage must be exactly ${C.PASSING_PERCENTAGE}%.`, "INVALID_ASSESSMENT_PASSING_PERCENTAGE", 503);
+    if (Number(assessment.passingMarks) !== C.PASSING_MARKS) return fail(`Assessment passing marks must be exactly ${C.PASSING_MARKS}.`, "INVALID_ASSESSMENT_PASSING_MARKS", 503);
     if (!mongoose.isValidObjectId(assessment._id)) return fail("Published assessment has an invalid database reference.", "INVALID_ASSESSMENT_REFERENCE", 503);
     const assessmentObjectId = new mongoose.Types.ObjectId(String(assessment._id));
-    const [mcqPool, codingPool] = await Promise.all([getQuestionPool(assessmentObjectId, "mcq", assessmentDomainKey), getQuestionPool(assessmentObjectId, "coding", assessmentDomainKey)]);
-    if (mcqPool.length < C.MCQ_COUNT || codingPool.length < C.CODING_COUNT) {
-      const diagnostics = await questionDiagnostics(assessmentObjectId);
-      console.error(
-  "[assessment/start] Question bank incomplete",
-  JSON.stringify(
-    {
-      requestId,
-      assessmentId,
-      assessmentObjectId: String(assessmentObjectId),
-      studentDomainKey,
-      mcqFound: mcqPool.length,
-      codingFound: codingPool.length,
-      diagnostics,
-    },
-    null,
-    2,
-  ),
-);
-      if (mcqPool.length < C.MCQ_COUNT) return fail(`Assessment is not ready. The published assessment requires ${C.MCQ_COUNT} active MCQs.`, "INSUFFICIENT_MCQ_QUESTIONS", 503, { required: C.MCQ_COUNT, available: mcqPool.length, assessmentId });
-      return fail(`Assessment is not ready. The published assessment requires ${C.CODING_COUNT} active coding questions.`, "INSUFFICIENT_CODING_QUESTIONS", 503, { required: C.CODING_COUNT, available: codingPool.length, assessmentId });
+    const mcqPool = await getQuestionPool(assessmentObjectId, assessmentDomainKey);
+    const difficultyRequirements = [
+      { difficulty: "easy" as const, count: C.EASY_COUNT },
+      { difficulty: "medium" as const, count: C.MEDIUM_COUNT },
+      { difficulty: "hard" as const, count: C.HARD_COUNT },
+    ];
+    const selectedQuestions: AttemptQuestion[] = [];
+    const difficultyAvailability: Record<string, number> = {};
+
+    for (const requirement of difficultyRequirements) {
+      const matching = mcqPool.filter(
+        (question) => normalizeDifficulty(question.difficulty) === requirement.difficulty,
+      );
+      difficultyAvailability[requirement.difficulty] = matching.length;
+
+      if (matching.length < requirement.count) {
+        const diagnostics = await questionDiagnostics(assessmentObjectId);
+        console.error("[assessment/start] Difficulty question bank incomplete", {
+          requestId,
+          assessmentId,
+          assessmentObjectId: String(assessmentObjectId),
+          studentDomainKey,
+          requiredDifficulty: requirement.difficulty,
+          required: requirement.count,
+          available: matching.length,
+          diagnostics,
+        });
+        return fail(
+          `Assessment is not ready. It requires ${requirement.count} active ${requirement.difficulty} MCQs.`,
+          "INSUFFICIENT_DIFFICULTY_QUESTIONS",
+          503,
+          {
+            assessmentId,
+            difficulty: requirement.difficulty,
+            required: requirement.count,
+            available: matching.length,
+            difficultyAvailability,
+          },
+        );
+      }
+
+      const selected = shuffle(matching)
+        .slice(0, requirement.count)
+        .map((question) => sanitizeMCQ(question, selectedQuestions.length + 1))
+        .filter((question): question is AttemptQuestion => question !== null);
+
+      if (selected.length !== requirement.count) {
+        return fail(
+          `Some published ${requirement.difficulty} MCQs are invalid. Each question must have a prompt and four unique options.`,
+          "INVALID_DIFFICULTY_QUESTION_BANK",
+          503,
+          {
+            assessmentId,
+            difficulty: requirement.difficulty,
+            required: requirement.count,
+            valid: selected.length,
+          },
+        );
+      }
+
+      selectedQuestions.push(...selected);
     }
-    const mcqQuestions = shuffle(mcqPool).slice(0, C.MCQ_COUNT).map((q, i) => sanitizeMCQ(q, i + 1)).filter((q): q is AttemptQuestion => q !== null);
-const codingQuestions = shuffle(codingPool)
-  .slice(0, C.CODING_COUNT)
-  .map((q, i) =>
-    sanitizeCoding(q, C.MCQ_COUNT + i + 1),
-  )
-  .filter((q): q is AttemptQuestion => q !== null);
-    if (mcqQuestions.length !== C.MCQ_COUNT) return fail("Some published MCQs are invalid. Each MCQ must have a prompt and four unique options.", "INVALID_MCQ_QUESTION_BANK", 503, { required: C.MCQ_COUNT, valid: mcqQuestions.length });
-    if (codingQuestions.length !== C.CODING_COUNT) return fail("Some published coding questions are invalid. Each must have a prompt and at least one supported language.", "INVALID_CODING_QUESTION_BANK", 503, { required: C.CODING_COUNT, valid: codingQuestions.length });
-    const questions = [...mcqQuestions, ...codingQuestions];
-    if (new Set(questions.map((q) => q.questionId)).size !== questions.length) return fail("Duplicate question IDs were found in the selected assessment.", "DUPLICATE_QUESTION_IDS", 503);
-    const mcqMarks = mcqQuestions.reduce((sum, q) => sum + q.marks, 0);
-    const codingMarks = codingQuestions.reduce((sum, q) => sum + q.marks, 0);
+
+    const questions = selectedQuestions.map((question, index) => ({
+      ...question,
+      order: index + 1,
+    }));
+    if (questions.length !== C.MCQ_COUNT || new Set(questions.map((question) => question.questionId)).size !== C.MCQ_COUNT) return fail("The selected assessment contains an invalid question count or duplicate question IDs.", "DUPLICATE_QUESTION_IDS", 503);
+    const mcqMarks = questions.reduce((sum, question) => sum + question.marks, 0);
+    const codingMarks = 0;
     if (mcqMarks !== C.MCQ_TOTAL_MARKS || codingMarks !== C.CODING_TOTAL_MARKS || mcqMarks + codingMarks !== C.TOTAL_MARKS) return fail("Assessment marks are incorrectly configured.", "INVALID_ASSESSMENT_MARKS", 503);
     const startedAt = new Date();
     const mcqStartedAt = startedAt;
@@ -539,7 +515,7 @@ const codingQuestions = shuffle(codingPool)
           const racedAttempt = raced.toObject() as unknown as AnyRecord;
           if (await expireAttemptIfNeeded(racedAttempt)) return fail("Your assessment time has expired.", "ASSESSMENT_EXPIRED", 409);
           if (["submitted", "evaluating"].includes(text(racedAttempt.status))) return fail("Your assessment has already been submitted.", "ASSESSMENT_UNDER_EVALUATION", 409);
-          if (await transitionToCoding(racedAttempt) === "active") return activeAttemptResponse(racedAttempt, requestId);
+          return activeAttemptResponse(racedAttempt, requestId);
         }
         return fail("An active assessment attempt already exists.", "ACTIVE_ATTEMPT_EXISTS", 409);
       }

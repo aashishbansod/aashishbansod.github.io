@@ -1,4 +1,3 @@
-
 import mongoose, { Schema, type Model } from "mongoose";
 
 export type PaymentStatus = "success" | "pending" | "failed" | "refunded";
@@ -31,6 +30,9 @@ const MAX_EMAIL_LENGTH = 254;
 const MAX_AMOUNT = 10_000_000;
 const MAX_NOTES_LENGTH = 2000;
 const MAX_EMAIL_ERROR_LENGTH = 500;
+const MAX_RECEIPT_ATTEMPTS = 1000;
+
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const paymentSchema = new Schema<IPayment>(
   {
@@ -53,10 +55,8 @@ const paymentSchema = new Schema<IPayment>(
       lowercase: true,
       default: "",
       maxlength: MAX_EMAIL_LENGTH,
-      index: true,
       validate: {
-        validator: (value: string) =>
-          value === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+        validator: (value: string) => value === "" || emailPattern.test(value),
         message: "Payment email address is invalid.",
       },
     },
@@ -137,9 +137,12 @@ const paymentSchema = new Schema<IPayment>(
       type: Number,
       default: 0,
       min: 0,
+      max: MAX_RECEIPT_ATTEMPTS,
       validate: {
         validator: (value: number) =>
-          Number.isInteger(value) && value <= 1000,
+          Number.isInteger(value) &&
+          value >= 0 &&
+          value <= MAX_RECEIPT_ATTEMPTS,
         message: "Receipt email attempts must be a valid non-negative integer.",
       },
     },
@@ -157,14 +160,14 @@ const paymentSchema = new Schema<IPayment>(
     strict: true,
     minimize: false,
     versionKey: false,
-  },
+  }
 );
 
 paymentSchema.pre("validate", function () {
   if (this.isNew && this.status === "pending") {
     this.invalidate(
       "status",
-      "New payment records can only be created after a verified success or failure.",
+      "New payment records can only be created after a verified success or failure."
     );
   }
 
@@ -180,6 +183,10 @@ paymentSchema.pre("validate", function () {
   if (this.receiptEmailStatus === "sent" && !this.receiptEmailSentAt) {
     this.receiptEmailSentAt = new Date();
   }
+
+  if (this.receiptEmailStatus !== "sent") {
+    this.receiptEmailSentAt = null;
+  }
 });
 
 paymentSchema.index(
@@ -190,37 +197,43 @@ paymentSchema.index(
     partialFilterExpression: {
       paymentId: { $type: "string", $gt: "" },
     },
-  },
+  }
 );
 
 paymentSchema.index(
-  { orderId: 1, createdAt: -1 },
-  { name: "payments_order_created_at" },
+  { orderId: 1 },
+  {
+    name: "uniq_payment_gateway_order_id_nonempty",
+    unique: true,
+    partialFilterExpression: {
+      orderId: { $type: "string", $gt: "" },
+    },
+  }
 );
 
 paymentSchema.index(
   { studentId: 1, createdAt: -1 },
-  { name: "payments_student_created_at" },
+  { name: "payments_student_created_at" }
 );
 
 paymentSchema.index(
   { status: 1, createdAt: -1 },
-  { name: "payments_status_created_at" },
+  { name: "payments_status_created_at" }
 );
 
 paymentSchema.index(
   { receiptEmailStatus: 1, createdAt: 1 },
-  { name: "payments_receipt_email_delivery" },
+  { name: "payments_receipt_email_delivery" }
 );
 
 paymentSchema.index(
   { archivedAt: 1, createdAt: -1 },
-  { name: "payments_archive_created_at" },
+  { name: "payments_archive_created_at" }
 );
 
 paymentSchema.index(
   { createdAt: -1 },
-  { name: "payments_created_at" },
+  { name: "payments_created_at" }
 );
 
 const Payment: Model<IPayment> =

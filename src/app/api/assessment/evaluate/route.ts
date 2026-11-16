@@ -190,13 +190,38 @@ export async function POST(
         400,
       );
     }
+    const allowedKeys = new Set(["attemptId", "studentId", "codingScore"]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      return fail(
+        "The request contains unsupported fields.",
+        "UNSUPPORTED_REQUEST_FIELDS",
+        400,
+      );
+    }
+
     const attemptId = cleanString(body.attemptId);
-    const studentId = cleanString(body.studentId);
+    const studentId = cleanString(body.studentId, 100);
     const codingScore = finiteScore(body.codingScore);
     if (!attemptId || !studentId) {
       return fail(
         "attemptId and studentId are required.",
         "MISSING_REQUIRED_FIELDS",
+        400,
+      );
+    }
+
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(attemptId)) {
+      return fail(
+        "attemptId must be a valid assessment attempt identifier.",
+        "INVALID_ATTEMPT_ID",
+        400,
+      );
+    }
+
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(studentId)) {
+      return fail(
+        "studentId contains invalid characters.",
+        "INVALID_STUDENT_ID",
         400,
       );
     }

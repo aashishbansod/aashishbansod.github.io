@@ -528,7 +528,7 @@ async function createAttempt(
 
   if (Number(studentUpdate.matchedCount ?? 0) !== 1) {
     await Attempt.deleteOne({
-      _id: attempt._id,
+      __id: attempt._id,
       studentId: student.id,
       status: "in-progress",
     }).exec();
@@ -677,10 +677,10 @@ async function finalizeAttempt(
 
   const updated = await Attempt.findOneAndUpdate(
     {
-      id: attempt._id,
+      _id: attempt._id,
       studentId,
       status: "in-progress",
-    },
+    } as any,
     {
       $set: {
         status,
@@ -709,9 +709,21 @@ async function finalizeAttempt(
   let finalAttempt = updated as unknown as AnyRecord | null;
 
   if (!finalAttempt) {
-    finalAttempt = await Attempt.findOne({ id: attempt._id, studentId })
+    const rawAttemptId = attempt?._id;
+    if (rawAttemptId === undefined || rawAttemptId === null || !mongoose.isValidObjectId(String(rawAttemptId))) {
+      throw new Error("ASSESSMENT_ATTEMPT_ID_INVALID");
+    }
+
+    const attemptObjectId = rawAttemptId instanceof Types.ObjectId
+      ? rawAttemptId
+      : new Types.ObjectId(String(rawAttemptId));
+
+    finalAttempt = await (Attempt.findOne({
+      _id: attemptObjectId,
+      studentId,
+    } as any)
       .lean()
-      .exec() as unknown as AnyRecord | null;
+      .exec()) as unknown as AnyRecord | null;
   }
 
   if (!finalAttempt) {
@@ -755,9 +767,16 @@ async function loadAttemptForStudent(
   studentId: Types.ObjectId,
 ): Promise<AnyRecord | null> {
   const Attempt = await getAssessmentAttemptModel();
-  return await Attempt.findOne({ attemptId, studentId })
+  const attempt = await Attempt.findOne({ attemptId })
     .lean()
     .exec() as unknown as AnyRecord | null;
+
+  if (!attempt) return null;
+  if (String(attempt.studentId) !== String(studentId)) {
+    throw new Error("ASSESSMENT_ATTEMPT_OWNER_MISMATCH");
+  }
+
+  return attempt;
 }
 
 async function readRequestBody(request: NextRequest): Promise<
@@ -1168,9 +1187,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return failure("A valid assessment attempt ID is required.", "ATTEMPT_ID_REQUIRED", 400);
     }
 
-    const attempt = await loadAttemptForStudent(attemptId, student.id);
+    let attempt: AnyRecord | null;
+
+    try {
+      attempt = await loadAttemptForStudent(attemptId, student.id);
+    } catch (error) {
+      if (error instanceof Error && error.message === "ASSESSMENT_ATTEMPT_OWNER_MISMATCH") {
+        return failure("This assessment attempt belongs to a different student account.", "ATTEMPT_OWNER_MISMATCH", 403);
+      }
+      throw error;
+    }
+
     if (!attempt) {
-      return failure("Assessment attempt was not found for this student.", "ATTEMPT_NOT_FOUND", 404);
+      console.error("[ASSESSMENT_ATTEMPT_LOOKUP_MISS]", {
+        attemptId,
+        studentId: String(student.id),
+      });
+      return failure("Assessment attempt was not found. Refresh the assessment to restore the server-side attempt.", "ATTEMPT_NOT_FOUND", 404);
     }
 
     const status = text(attempt.status, 40);
@@ -1191,12 +1224,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return failure("The assessment deadline is invalid. Contact support.", "INVALID_ATTEMPT_DEADLINE", 409);
     }
 
+    if (action === "submit" && body.autoSubmitted !== true && deadline > new Date()) {
+      const completeAnswers = mergeAnswers(attempt.mcqAnswers, parsedAnswers.answers);
+      if (completeAnswers.length !== CONFIG.questionCount) {
+        return failure("Please answer all 90 questions before submitting.", "ASSESSMENT_INCOMPLETE", 400);
+      }
+    }
+
     if (deadline <= new Date() || action === "submit") {
+      if (body.autoSubmitted === true && deadline > new Date()) {
+        return failure("Automatic submission is only allowed after the assessment timer expires.", "AUTO_SUBMIT_TOO_EARLY", 403);
+      }
+
       const finalized = await finalizeAttempt(
         attempt,
         student.id,
         parsedAnswers.answers,
-        deadline <= new Date() ? "system" : "student",
+        deadline <= new Date() || body.autoSubmitted === true ? "system" : "student",
       );
       return success(
         { result: serializeResult(finalized), attempt: null },
@@ -1219,12 +1263,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const Attempt = await getAssessmentAttemptModel();
     const saved = await Attempt.findOneAndUpdate(
       {
-        id: attempt._id,
+        _id: attempt._id,
         attemptId,
         studentId: student.id,
         status: "in-progress",
         finalDeadline: { $gt: new Date() },
-      },
+      } as any,
       {
         $set: {
           mcqAnswers: records,

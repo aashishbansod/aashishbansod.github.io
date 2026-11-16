@@ -209,7 +209,8 @@ async function findMainStudent(userId: string) {
           "selectedInternshipDomain internshipDomain assessmentDomain selectedDomain " +
           "paymentStatus internshipStatus dateOfBirth razorpayOrderId " +
           "internshipSelectionWindowStartedAt internshipSelectionDeadlineAt " +
-          "internshipSelectionExpiredAt internshipSelectionWindowExpired razorpayPaymentId",
+          "internshipSelectionExpiredAt internshipSelectionWindowExpired razorpayPaymentId " +
+          "paymentAmount paymentCurrency",
       )
       .lean()
       .exec();
@@ -223,7 +224,8 @@ async function findMainStudent(userId: string) {
         "selectedInternshipDomain internshipDomain assessmentDomain selectedDomain " +
         "paymentStatus internshipStatus dateOfBirth razorpayOrderId " +
           "internshipSelectionWindowStartedAt internshipSelectionDeadlineAt " +
-          "internshipSelectionExpiredAt internshipSelectionWindowExpired razorpayPaymentId",
+          "internshipSelectionExpiredAt internshipSelectionWindowExpired razorpayPaymentId " +
+          "paymentAmount paymentCurrency",
     )
     .lean()
     .exec();
@@ -643,10 +645,15 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
-    const existingPlan = cleanString(student.internshipPlan, 50)
+    const rawExistingPlan = cleanString(student.internshipPlan, 50)
       .toUpperCase()
-      .replace(/[\s-]+/g, "_");
+      .replace(/[\\s-]+/g, "_");
+    const existingPlanDetails = rawExistingPlan
+      ? getInternshipPlan(rawExistingPlan)
+      : null;
+    const existingPlan = existingPlanDetails?.code || rawExistingPlan;
     const existingTrack = cleanString(student.internshipTrack, 150);
+    const existingOrderId = cleanString(student.razorpayOrderId, 100);
     const terminalPaymentState =
       ["failed", "cancelled", "canceled", "expired"].includes(existingPaymentStatus) ||
       [
@@ -661,19 +668,26 @@ export async function POST(request: NextRequest) {
     const hasPendingSelection =
       ["pending", "created", "initiated", "unpaid"].includes(existingPaymentStatus) &&
       ["payment-pending", "selected", "pending-payment"].includes(existingInternshipStatus) &&
-      Boolean(existingPlan || existingTrack);
-    if (
-      hasPendingSelection &&
-      existingPlan === requestedPlan &&
-      existingTrack.toLowerCase() === track.toLowerCase()
-    ) {
+      Boolean(existingPlan || existingTrack || existingOrderId);
+    const sameStoredPlan = existingPlan === requestedPlan;
+    const sameStoredTrack =
+      Boolean(existingTrack) &&
+      normalizeDomain(existingTrack) === normalizeDomain(track);
+    const hasUnresolvedOrder =
+      Boolean(existingOrderId) &&
+      !terminalPaymentState &&
+      existingPaymentStatus !== "paid" &&
+      !cleanString(student.razorpayPaymentId, 100);
+
+    if (hasPendingSelection && sameStoredPlan && sameStoredTrack) {
       return json(
         {
           success: true,
           code: "INTERNSHIP_SELECTION_EXISTS",
-          message: "Your selection is already saved. Continue to secure payment.",
+          message: "Your internship selection is already saved. Continue with the existing payment attempt.",
           data: {
             internshipId,
+            existingOrderId: existingOrderId || null,
             plan: {
               code: plan.code,
               name: plan.name,
@@ -683,7 +697,8 @@ export async function POST(request: NextRequest) {
               currency: plan.currency,
               amountInPaise: plan.amountInPaise,
             },
-            paymentStatus: "pending",
+            paymentStatus: existingPaymentStatus || "pending",
+            paymentAttempt: hasUnresolvedOrder ? "resume-existing-order" : "continue",
             dashboardStatus: "locked",
             dashboardLoginEnabled: false,
             nextStep: "PAYMENT",
@@ -693,19 +708,22 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
-    if (
-      hasPendingSelection &&
-      cleanString(student.razorpayOrderId, 100) &&
-      !terminalPaymentState
-    ) {
+
+    if (hasUnresolvedOrder) {
       return json(
         {
           success: false,
-          code: "PAYMENT_ORDER_ALREADY_CREATED",
+          code: "PAYMENT_ORDER_REQUIRES_RECONCILIATION",
           message:
-            "A payment attempt is still unresolved. Retry the same selection or wait until the payment is marked failed, cancelled, or expired.",
+            "A previous Razorpay payment is still pending for this student. Resume that payment or confirm its final status before changing the internship plan.",
           data: {
-            paymentStatus: existingPaymentStatus,
+            existingOrderId,
+            existingPlan: existingPlan || null,
+            existingTrack: existingTrack || null,
+            paymentAmount: Number(student.paymentAmount) || null,
+            paymentCurrency: cleanString(student.paymentCurrency, 8).toUpperCase() || "INR",
+            paymentStatus: existingPaymentStatus || "pending",
+            canResumeExistingPayment: true,
             dashboardStatus: "locked",
             dashboardLoginEnabled: false,
           },
@@ -714,6 +732,7 @@ export async function POST(request: NextRequest) {
         requestId,
       );
     }
+
     if (terminalPaymentState && cleanString(student.razorpayOrderId, 100)) {
       const clearOrderResult = await StudentModel.updateOne(
         {
@@ -1000,4 +1019,29 @@ export async function DELETE(request: NextRequest) {
       requestId,
     );
   }
+}
+
+export async function HEAD() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: RESPONSE_HEADERS,
+  });
+}
+
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const headers: Record<string, string> = {
+    ...RESPONSE_HEADERS,
+    Allow: "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS",
+  };
+
+  if (origin && isTrustedOrigin(request)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Credentials"] = "true";
+    headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS";
+    headers["Access-Control-Allow-Headers"] = "Content-Type, X-Request-Id";
+    headers.Vary = "Cookie, Origin";
+  }
+
+  return new NextResponse(null, { status: 204, headers });
 }

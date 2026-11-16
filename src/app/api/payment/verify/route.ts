@@ -281,20 +281,6 @@ function normalizePlan(value: unknown): PlanCode | null {
 
 }
 
-function normalizeDomain(value: unknown): string {
-
-  return clean(value).toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "");
-
-}
-
-function sameDomain(studentDomain: unknown, domain: unknown, assessmentDomain: unknown): boolean {
-
-  const student = normalizeDomain(studentDomain);
-
-  return Boolean(student && (student === normalizeDomain(domain) || student === normalizeDomain(assessmentDomain)));
-
-}
-
 function getTitle(internship: InternshipRecord): string {
 
   return clean(internship.title) || clean(internship.name) || "CyberNet Careers Internship";
@@ -839,55 +825,40 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     }
 
-    const internship = (await Internship.findById(internshipId).select({
-
-      _id: 1, title: 1, name: 1, domain: 1, assessmentDomain: 1, planCode: 1,
-
-      duration: 1, durationMonths: 1, price: 1, priceInPaise: 1, currency: 1,
-
-      status: 1, isPublic: 1, isSelectable: 1, endDate: 1,
-
+    const internshipRecord = (await Internship.findById(internshipId).select({
+      _id: 1,
+      title: 1,
+      name: 1,
+      planCode: 1,
+      duration: 1,
+      durationMonths: 1,
     }).lean().exec()) as unknown as InternshipRecord | null;
 
-    if (!internship) return fail("Selected internship plan was not found.", "INTERNSHIP_NOT_FOUND", 404);
+    const internship: InternshipRecord = internshipRecord || {
+      _id: internshipId,
+      title: clean(student.internshipTrack) || "CyberNet Careers Internship",
+    };
 
-    if (statusOf(internship.status) !== "active") return fail("This internship is no longer active.", "INTERNSHIP_INACTIVE", 409);
+    if (internshipRecord) {
+      const storedInternshipPlan = normalizePlan(internshipRecord.planCode);
+      if (storedInternshipPlan && storedInternshipPlan !== planCode) {
+        return fail("Internship plan does not match the server record.", "PLAN_MISMATCH", 409);
+      }
 
-    if (internship.isPublic === false || internship.isSelectable === false) return fail("This internship is not selectable.", "INTERNSHIP_NOT_SELECTABLE", 409);
+      const storedDuration = clean(internshipRecord.duration);
+      const storedMonths = numberValue(internshipRecord.durationMonths);
 
-    if (internship.endDate) {
-
-      const endDate = new Date(String(internship.endDate));
-
-      if (!Number.isNaN(endDate.getTime()) && Date.now() > endDate.getTime()) return fail("This internship program has ended.", "INTERNSHIP_ENDED", 409);
-
+      if (
+        (storedDuration && storedDuration !== plan.duration) ||
+        (storedMonths !== null && storedMonths !== plan.months)
+      ) {
+        return fail("Internship duration configuration is inconsistent.", "INVALID_PLAN_DURATION", 503);
+      }
     }
 
-    if (normalizePlan(internship.planCode) !== planCode) return fail("Internship plan does not match the server record.", "PLAN_MISMATCH", 409);
-
-    if (clean(internship.duration) !== plan.duration || numberValue(internship.durationMonths) !== plan.months) {
-
-      return fail("Internship duration configuration is invalid.", "INVALID_PLAN_DURATION", 503);
-
+    if (plan.paise < MIN_AMOUNT_PAISE) {
+      return fail("The selected payment plan is invalid.", "INVALID_PLAN_AMOUNT", 503);
     }
-
-    if (!sameDomain(student.internshipTrack, internship.domain, internship.assessmentDomain)) {
-
-      return fail("This internship is outside your approved domain.", "DOMAIN_MISMATCH", 403);
-
-    }
-
-    const price = numberValue(internship.price);
-
-    const pricePaise = numberValue(internship.priceInPaise);
-
-    if (price === null || pricePaise === null || Math.round(price * 100) !== plan.paise || Math.round(pricePaise) !== plan.paise || plan.paise < MIN_AMOUNT_PAISE) {
-
-      return fail("Internship pricing configuration is inconsistent.", "PLAN_PRICE_MISMATCH", 503);
-
-    }
-
-    if (clean(internship.currency).toUpperCase() !== "INR") return fail("Only INR payments are supported.", "UNSUPPORTED_CURRENCY", 503);
 
     let config: { keyId: string; keySecret: string };
 
@@ -921,7 +892,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     if (clean(order.id) !== orderId) return fail("Razorpay order ID mismatch.", "RAZORPAY_ORDER_ID_MISMATCH", 409);
 
-    if (Math.round(numberValue(order.amount) ?? 0) !== plan.paise) return fail("Razorpay order amount mismatch.", "RAZORPAY_ORDER_AMOUNT_MISMATCH", 409);
+    if (numberValue(order.amount) !== plan.paise) return fail("Razorpay order amount mismatch.", "RAZORPAY_ORDER_AMOUNT_MISMATCH", 409);
 
     if (clean(order.currency).toUpperCase() !== "INR") return fail("Razorpay order currency mismatch.", "RAZORPAY_ORDER_CURRENCY_MISMATCH", 409);
     const razorpayOrderStatus = statusOf(order.status);
@@ -966,7 +937,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     if (clean(payment.id) !== paymentId || clean(payment.order_id) !== orderId) return fail("Payment does not belong to this order.", "PAYMENT_ORDER_MISMATCH", 409);
 
-    if (Math.round(numberValue(payment.amount) ?? 0) !== plan.paise) return fail("Payment amount mismatch.", "PAYMENT_AMOUNT_MISMATCH", 409);
+    if (numberValue(payment.amount) !== plan.paise) return fail("Payment amount mismatch.", "PAYMENT_AMOUNT_MISMATCH", 409);
 
     if (clean(payment.currency).toUpperCase() !== "INR") return fail("Payment currency mismatch.", "PAYMENT_CURRENCY_MISMATCH", 409);
 
@@ -1010,7 +981,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     if (clean(payment.id) !== paymentId || clean(payment.order_id) !== orderId ||
 
-        Math.round(numberValue(payment.amount) ?? 0) !== plan.paise ||
+        numberValue(payment.amount) !== plan.paise ||
 
         clean(payment.currency).toUpperCase() !== "INR") {
 

@@ -72,6 +72,24 @@ type Attempt = {
   startedAt: string;
 };
 
+type InternshipPlan = {
+  id: string;
+  name: string;
+  durationMonths: number;
+  durationDays: number;
+  price: number;
+  amountInPaise: number;
+};
+
+type InternshipFlow = {
+  eligible: boolean;
+  selectionAllowed: boolean;
+  paymentRequired: boolean;
+  operationsApprovalRequired: boolean;
+  nextStep: string;
+  plans: InternshipPlan[];
+};
+
 type AssessmentResult = {
   status: string;
   score: number | null;
@@ -324,6 +342,59 @@ function isAnswered(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+const DEFAULT_INTERNSHIP_PLANS: InternshipPlan[] = [
+  { id: "ONE_MONTH", name: "1 Month", durationMonths: 1, durationDays: 30, price: 499, amountInPaise: 49900 },
+  { id: "THREE_MONTHS", name: "3 Months", durationMonths: 3, durationDays: 90, price: 999, amountInPaise: 99900 },
+  { id: "SIX_MONTHS", name: "6 Months", durationMonths: 6, durationDays: 180, price: 1699, amountInPaise: 169900 },
+];
+
+function normalizeInternshipFlow(value: unknown): InternshipFlow | null {
+  if (!value || typeof value !== "object") return null;
+
+  const raw = asRecord(value);
+  const rawPlans = asArray(raw.plans);
+  const plans = rawPlans
+    .map((item) => {
+      const plan = asRecord(item);
+      const id = asString(plan.id ?? plan.planId ?? plan.planCode ?? plan.key ?? plan.code).toUpperCase();
+      const fallback = DEFAULT_INTERNSHIP_PLANS.find((candidate) => candidate.id === id);
+      const amountInPaise = asNumber(
+        plan.amountInPaise ?? plan.priceInPaise ?? plan.amount,
+        fallback?.amountInPaise ?? 0,
+      );
+      const priceValue = asNumber(plan.price ?? plan.priceInRupees, amountInPaise / 100);
+      return {
+        id: id || fallback?.id || "",
+        name: asString(plan.name ?? plan.title ?? plan.label ?? plan.duration, fallback?.name ?? ""),
+        durationMonths: asNumber(plan.durationMonths ?? plan.months, fallback?.durationMonths ?? 0),
+        durationDays: asNumber(plan.durationDays ?? plan.days, fallback?.durationDays ?? 0),
+        price: priceValue,
+        amountInPaise: amountInPaise || Math.round(priceValue * 100),
+      };
+    })
+    .filter((plan) => Boolean(plan.id && plan.name && plan.durationDays > 0 && plan.amountInPaise > 0));
+
+  return {
+    eligible: raw.eligible === true,
+    selectionAllowed: raw.selectionAllowed === true,
+    paymentRequired: raw.paymentRequired !== false,
+    operationsApprovalRequired: raw.operationsApprovalRequired !== false,
+    nextStep: asString(raw.nextStep, "assessment-required"),
+    plans: plans.length ? plans : DEFAULT_INTERNSHIP_PLANS,
+  };
+}
+
+function extractInternshipFlow(...values: unknown[]): InternshipFlow | null {
+  for (const value of values) {
+    const record = asRecord(value);
+    const nested = normalizeInternshipFlow(
+      record.internship ?? record.internshipFlow ?? record.planFlow ?? record.eligibility,
+    );
+    if (nested) return nested;
+  }
+  return null;
+}
+
 function normalizeResult(value: unknown): AssessmentResult {
   const raw = asRecord(value);
   const scoreValue = raw.score ?? raw.totalScore;
@@ -378,6 +449,7 @@ export default function StudentAssessmentPage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [timeLeft, setTimeLeft] = useState(CONFIG.durationMinutes * 60);
   const [result, setResult] = useState<AssessmentResult | null>(null);
+  const [internshipFlow, setInternshipFlow] = useState<InternshipFlow | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved">("saved");
@@ -632,6 +704,9 @@ export default function StudentAssessmentPage() {
 
       if (resultSource) {
         setResult(normalizeResult(resultSource));
+        setInternshipFlow(
+          extractInternshipFlow(resultSource, data, root),
+        );
         setScreen("result");
         return;
       }
@@ -644,13 +719,11 @@ export default function StudentAssessmentPage() {
             existingAttempt.status,
           )
         ) {
-          setResult(
-            normalizeResult(
-              data.result ?? {
-                status: existingAttempt.status,
-              },
-            ),
-          );
+          const completedResult = data.result ?? {
+            status: existingAttempt.status,
+          };
+          setResult(normalizeResult(completedResult));
+          setInternshipFlow(extractInternshipFlow(completedResult, data, root));
           setScreen("result");
           return;
         }
@@ -960,6 +1033,7 @@ export default function StudentAssessmentPage() {
             },
           ),
         );
+        setInternshipFlow(extractInternshipFlow(resultSource, data, root));
 
         stopMedia();
         setScreen("result");
@@ -1034,7 +1108,7 @@ export default function StudentAssessmentPage() {
   };
 
   const continueAfterResult = () => {
-    if (result?.passed) {
+    if (result?.passed && internshipFlow?.selectionAllowed) {
       router.push("/student/internships");
       return;
     }
@@ -1307,12 +1381,42 @@ export default function StudentAssessmentPage() {
             </div>
           </div>
 
+          {result.passed && (
+            <div className="mt-7 text-left">
+              <div className="mb-4">
+                <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-700">Next step</p>
+                <h2 className="mt-1 text-lg font-extrabold text-slate-900">Choose your internship plan</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">Your assessment result makes you eligible to proceed. Select a plan on the internship page to continue to secure payment.</p>
+              </div>
+              {internshipFlow?.selectionAllowed ? (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {internshipFlow.plans.map((plan) => (
+                    <div key={plan.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+                      <p className="text-xs font-bold text-slate-500">{plan.name}</p>
+                      <p className="mt-1 text-xl font-extrabold text-slate-900">₹{plan.price.toLocaleString("en-IN")}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">{plan.durationDays} days access</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-800">
+                  Your result is recorded, but the server has not enabled plan selection yet. Refresh your assessment status or contact support. Do not make a payment until the internship page confirms your eligibility.
+                </div>
+              )}
+              <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-4 text-xs leading-5 text-blue-900">
+                <p className="font-bold">After plan selection</p>
+                <p className="mt-1">Payment must be verified successfully. Student Operations approval is a separate required step before your dashboard is activated and credentials are issued.</p>
+              </div>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={continueAfterResult}
-            className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3.5 text-sm font-bold text-white transition hover:bg-blue-700"
+            disabled={Boolean(result.passed && !internshipFlow?.selectionAllowed)}
+            className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3.5 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {result.passed ? "Continue to Internships" : "Go to Dashboard"}
+            {result.passed ? "Continue to Internship Plans" : "Go to Dashboard"}
             <ArrowRight className="h-4 w-4" />
           </button>
         </section>

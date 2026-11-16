@@ -65,15 +65,18 @@ type TokenPayload = {
 };
 
 type StudentIdentityRecord = {
-
   studentId?: unknown;
-
   dashboardStudentId?: unknown;
-
   accountLocked?: unknown;
-
   loginEnabled?: unknown;
-
+  applicationStatus?: unknown;
+  adminApprovalStatus?: unknown;
+  assessmentStatus?: unknown;
+  resultStatus?: unknown;
+  assessmentScore?: unknown;
+  internshipApplicationAllowed?: unknown;
+  internshipStatus?: unknown;
+  paymentStatus?: unknown;
 };
 
 type AuthenticatedStudent = {
@@ -243,8 +246,7 @@ async function resolveStudent(
 ): Promise<StudentIdentityRecord | null> {
 
   const fields =
-
-    "studentId dashboardStudentId accountLocked loginEnabled";
+    "studentId dashboardStudentId accountLocked loginEnabled applicationStatus adminApprovalStatus assessmentStatus resultStatus assessmentScore internshipApplicationAllowed internshipStatus paymentStatus";
 
   if (mongoose.isValidObjectId(userId)) {
 
@@ -400,11 +402,52 @@ export async function GET(
 
     }
 
-    const result = await getInternshipSummary(
+    const studentId = cleanString(student.studentId, 100);
+    const eligibilityRepairApplicationApproved =
+      cleanString(student.applicationStatus, 40).toLowerCase() === "approved" &&
+      cleanString(student.adminApprovalStatus, 40).toLowerCase() === "approved";
+    const eligibilityRepairAssessmentPassed =
+      cleanString(student.assessmentStatus, 40).toLowerCase() === "passed" &&
+      cleanString(student.resultStatus, 40).toLowerCase() === "passed" &&
+      Number.isFinite(Number(student.assessmentScore)) &&
+      Number(student.assessmentScore) >= 36;
+    const paymentStatus = cleanString(student.paymentStatus, 40).toLowerCase();
+    const internshipStatus = cleanString(student.internshipStatus, 40).toLowerCase();
+    const terminalInternshipState = ["completed", "expired", "rejected"].includes(internshipStatus);
 
-      cleanString(student.studentId, 100),
+    if (
+      eligibilityRepairApplicationApproved &&
+      eligibilityRepairAssessmentPassed &&
+      student.internshipApplicationAllowed !== true &&
+      paymentStatus !== "paid" &&
+      paymentStatus !== "refunded" &&
+      !terminalInternshipState
+    ) {
+      const repaired = await StudentModel.updateOne(
+        {
+          studentId,
+          applicationStatus: "approved",
+          adminApprovalStatus: "approved",
+          assessmentStatus: "passed",
+          resultStatus: "passed",
+          assessmentScore: { $gte: 36 },
+          paymentStatus: { $nin: ["paid", "refunded"] },
+          internshipStatus: { $nin: ["completed", "expired", "rejected"] },
+          internshipApplicationAllowed: { $ne: true },
+        },
+        {
+          $set: {
+            internshipApplicationAllowed: true,
+          },
+        },
+      ).exec();
 
-    );
+      if (Number(repaired.matchedCount ?? 0) === 1) {
+        student.internshipApplicationAllowed = true;
+      }
+    }
+
+    const result = await getInternshipSummary(studentId);
 
     if (!result.success || !result.data) {
 

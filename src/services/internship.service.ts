@@ -2,9 +2,7 @@ import StudentModel from "@/models/Student";
 import connectDB from "@/lib/db";
 import {
 INTERNSHIP_PLANS,
-selectInternship as selectStudentInternship,
 type InternshipPlan,
-type SelectInternshipInput,
 type ServiceResult,
 } from "@/services/student.service";
 export type {
@@ -12,6 +10,7 @@ InternshipPlan,
 };
 export interface InternshipPlanDetails {
 code: InternshipPlan;
+planCode: "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
 name: string;
 durationMonths: number;
 durationDays: number;
@@ -230,6 +229,25 @@ const aliases: Record<string, string> = {
 };
 return aliases[normalized] ?? normalized;
 }
+function canonicalPlanCode(value: unknown): "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS" | null {
+  const normalized = normalizePlanCode(value);
+  if (normalized === "1 month") return "ONE_MONTH";
+  if (normalized === "3 months") return "THREE_MONTHS";
+  if (normalized === "6 months") return "SIX_MONTHS";
+  return null;
+}
+
+function getSelectionDeadline(record: Record<string, unknown>): Date | null {
+  const explicit = safeDate(record.internshipSelectionDeadlineAt);
+  if (explicit) return explicit;
+  const started =
+    safeDate(record.internshipSelectionWindowStartedAt) ||
+    safeDate(record.assessmentEvaluatedAt) ||
+    safeDate(record.resultDeclaredAt) ||
+    safeDate(record.assessmentSubmittedAt);
+  return started ? new Date(started.getTime() + 72 * 60 * 60 * 1000) : null;
+}
+
 function normalizeEmail(
 value: unknown,
 ): string {
@@ -270,6 +288,7 @@ plan.currency,
 );
 return {
 code,
+planCode: canonicalPlanCode(code) as "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS",
 name:
 cleanString(
 plan.name,
@@ -332,6 +351,7 @@ plan.amount,
 );
 return {
 code,
+planCode: canonicalPlanCode(code) as "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS",
 name:
 cleanString(
 plan.name,
@@ -543,6 +563,82 @@ resultStatus ===
 "passed"
 );
 }
+async function reconcileInternshipEligibility(
+  record: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const id = record._id;
+  if (!id || !isApplicationApproved(record) || !isAssessmentPassed(record)) {
+    return record;
+  }
+
+  const paymentStatus = normalizeStatus(record.paymentStatus) || "unpaid";
+  const internshipStatus = normalizeStatus(record.internshipStatus);
+  const hasOrder = Boolean(cleanString(record.razorpayOrderId, 200));
+  const now = new Date();
+  const deadline = getSelectionDeadline(record);
+  const expired =
+    record.internshipSelectionWindowExpired === true ||
+    record.journeyExpired === true ||
+    (deadline !== null && deadline.getTime() <= now.getTime());
+
+  if (
+    paymentStatus === "paid" ||
+    paymentStatus === "refunded" ||
+    hasOrder ||
+    expired ||
+    TERMINAL_INTERNSHIP_STATUSES.has(internshipStatus)
+  ) {
+    return record;
+  }
+
+  const startedAt =
+    safeDate(record.internshipSelectionWindowStartedAt) ||
+    safeDate(record.assessmentEvaluatedAt) ||
+    safeDate(record.resultDeclaredAt) ||
+    safeDate(record.assessmentSubmittedAt) ||
+    now;
+  const selectionDeadline =
+    deadline || new Date(startedAt.getTime() + 72 * 60 * 60 * 1000);
+
+  const updated = await StudentModel.findOneAndUpdate(
+    {
+      _id: id,
+      paymentStatus: { $nin: ["paid", "refunded"] },
+      internshipSelectionWindowExpired: { $ne: true },
+      journeyExpired: { $ne: true },
+      $and: [
+        { $or: [{ applicationStatus: "approved" }, { adminApprovalStatus: "approved" }] },
+        { assessmentStatus: "passed", resultStatus: "passed" },
+        { $or: [{ razorpayOrderId: { $exists: false } }, { razorpayOrderId: null }, { razorpayOrderId: "" }] },
+        {
+          $or: [
+            { internshipSelectionDeadlineAt: { $gt: now } },
+            { internshipSelectionDeadlineAt: null },
+            { internshipSelectionDeadlineAt: { $exists: false } },
+          ],
+        },
+      ],
+    },
+    {
+      $set: {
+        internshipApplicationAllowed: true,
+        internshipSelectionWindowStartedAt: startedAt,
+        internshipSelectionDeadlineAt: selectionDeadline,
+        internshipSelectionWindowExpired: false,
+        internshipSelectionExpiredAt: null,
+        ...(internshipStatus === "" || internshipStatus === "locked"
+          ? { internshipStatus: "available" }
+          : {}),
+      },
+    },
+    { new: true, runValidators: true, context: "query" },
+  )
+    .lean()
+    .exec();
+
+  return updated ? asRecord(updated) : record;
+}
+
 export async function getInternshipEligibility(
 studentId: string,
 ): Promise<
@@ -563,7 +659,7 @@ code:
 "INVALID_STUDENT_ID",
 };
 }
-const record =
+let record =
 await findStudent(id);
 if (!record) {
 return {
@@ -574,6 +670,7 @@ code:
 "STUDENT_NOT_FOUND",
 };
 }
+record = await reconcileInternshipEligibility(record);
 const applicationApproved =
 isApplicationApproved(
 record,
@@ -644,12 +741,26 @@ reasonCode =
 "ASSESSMENT_NOT_PASSED";
 reason =
 "Student must pass the assessment before internship selection.";
+} else if (
+record.journeyExpired === true ||
+record.internshipSelectionWindowExpired === true
+) {
+eligible = false;
+reasonCode = "INTERNSHIP_SELECTION_WINDOW_EXPIRED";
+reason = "The 72-hour internship selection window has expired.";
 } else if (!internshipAllowed) {
 eligible = false;
 reasonCode =
 "INTERNSHIP_NOT_AVAILABLE";
 reason =
 "Internship selection is not currently available.";
+} else if (
+Boolean(getSelectionDeadline(record)) &&
+(getSelectionDeadline(record) as Date).getTime() <= Date.now()
+) {
+eligible = false;
+reasonCode = "INTERNSHIP_SELECTION_WINDOW_EXPIRED";
+reason = "The 72-hour internship selection window has expired.";
 } else if (
 (
 PAYMENT_PENDING_INTERNSHIP_STATUSES.has(internshipStatus) ||
@@ -717,164 +828,164 @@ error,
 }
 }
 export async function selectInternship(
-input: SelectInternshipServiceInput,
+  input: SelectInternshipServiceInput,
 ): Promise<ServiceResult> {
-try {
-await ensureDatabase();
-const studentId =
-normalizeId(
-input?.studentId,
-);
-const plan =
-normalizePlanCode(
-input?.plan,
-) as InternshipPlan;
-const track =
-normalizeTrack(
-input?.track,
-);
-const startPreference =
-normalizeStartPreference(
-input?.startPreference,
-);
-if (!studentId) {
-return {
-success: false,
-message:
-"Student ID is required.",
-code:
-"INVALID_STUDENT_ID",
-};
+  try {
+    await ensureDatabase();
+
+    const studentId = normalizeId(input?.studentId);
+    const planCode = normalizePlanCode(input?.plan);
+    const track = normalizeTrack(input?.track);
+    const startPreference = normalizeStartPreference(input?.startPreference);
+
+    if (!studentId) {
+      return { success: false, message: "Student ID is required.", code: "INVALID_STUDENT_ID" };
+    }
+
+    if (!isValidInternshipPlan(planCode)) {
+      return { success: false, message: "Invalid internship plan.", code: "INVALID_INTERNSHIP_PLAN" };
+    }
+
+    if (!track) {
+      return { success: false, message: "Internship track is required.", code: "INTERNSHIP_TRACK_REQUIRED" };
+    }
+
+    const pricing = validateInternshipPlanPricing(planCode);
+    if (!pricing.valid || !pricing.plan) {
+      return { success: false, message: pricing.reason, code: pricing.reasonCode };
+    }
+
+    const student = await findStudent(studentId);
+    if (!student || !student._id) {
+      return { success: false, message: "Student account was not found.", code: "STUDENT_NOT_FOUND" };
+    }
+
+    const eligibility = await getInternshipEligibility(studentId);
+    if (!eligibility.success) return eligibility;
+    if (!eligibility.data?.eligible) {
+      return {
+        success: false,
+        message: eligibility.data?.reason || "Internship selection is not available.",
+        code: eligibility.data?.reasonCode || "INTERNSHIP_NOT_AVAILABLE",
+      };
+    }
+
+    const now = new Date();
+    const deadline = getSelectionDeadline(student);
+    if (student.internshipSelectionWindowExpired === true || (deadline && deadline.getTime() <= now.getTime())) {
+      return {
+        success: false,
+        message: "The 72-hour internship selection window has expired.",
+        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
+      };
+    }
+
+    const currentPaymentStatus = normalizeStatus(student.paymentStatus) || "unpaid";
+    const currentInternshipStatus = normalizeStatus(student.internshipStatus) || "available";
+    const existingOrderId = cleanString(student.razorpayOrderId, 200);
+
+    if (currentPaymentStatus === "paid" || currentPaymentStatus === "refunded") {
+      return {
+        success: false,
+        message: "A completed or refunded payment cannot be replaced with a new selection.",
+        code: currentPaymentStatus === "paid" ? "PAYMENT_ALREADY_COMPLETED" : "PAYMENT_REFUNDED",
+      };
+    }
+
+    if (existingOrderId) {
+      return {
+        success: false,
+        message: "A Razorpay order already exists. Reconcile or resume that payment before changing the selection.",
+        code: "PAYMENT_ORDER_ALREADY_CREATED",
+      };
+    }
+
+    const selectedAt = now;
+    const selectionStartedAt =
+      safeDate(student.internshipSelectionWindowStartedAt) ||
+      safeDate(student.assessmentEvaluatedAt) ||
+      safeDate(student.resultDeclaredAt) ||
+      safeDate(student.assessmentSubmittedAt) ||
+      selectedAt;
+    const selectionDeadline = deadline || new Date(selectionStartedAt.getTime() + 72 * 60 * 60 * 1000);
+
+    const filter: Record<string, unknown> = {
+      _id: student._id,
+      internshipApplicationAllowed: true,
+      paymentStatus: { $nin: ["paid", "refunded"] },
+      internshipSelectionWindowExpired: { $ne: true },
+      journeyExpired: { $ne: true },
+      $and: [
+        { $or: [{ applicationStatus: "approved" }, { adminApprovalStatus: "approved" }] },
+        { assessmentStatus: "passed", resultStatus: "passed" },
+        { $or: [{ razorpayOrderId: { $exists: false } }, { razorpayOrderId: null }, { razorpayOrderId: "" }] },
+        { $or: [{ internshipSelectionDeadlineAt: { $gt: now } }, { internshipSelectionDeadlineAt: null }, { internshipSelectionDeadlineAt: { $exists: false } }] },
+      ],
+    };
+
+    const updatedStudent = await StudentModel.findOneAndUpdate(
+      filter,
+      {
+        $set: {
+          internshipTrack: track,
+          internshipPlan: planCode,
+          internshipDurationMonths: pricing.plan.durationMonths,
+          internshipDurationDays: pricing.plan.durationDays,
+          internshipSelectionAt: selectedAt,
+          internshipSelectionWindowStartedAt: selectionStartedAt,
+          internshipSelectionDeadlineAt: selectionDeadline,
+          internshipSelectionWindowExpired: false,
+          internshipSelectionExpiredAt: null,
+          internshipStatus: "payment-pending",
+          startPreference,
+          paymentStatus: "pending",
+          paymentAmount: pricing.plan.amount,
+          paymentCurrency: pricing.plan.currency,
+          studentOpsStatus: "not-ready",
+          studentOpsApprovalStatus: "pending",
+          dashboardStatus: "locked",
+          dashboardLoginEnabled: false,
+        },
+      },
+      { new: true, runValidators: true, context: "query" },
+    ).lean().exec();
+
+    if (!updatedStudent) {
+      return {
+        success: false,
+        message: "The student record changed or the selection window is no longer valid. Refresh and try again.",
+        code: "INTERNSHIP_SELECTION_CONFLICT",
+      };
+    }
+
+    return {
+      success: true,
+      message: "Internship selected successfully. Payment is now pending.",
+      code: "INTERNSHIP_SELECTED",
+      data: {
+        studentId: cleanString(updatedStudent.studentId, MAX_STUDENT_ID_LENGTH),
+        planCode: pricing.plan.planCode,
+        internshipPlan: pricing.plan.name,
+        durationMonths: pricing.plan.durationMonths,
+        durationDays: pricing.plan.durationDays,
+        amount: pricing.plan.amount,
+        currency: pricing.plan.currency,
+        amountInPaise: pricing.plan.amountInPaise,
+        internshipTrack: track,
+        startPreference,
+        internshipStatus: "payment-pending",
+        paymentStatus: "pending",
+        dashboardActivation: "NOT_ACTIVE",
+        dashboardLogin: "LOCKED",
+        pricingAuthoritative: true,
+        selectionDeadlineAt: selectionDeadline,
+      },
+    };
+  } catch (error) {
+    return handleInternshipError("[InternshipService] selectInternship", error);
+  }
 }
-if (
-!isValidInternshipPlan(
-plan,
-)
-) {
-return {
-success: false,
-message:
-"Invalid internship plan.",
-code:
-"INVALID_INTERNSHIP_PLAN",
-};
-}
-if (!track) {
-return {
-success: false,
-message:
-"Internship track is required.",
-code:
-"INTERNSHIP_TRACK_REQUIRED",
-};
-}
-const selectedPlan =
-getInternshipPlan(
-plan,
-);
-if (!selectedPlan) {
-return {
-success: false,
-message:
-"Selected internship plan was not found.",
-code:
-"INVALID_INTERNSHIP_PLAN",
-};
-}
-const pricing =
-validateInternshipPlanPricing(
-plan,
-);
-if (
-!pricing.valid ||
-!pricing.plan
-) {
-return {
-success: false,
-message:
-pricing.reason,
-code:
-pricing.reasonCode,
-};
-}
-const eligibility =
-await getInternshipEligibility(
-studentId,
-);
-if (!eligibility.success) {
-return eligibility;
-}
-if (
-eligibility.data &&
-!eligibility.data.eligible
-) {
-return {
-success: false,
-message:
-eligibility.data.reason,
-code:
-eligibility.data.reasonCode,
-};
-}
-const result =
-await selectStudentInternship({
-studentId,
-plan,
-track,
-startPreference,
-} as SelectInternshipInput);
-if (!result.success) {
-return result;
-}
-return {
-success: true,
-message:
-"Internship selected successfully. Payment is now pending.",
-code:
-"INTERNSHIP_SELECTED",
-data: {
-...(result.data &&
-typeof result.data ===
-"object"
-? result.data
-: {}),
-studentId,
-planCode:
-selectedPlan.code,
-internshipPlan:
-selectedPlan.name,
-durationMonths:
-selectedPlan.durationMonths,
-durationDays:
-selectedPlan.durationDays,
-amount:
-selectedPlan.amount,
-currency:
-selectedPlan.currency,
-amountInPaise:
-selectedPlan.amountInPaise,
-internshipTrack:
-track,
-startPreference,
-internshipStatus:
-"payment-pending",
-paymentStatus:
-"pending",
-dashboardActivation:
-"NOT_ACTIVE",
-dashboardLogin:
-"LOCKED",
-pricingAuthoritative:
-true,
-},
-};
-} catch (error) {
-return handleInternshipError(
-"[InternshipService] selectInternship",
-error,
-);
-}
-}
+
 export async function getInternshipStatus(
 studentId: string,
 ): Promise<
@@ -1331,6 +1442,27 @@ internshipStatus:
 status.internshipStatus,
 pricingAuthoritative:
 true,
+},
+};
+}
+if (cleanString((await findStudent(status.studentId))?.razorpayOrderId, 200)) {
+return {
+success: true,
+message: "An existing Razorpay order must be resumed or reconciled before creating another order.",
+code: "PAYMENT_ORDER_REQUIRES_RECONCILIATION",
+data: {
+ready: false,
+reasonCode: "PAYMENT_ORDER_REQUIRES_RECONCILIATION",
+reason: "An existing payment order is already associated with this selection.",
+studentId: status.studentId,
+planCode: plan.code,
+planName: plan.name,
+amount: plan.amount,
+amountInPaise: plan.amountInPaise,
+currency: plan.currency,
+paymentStatus: status.paymentStatus,
+internshipStatus: status.internshipStatus,
+pricingAuthoritative: true,
 },
 };
 }

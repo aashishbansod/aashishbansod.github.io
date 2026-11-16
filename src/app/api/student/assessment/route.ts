@@ -36,6 +36,47 @@ const CONFIG = Object.freeze({
 
 const ACTIVE_STATUSES = ["in-progress", "coding-in-progress", "submitted", "evaluating"] as const;
 
+const INTERNSHIP_PLANS = Object.freeze([
+  {
+    planCode: "ONE_MONTH",
+    durationMonths: 1,
+    durationDays: 30,
+    duration: "1 Month",
+    price: 499,
+    priceInPaise: 49900,
+    currency: "INR",
+  },
+  {
+    planCode: "THREE_MONTHS",
+    durationMonths: 3,
+    durationDays: 90,
+    duration: "3 Months",
+    price: 999,
+    priceInPaise: 99900,
+    currency: "INR",
+  },
+  {
+    planCode: "SIX_MONTHS",
+    durationMonths: 6,
+    durationDays: 180,
+    duration: "6 Months",
+    price: 1699,
+    priceInPaise: 169900,
+    currency: "INR",
+  },
+] as const);
+
+function getInternshipPlanFlow(passed: boolean) {
+  return {
+    eligible: passed,
+    selectionAllowed: passed,
+    paymentRequired: passed,
+    operationsApprovalRequired: true,
+    plans: INTERNSHIP_PLANS,
+    nextStep: passed ? "select-internship-plan" : "assessment-required",
+  };
+}
+
 type AnyRecord = Record<string, unknown>;
 type AnswerInput = { questionId: string; answer: string };
 type StudentContext = {
@@ -210,6 +251,7 @@ function serializeResult(attempt: AnyRecord): AnyRecord {
     message: passed
       ? "Congratulations! You have passed the assessment."
       : "Your assessment has been evaluated. Please check your dashboard for the next steps.",
+    internship: getInternshipPlanFlow(passed),
   };
 }
 
@@ -528,7 +570,7 @@ async function createAttempt(
 
   if (Number(studentUpdate.matchedCount ?? 0) !== 1) {
     await Attempt.deleteOne({
-      __id: attempt._id,
+      _id: attempt._id,
       studentId: student.id,
       status: "in-progress",
     }).exec();
@@ -738,8 +780,23 @@ async function finalizeAttempt(
       throw new Error("ASSESSMENT_FINAL_SCORE_INVALID");
     }
 
+    const eligibilityFilter: AnyRecord = finalPassed
+      ? {
+          _id: studentId,
+          loginEnabled: true,
+          adminApprovalStatus: "approved",
+          applicationStatus: "approved",
+          journeyExpired: { $ne: true },
+          $or: [
+            { journeyExpiresAt: null },
+            { journeyExpiresAt: { $exists: false } },
+            { journeyExpiresAt: { $gt: now } },
+          ],
+        }
+      : { _id: studentId };
+
     const studentSync = await StudentModel.updateOne(
-      { _id: studentId },
+      eligibilityFilter as any,
       {
         $set: {
           assessmentStatus: finalPassed ? "passed" : "failed",
@@ -881,7 +938,7 @@ async function readRequestBody(request: NextRequest): Promise<
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const auth = await getStudentContext(request);
-    if (!auth.valid) return auth.response;
+    if (auth.valid === false) return auth.response;
 
     const { student } = auth;
     let activeAttempt = await getActiveAttempt(student.id);
@@ -938,6 +995,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             result: status === "cancelled"
               ? { status: "failed", score: Number(activeAttempt.totalScore) || 0, percentage: Number(activeAttempt.percentage) || 0, passed: false, message: "This assessment attempt is no longer active." }
               : serializeResult(activeAttempt),
+            internship: getInternshipPlanFlow(status === "passed" && student.record.adminApprovalStatus === "approved" && student.record.applicationStatus === "approved"),
           },
           "Assessment result loaded.",
         );
@@ -969,24 +1027,66 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     if (["passed", "failed", "evaluated"].includes(text(student.record.assessmentStatus, 30)) || ["passed", "failed"].includes(text(student.record.resultStatus, 30))) {
       const storedScore = Number.isFinite(Number(student.record.assessmentScore)) ? Number(student.record.assessmentScore) : null;
       const storedStatus = ["passed", "failed"].includes(text(student.record.resultStatus, 30)) ? text(student.record.resultStatus, 30) : text(student.record.assessmentStatus, 30);
+      const passed = storedStatus === "passed";
+      let internshipEligible = passed && student.record.adminApprovalStatus === "approved" && student.record.applicationStatus === "approved";
+
+      if (internshipEligible) {
+        const now = new Date();
+        const eligibilitySync = await StudentModel.updateOne(
+          {
+            _id: student.id,
+            loginEnabled: true,
+            adminApprovalStatus: "approved",
+            applicationStatus: "approved",
+            journeyExpired: { $ne: true },
+            $or: [
+              { journeyExpiresAt: null },
+              { journeyExpiresAt: { $exists: false } },
+              { journeyExpiresAt: { $gt: now } },
+            ],
+          },
+          {
+            $set: {
+              assessmentStatus: "passed",
+              resultStatus: "passed",
+              internshipApplicationAllowed: true,
+              resultVisibleAt: student.record.resultVisibleAt ?? student.record.resultDeclaredAt ?? now,
+            },
+          },
+        ).exec();
+        internshipEligible = Number(eligibilitySync.matchedCount ?? 0) === 1;
+      }
+
+      if (!internshipEligible && passed) {
+        await StudentModel.updateOne(
+          { _id: student.id },
+          { $set: { internshipApplicationAllowed: false } },
+        ).exec();
+      }
+
+      const internship = getInternshipPlanFlow(internshipEligible);
       return success(
         {
           student: {
-              fullName: text(student.record.fullName, 120),
-              internshipTrack: getStudentDomain(student.record),
-              domain: getStudentDomain(student.record),
-            },
+            fullName: text(student.record.fullName, 120),
+            internshipTrack: getStudentDomain(student.record),
+            domain: getStudentDomain(student.record),
+          },
           assessment: null,
           attempt: null,
           result: {
             status: storedStatus,
             score: storedScore,
             percentage: storedScore === null ? null : Math.round((storedScore / CONFIG.totalMarks) * 10000) / 100,
-            passed: storedStatus === "passed",
-            message: storedStatus === "passed"
-              ? "Your assessment has already been passed."
+            passed,
+            message: passed
+              ? internshipEligible
+                ? "Your assessment has already been passed. You can now select an internship plan."
+                : "Your assessment is passed, but your application eligibility needs administrative review."
               : "Your assessment has already been evaluated.",
+            internship,
           },
+          internship,
         },
         "Assessment result loaded.",
       );
@@ -1006,6 +1106,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           assessment: null,
           attempt: null,
           result: null,
+          internship: getInternshipPlanFlow(false),
           assignment: {
             domainAssigned: Boolean(assignedDomain),
             domain: assignedDomain,
@@ -1028,6 +1129,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         assessment: serializeAssessment(assessment),
         attempt: null,
         result: null,
+        internship: getInternshipPlanFlow(false),
       },
       "Assessment is ready.",
     );
@@ -1046,10 +1148,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const auth = await getStudentContext(request);
-    if (!auth.valid) return auth.response;
+    if (auth.valid === false) return auth.response;
 
     const parsed = await readRequestBody(request);
-    if (!parsed.valid) return parsed.response;
+    if (parsed.valid === false) return parsed.response;
 
     const { student } = auth;
     const body = parsed.body;
@@ -1113,6 +1215,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         return success(
           {
             attempt: serializeAttempt(existingAttempt),
+            internship: getInternshipPlanFlow(false),
             assessment: {
               id: text(existingAttempt.assessmentId, 100),
               title: "Technical Assessment",
@@ -1215,7 +1318,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const parsedAnswers = parseAnswersForAttempt(body.answers, attempt);
-    if (!parsedAnswers.valid) {
+    if (parsedAnswers.valid === false) {
       return failure(parsedAnswers.message, "INVALID_ANSWERS", 400);
     }
 
@@ -1243,7 +1346,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         deadline <= new Date() || body.autoSubmitted === true ? "system" : "student",
       );
       return success(
-        { result: serializeResult(finalized), attempt: null },
+        {
+          result: serializeResult(finalized),
+          attempt: null,
+          internship: getInternshipPlanFlow(finalized.status === "passed"),
+        },
         deadline <= new Date()
           ? "Assessment time expired. Your saved answers were submitted automatically."
           : "Assessment submitted and evaluated successfully.",

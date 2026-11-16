@@ -18,7 +18,6 @@ import {
 
 } from "@/lib/auth";
 
-import { markPaymentPending } from "@/services/student.service";
 
 export const runtime = "nodejs";
 
@@ -184,7 +183,6 @@ type InternshipRecord = {
   price?: unknown;
 
   priceInPaise?: unknown;
-  adminApprovalStatus?: unknown;
 
   currency?: unknown;
 
@@ -773,24 +771,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       student.internshipSelectionWindowExpired === true ||
       selectionDeadline.getTime() <= Date.now();
 
-    if (selectionWindowExpired && existingOrderId) {
-      return jsonResponse({
-        success: false,
-        code: "PAYMENT_ORDER_REQUIRES_RECONCILIATION",
-        message: "An existing payment order must be reconciled before another payment order can be created.",
-        data: {
-          paymentStatus,
-          dashboardStatus: "locked",
-          dashboardLoginEnabled: false,
-        },
-      }, 409);
-    }
-
-    if (selectionWindowExpired) {
+    if (selectionWindowExpired && !existingOrderId) {
       return jsonResponse({
         success: false,
         code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
-        message: "The 72-hour internship selection/payment window has expired. Contact support for assistance.",
+        message: "The 72-hour internship selection window has expired. A new payment order cannot be created. Contact support for assistance.",
       }, 409);
     }
 
@@ -911,6 +896,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const publicStudentId = cleanString(student.studentId) || dbStudentId;
 
     let order: RazorpayOrder | null = null;
+    let reusingExistingOrder = false;
     if (existingOrderId) {
 
       try {
@@ -952,6 +938,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             }, 409);
           }
           order = existing;
+          reusingExistingOrder = true;
         } else if (!["failed", "cancelled", "canceled", "expired"].includes(existingStatus)) {
           return jsonResponse({
             success: false,
@@ -972,6 +959,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
       }
 
+    }
+
+    if (!order && selectionWindowExpired) {
+      return jsonResponse({
+        success: false,
+        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
+        message: "The original payment order is no longer active and the 72-hour selection window has expired. Contact support for payment reconciliation.",
+      }, 409);
     }
 
     if (!order) {
@@ -1058,72 +1053,36 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     }
 
-    const expectedOrderId = existingOrderId;
-    const primaryPersistResult = await Student.updateOne(
-      {
-        _id: student._id,
-        paymentStatus: { $nin: ["paid", "refunded"] },
-        internshipStatus: student.internshipStatus,
-        internshipPlan: student.internshipPlan,
-        paymentAmount: student.paymentAmount,
-        paymentCurrency: student.paymentCurrency,
-        razorpayOrderId: expectedOrderId || { $in: ["", null] },
-        internshipSelectionWindowExpired: { $ne: true },
-        internshipSelectionDeadlineAt: { $gt: new Date() },
-      },
-      {
-        $set: {
-          razorpayOrderId: orderId,
-          paymentStatus: "pending",
-          paymentAmount: plan.price,
-          paymentCurrency: "INR",
+    if (!reusingExistingOrder) {
+      const primaryPersistResult = await Student.updateOne(
+        {
+          _id: student._id,
+          paymentStatus: { $nin: ["paid", "refunded"] },
+          internshipStatus: student.internshipStatus,
+          internshipPlan: student.internshipPlan,
+          paymentAmount: student.paymentAmount,
+          paymentCurrency: student.paymentCurrency,
+          razorpayOrderId: existingOrderId || { $in: ["", null] },
+          internshipSelectionWindowExpired: { $ne: true },
+          internshipSelectionDeadlineAt: { $gt: new Date() },
         },
-      },
-    ).exec();
+        {
+          $set: {
+            razorpayOrderId: orderId,
+            paymentStatus: "pending",
+            paymentAmount: plan.price,
+            paymentCurrency: "INR",
+          },
+        },
+      ).exec();
 
-    if (primaryPersistResult.matchedCount !== 1) {
-      return jsonResponse({
-        success: false,
-        code: "PAYMENT_STATE_CHANGED",
-        message: "Your payment state changed while preparing checkout. Refresh the page and try again.",
-      }, 409);
-    }
-
-    let operationsSyncPending = false;
-
-    try {
-      const pendingResult = await markPaymentPending({
-        studentId: publicStudentId,
-        razorpayOrderId: orderId,
-        amount: plan.price,
-        currency: "INR",
-      });
-
-      if (!pendingResult.success) {
-        console.error("[PAYMENT CREATE ORDER] Payment order could not be committed to the student record.", {
-          studentId: dbStudentId,
-          code: pendingResult.code,
-        });
-
-        const expired = pendingResult.code === "INTERNSHIP_SELECTION_WINDOW_EXPIRED";
-
+      if (primaryPersistResult.matchedCount !== 1) {
         return jsonResponse({
           success: false,
-          code: pendingResult.code || "PAYMENT_ORDER_COMMIT_FAILED",
-          message: pendingResult.message || "Unable to prepare payment. Please refresh and try again.",
-        }, expired ? 409 : 503);
+          code: "PAYMENT_STATE_CHANGED",
+          message: "Your payment state changed while preparing checkout. Refresh the page and verify your payment status before retrying.",
+        }, 409);
       }
-    } catch (syncError) {
-      console.error("[PAYMENT CREATE ORDER] Payment order persistence failed.", {
-        studentId: dbStudentId,
-        name: syncError instanceof Error ? syncError.name : "UnknownError",
-      });
-
-      return jsonResponse({
-        success: false,
-        code: "PAYMENT_ORDER_COMMIT_FAILED",
-        message: "Unable to save your payment order. Please retry before making a payment.",
-      }, 503);
     }
 
     const checkoutSessionStartedAt = new Date();
@@ -1133,7 +1092,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
       success: true,
 
-      message: "Payment order prepared. Complete checkout within the displayed session or reopen checkout to continue with the same order.",
+      message: selectionWindowExpired
+        ? "Your original payment order is available to resume. The 72-hour selection window does not cancel an existing Razorpay order."
+        : "Payment order prepared. Complete checkout within the displayed session or reopen checkout to continue with the same order.",
 
       data: {
 
@@ -1185,8 +1146,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         checkoutSessionStartedAt: checkoutSessionStartedAt.toISOString(),
         checkoutSessionExpiresAt: checkoutSessionExpiresAt.toISOString(),
         gatewayOrderExpires: false,
-
-        operationsSyncPending,
+        selectionWindowExpired,
 
         internshipStatus: "payment-pending",
 

@@ -283,6 +283,18 @@ const StudentSchema = new Schema(
       min: [0, "Assessment score cannot be negative."],
       max: [100, "Assessment score cannot exceed 100."],
     },
+
+    assessmentPassingScore: {
+      type: Number,
+      default: 40,
+      min: [0, "Assessment passing score cannot be negative."],
+      max: [100, "Assessment passing score cannot exceed 100."],
+    },
+    assessmentAttemptCount: {
+      type: Number,
+      default: 0,
+      min: [0, "Assessment attempt count cannot be negative."],
+    },
     assessmentStartedAt: nullableDate,
     assessmentSubmittedAt: nullableDate,
     assessmentEvaluatedAt: nullableDate,
@@ -313,6 +325,12 @@ const StudentSchema = new Schema(
       type: String,
       enum: ["", "1 month", "3 months", "6 months"],
       default: "",
+    },
+    internshipPlanCode: {
+      type: String,
+      enum: ["", "ONE_MONTH", "THREE_MONTHS", "SIX_MONTHS"],
+      default: "",
+      index: true,
     },
     internshipDurationMonths: {
       type: Number,
@@ -408,6 +426,7 @@ const StudentSchema = new Schema(
       select: false,
     },
     paymentCompletedAt: nullableDate,
+    paymentVerifiedAt: nullableDate,
     paymentFailedAt: nullableDate,
     paymentRefundedAt: nullableDate,
     receiptEmailSent: {
@@ -450,6 +469,13 @@ const StudentSchema = new Schema(
       index: true,
     },
     studentOpsActivatedAt: nullableDate,
+    studentOpsSuspendedAt: nullableDate,
+    studentOpsSuspensionReason: {
+      type: String,
+      trim: true,
+      maxlength: [1000, "Student Operations suspension reason cannot exceed 1000 characters."],
+      default: "",
+    },
     studentOpsCompletedAt: nullableDate,
     dashboardStudentId: {
       type: String,
@@ -524,6 +550,21 @@ const StudentSchema = new Schema(
       default: 0,
       min: [0, "Current learning day cannot be negative."],
     },
+    totalLearningDays: {
+      type: Number,
+      default: 0,
+      min: [0, "Total learning days cannot be negative."],
+    },
+    dailyCodingProblemsCompleted: {
+      type: Number,
+      default: 0,
+      min: [0, "Daily coding problems completed cannot be negative."],
+    },
+    dailyTasksCompleted: {
+      type: Number,
+      default: 0,
+      min: [0, "Daily tasks completed cannot be negative."],
+    },
     completedLearningDays: {
       type: Number,
       default: 0,
@@ -570,6 +611,19 @@ const StudentSchema = new Schema(
       maxlength: [500, "Project folder reference cannot exceed 500 characters."],
       default: "",
     },
+    currentProjectId: {
+      type: Schema.Types.ObjectId,
+      ref: "Project",
+      default: null,
+    },
+    currentProjectName: {
+      type: String,
+      trim: true,
+      maxlength: [200, "Current project name cannot exceed 200 characters."],
+      default: "",
+    },
+    projectStartedAt: nullableDate,
+    projectCompletedAt: nullableDate,
     projectSubmittedAt: nullableDate,
     projectReviewedAt: nullableDate,
     projectReviewNotes: {
@@ -580,6 +634,13 @@ const StudentSchema = new Schema(
     },
     weeklyAssessmentSubmittedAt: nullableDate,
     saturdayAssessmentSubmittedAt: nullableDate,
+    lastWeeklyAssessmentAt: nullableDate,
+    lastSaturdayAssessmentAt: nullableDate,
+    weeklyAssessmentCount: {
+      type: Number,
+      default: 0,
+      min: [0, "Weekly assessment count cannot be negative."],
+    },
     projectStatus: {
       type: String,
       enum: ["not-started", "in-progress", "submitted", "under-review", "completed", "rejected"],
@@ -707,6 +768,7 @@ StudentSchema.index({ email: 1, loginEnabled: 1 });
 StudentSchema.index({ accountLocked: 1, lockedUntil: 1 });
 StudentSchema.index({ credentialsExpiresAt: 1, loginEnabled: 1 });
 StudentSchema.index({ internshipStatus: 1, internshipPlan: 1 });
+StudentSchema.index({ internshipPlanCode: 1, paymentStatus: 1, updatedAt: -1 });
 StudentSchema.index({ paymentStatus: 1, paymentCompletedAt: -1 });
 StudentSchema.index({
     paymentStatus: 1,

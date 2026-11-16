@@ -76,7 +76,7 @@ export type InternshipPlan =
 function normalizeInternshipPlan(value: unknown): InternshipPlan | null {
   const normalized = cleanString(value)
     .toLowerCase()
-    .replace(/[\\s_-]+/g, " ")
+    .replace(/[\s_-]+/g, " ")
     .trim();
 
   const aliases: Record<string, InternshipPlan> = {
@@ -97,6 +97,20 @@ function normalizeInternshipPlan(value: unknown): InternshipPlan | null {
   };
 
   return aliases[normalized] ?? null;
+}
+
+function getInternshipPlanCode(plan: InternshipPlan): "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS" {
+  if (plan === "1 month") return "ONE_MONTH";
+  if (plan === "3 months") return "THREE_MONTHS";
+  return "SIX_MONTHS";
+}
+
+function getInternshipPlanByCode(value: unknown): InternshipPlan | null {
+  const code = cleanString(value).toUpperCase().replace(/[\s-]+/g, "_");
+  if (code === "ONE_MONTH") return "1 month";
+  if (code === "THREE_MONTHS") return "3 months";
+  if (code === "SIX_MONTHS") return "6 months";
+  return normalizeInternshipPlan(value);
 }
 
 
@@ -140,7 +154,7 @@ export interface AssessmentResultInput {
 
 export interface SelectInternshipInput {
   studentId: string;
-  plan: InternshipPlan;
+  plan: InternshipPlan | string;
   track?: string;
   startPreference?: string;
 }
@@ -2621,7 +2635,7 @@ export async function selectInternship(
         "Student ID",
       );
 
-    const plan = normalizeInternshipPlan(input.plan);
+    const plan = getInternshipPlanByCode(input.plan);
 
     if (!plan) {
       return {
@@ -2699,6 +2713,14 @@ export async function selectInternship(
       };
     }
 
+    if (isStatus(student.paymentStatus, "refunded")) {
+      return {
+        success: false,
+        message: "A refunded payment cannot be reused for a new internship selection.",
+        code: "PAYMENT_REFUNDED",
+      };
+    }
+
     if (
       isStatus(student.internshipStatus, "payment-pending") &&
       cleanString(student.razorpayOrderId)
@@ -2718,11 +2740,6 @@ export async function selectInternship(
     ) {
       expireUnpaidSelectionJourney(student, now);
       await student.save();
-      try {
-        await syncStudentOperationsRecord(student.toObject());
-      } catch (syncError) {
-        console.error("[StudentService] Expired selection mirror sync failed:", syncError);
-      }
       return {
         success: false,
         message: "The 72-hour internship selection window has expired. Contact the administrator for assistance.",
@@ -2802,15 +2819,6 @@ export async function selectInternship(
       };
     }
 
-    try {
-      await syncStudentOperationsRecord(updatedStudent.toObject());
-    } catch (syncError) {
-      console.error(
-        "[StudentService] Student Operations mirror sync failed:",
-        syncError,
-      );
-    }
-
     return {
       success: true,
       message:
@@ -2823,6 +2831,9 @@ export async function selectInternship(
 
         internshipPlan:
           selectedPlan.name,
+
+        planCode:
+          getInternshipPlanCode(plan),
 
         durationMonths:
           selectedPlan.durationMonths,
@@ -3005,54 +3016,54 @@ export async function markPaymentPending(
   try {
     await ensureDatabase();
 
-    const studentId =
-      assertNonEmpty(
-        input.studentId,
-        "Student ID",
-      );
+    const studentId = assertNonEmpty(input.studentId, "Student ID");
+    const orderId = assertNonEmpty(input.razorpayOrderId, "Razorpay Order ID");
+    const amount = numberValue(input.amount, -1);
+    const currency = cleanString(input.currency).toUpperCase() || "INR";
 
-    const orderId =
-      assertNonEmpty(
-        input.razorpayOrderId,
-        "Razorpay Order ID",
-      );
-
-    const amount =
-      numberValue(
-        input.amount,
-        -1,
-      );
-
-    if (
-      amount <= 0
-    ) {
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
       return {
         success: false,
-        message:
-          "Invalid payment amount.",
-        code:
-          "INVALID_PAYMENT_AMOUNT",
+        message: "Invalid payment amount.",
+        code: "INVALID_PAYMENT_AMOUNT",
       };
     }
 
-    const currency =
-      cleanString(
-        input.currency,
-      ).toUpperCase() ||
-      "INR";
+    if (currency !== "INR") {
+      return {
+        success: false,
+        message: "Only INR payments are supported.",
+        code: "PAYMENT_CURRENCY_UNSUPPORTED",
+      };
+    }
 
-    const student =
-      await findStudentById(
-        studentId,
-      );
+    const student = await findStudentById(studentId);
 
     if (!student) {
       return {
         success: false,
-        message:
-          "Student account was not found.",
-        code:
-          "STUDENT_NOT_FOUND",
+        message: "Student account was not found.",
+        code: "STUDENT_NOT_FOUND",
+      };
+    }
+
+    if (
+      !isStatus(student.applicationStatus, "approved") ||
+      !isStatus(student.assessmentStatus, "passed") ||
+      student.internshipApplicationAllowed !== true
+    ) {
+      return {
+        success: false,
+        message: "Payment is available only after application approval and a passed assessment.",
+        code: "PAYMENT_NOT_ELIGIBLE",
+      };
+    }
+
+    if (!isStatus(student.internshipStatus, "payment-pending")) {
+      return {
+        success: false,
+        message: "Student is not currently waiting for payment.",
+        code: "PAYMENT_NOT_ALLOWED",
       };
     }
 
@@ -3069,114 +3080,116 @@ export async function markPaymentPending(
     const officialPlan = INTERNSHIP_PLANS[selectedPlan];
 
     if (
+      amount !== officialPlan.amount ||
       numberValue(student.paymentAmount, -1) !== officialPlan.amount ||
-      cleanString(student.paymentCurrency).toUpperCase() !== officialPlan.currency
+      cleanString(student.paymentCurrency).toUpperCase() !== officialPlan.currency ||
+      currency !== officialPlan.currency
     ) {
       return {
         success: false,
-        message: "The saved payment amount or currency does not match the official internship plan. Please select the plan again.",
+        message: "Payment amount or currency does not match the official internship plan.",
         code: "PAYMENT_PLAN_MISMATCH",
       };
     }
 
     if (
-      !isStatus(
-        student.internshipStatus,
-        "payment-pending",
-      )
+      isStatus(student.paymentStatus, "paid") ||
+      isStatus(student.paymentStatus, "refunded")
     ) {
       return {
         success: false,
-        message:
-          "Student is not currently waiting for payment.",
-        code:
-          "PAYMENT_NOT_ALLOWED",
+        message: "This payment is already completed or refunded and cannot be replaced.",
+        code: isStatus(student.paymentStatus, "paid") ? "PAYMENT_ALREADY_VERIFIED" : "PAYMENT_REFUNDED",
       };
     }
 
-    if (
-      amount !==
-      numberValue(
-        student.paymentAmount,
-      )
-    ) {
+    const existingOrderId = cleanString(student.razorpayOrderId);
+
+    if (existingOrderId && existingOrderId !== orderId) {
       return {
         success: false,
-        message:
-          "Payment amount does not match the selected internship plan.",
-        code:
-          "PAYMENT_AMOUNT_MISMATCH",
+        message: "A different Razorpay order is already linked to this student. Reconcile that order before creating another.",
+        code: "PAYMENT_ORDER_CONFLICT",
       };
     }
 
-    const selectionDeadline = ensureInternshipSelectionDeadline(student);
-    const now = new Date();
-    if (
-      student.internshipSelectionWindowExpired === true ||
-      selectionDeadline.getTime() <= now.getTime()
-    ) {
-      expireUnpaidSelectionJourney(student, now);
-      await student.save();
-      try {
-        await syncStudentOperationsRecord(student.toObject());
-      } catch (syncError) {
-        console.error("[StudentService] Expired payment-order mirror sync failed:", syncError);
+    if (!existingOrderId) {
+      const selectionDeadline = ensureInternshipSelectionDeadline(student);
+      const now = new Date();
+
+      if (
+        student.internshipSelectionWindowExpired === true ||
+        selectionDeadline.getTime() <= now.getTime()
+      ) {
+        expireUnpaidSelectionJourney(student, now);
+        await student.save();
+
+        return {
+          success: false,
+          message: "The 72-hour selection/payment window has expired. A new payment order cannot be created.",
+          code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
+        };
       }
-      return {
-        success: false,
-        message: "The 72-hour selection/payment window has expired. A new payment order cannot be created.",
-        code: "INTERNSHIP_SELECTION_WINDOW_EXPIRED",
-      };
     }
 
-    if (currency !== cleanString(student.paymentCurrency).toUpperCase()) {
+    const updatedStudent = await StudentModel.findOneAndUpdate(
+      {
+        _id: student._id,
+        paymentStatus: { $nin: ["paid", "refunded"] },
+        internshipStatus: "payment-pending",
+        applicationStatus: "approved",
+        assessmentStatus: "passed",
+        internshipApplicationAllowed: true,
+        $and: [
+          {
+            $or: [
+              { razorpayOrderId: orderId },
+              { razorpayOrderId: { $exists: false } },
+              { razorpayOrderId: null },
+              { razorpayOrderId: "" },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          razorpayOrderId: orderId,
+          paymentCurrency: officialPlan.currency,
+          paymentStatus: "pending",
+          paymentAmount: officialPlan.amount,
+          studentOpsStatus: "not-ready",
+          studentOpsApprovalStatus: "pending",
+          dashboardStatus: "locked",
+          dashboardLoginEnabled: false,
+        },
+      },
+      {
+        new: true,
+        runValidators: true,
+        context: "query",
+      },
+    ).exec();
+
+    if (!updatedStudent) {
       return {
         success: false,
-        message: "Payment currency does not match the selected plan.",
-        code: "PAYMENT_CURRENCY_MISMATCH",
+        message: "The payment order could not be linked because the student payment state changed. Reconcile the existing Razorpay order before retrying.",
+        code: "PAYMENT_ORDER_LINK_CONFLICT",
       };
-    }
-
-    student.razorpayOrderId =
-      orderId;
-
-    student.paymentCurrency =
-      currency;
-
-    student.paymentStatus =
-      "pending";
-
-    await student.save();
-    try {
-      await syncStudentOperationsRecord(student.toObject());
-    } catch (syncError) {
-      console.error(
-        "[StudentService] Student Operations mirror sync failed:",
-        syncError,
-      );
     }
 
     return {
       success: true,
-      message:
-        "Payment order recorded successfully.",
-      code:
-        "PAYMENT_PENDING",
+      message: "Payment order recorded successfully.",
+      code: "PAYMENT_PENDING",
       data: {
-        studentId:
-          student.studentId,
-
-        razorpayOrderId:
-          student.razorpayOrderId,
-
-        paymentAmount:
-          student.paymentAmount,
-
-        paymentCurrency:
-          student.paymentCurrency,
-
-        paymentStatus:
-          student.paymentStatus,
+        studentId: updatedStudent.studentId,
+        razorpayOrderId: updatedStudent.razorpayOrderId,
+        planCode: getInternshipPlanCode(selectedPlan),
+        internshipPlan: officialPlan.name,
+        paymentAmount: updatedStudent.paymentAmount,
+        paymentCurrency: updatedStudent.paymentCurrency,
+        paymentStatus: updatedStudent.paymentStatus,
       },
     };
   } catch (error) {
@@ -3227,6 +3240,29 @@ export async function recordVerifiedPayment(
       };
     }
 
+    const selectedPlan = normalizeInternshipPlan(student.internshipPlan);
+
+    if (!selectedPlan) {
+      return {
+        success: false,
+        message: "A valid selected internship plan is required to verify payment.",
+        code: "INTERNSHIP_PLAN_REQUIRED",
+      };
+    }
+
+    const officialPlan = INTERNSHIP_PLANS[selectedPlan];
+
+    if (
+      numberValue(student.paymentAmount, -1) !== officialPlan.amount ||
+      cleanString(student.paymentCurrency).toUpperCase() !== officialPlan.currency
+    ) {
+      return {
+        success: false,
+        message: "The saved payment details do not match the official selected plan.",
+        code: "PAYMENT_PLAN_MISMATCH",
+      };
+    }
+
     if (
       student.razorpayOrderId !==
       orderId
@@ -3241,16 +3277,7 @@ export async function recordVerifiedPayment(
     }
 
     if (
-      input.amount !==
-      undefined &&
-      numberValue(
-        input.amount,
-        -1,
-      ) !==
-      numberValue(
-        student.paymentAmount,
-        -2,
-      )
+      numberValue(input.amount, officialPlan.amount) !== officialPlan.amount
     ) {
       return {
         success: false,
@@ -3319,6 +3346,17 @@ export async function recordVerifiedPayment(
     }
 
     if (
+      isStatus(student.paymentStatus, "paid") &&
+      student.razorpayPaymentId !== paymentId
+    ) {
+      return {
+        success: false,
+        message: "A different Razorpay payment is already recorded for this student. Manual reconciliation is required.",
+        code: "PAYMENT_ALREADY_CAPTURED",
+      };
+    }
+
+    if (
       isStatus(
         student.paymentStatus,
         "refunded",
@@ -3342,52 +3380,75 @@ export async function recordVerifiedPayment(
       };
     }
 
-    student.razorpayOrderId =
-      orderId;
+    const verifiedAt = new Date();
+    const paymentUpdate: Record<string, unknown> = {
+      razorpayOrderId: orderId,
+      razorpayPaymentId: paymentId,
+      paymentStatus: "paid",
+      internshipSelectionWindowExpired: false,
+      journeyExpired: false,
+      paymentCompletedAt: verifiedAt,
+      paymentVerifiedAt: verifiedAt,
+      internshipStatus: "approved",
+      studentOpsApprovalStatus: "pending",
+      studentOpsStatus: "pending-review",
+      dashboardStatus: "locked",
+      dashboardLoginEnabled: false,
+      dashboardCredentialsGenerated: false,
+    };
 
-    student.razorpayPaymentId =
-      paymentId;
-
-    if (
-      input.razorpaySignature
-    ) {
-      student.razorpaySignature =
-        input.razorpaySignature;
+    if (input.razorpaySignature) {
+      paymentUpdate.razorpaySignature = input.razorpaySignature;
     }
 
-    student.paymentStatus =
-      "paid";
-    student.internshipSelectionWindowExpired = false;
-    student.journeyExpired = false;
+    const verifiedStudent = await StudentModel.findOneAndUpdate(
+      {
+        _id: student._id,
+        razorpayOrderId: orderId,
+        paymentStatus: { $nin: ["paid", "refunded"] },
+        paymentAmount: officialPlan.amount,
+        paymentCurrency: officialPlan.currency,
+      },
+      {
+        $set: paymentUpdate,
+      },
+      {
+        new: true,
+        runValidators: true,
+        context: "query",
+      },
+    ).exec();
 
-    student.paymentCompletedAt =
-      new Date();
+    if (!verifiedStudent) {
+      const latestStudent = await findStudentById(studentId);
 
-    student.paymentVerifiedAt =
-      new Date();
+      if (
+        latestStudent &&
+        isStatus(latestStudent.paymentStatus, "paid") &&
+        cleanString(latestStudent.razorpayPaymentId) === paymentId
+      ) {
+        return {
+          success: true,
+          message: "Payment was already verified.",
+          code: "PAYMENT_ALREADY_VERIFIED",
+          data: {
+            studentId: latestStudent.studentId,
+            paymentStatus: latestStudent.paymentStatus,
+            internshipStatus: latestStudent.internshipStatus,
+            studentOpsStatus: latestStudent.studentOpsStatus,
+          },
+        };
+      }
 
+      return {
+        success: false,
+        message: "Payment could not be committed because the student payment state changed. Reconcile the Razorpay order and payment ledger.",
+        code: "PAYMENT_COMMIT_CONFLICT",
+      };
+    }
 
-    student.internshipStatus =
-      "approved";
-
-    student.studentOpsApprovalStatus =
-      "pending";
-
-    student.studentOpsStatus =
-      "pending-review";
-
-    student.dashboardStatus =
-      "locked";
-
-    student.dashboardLoginEnabled =
-      false;
-
-    student.dashboardCredentialsGenerated =
-      false;
-
-    await student.save();
     try {
-      await syncStudentOperationsRecord(student.toObject());
+      await syncStudentOperationsRecord(verifiedStudent.toObject());
     } catch (syncError) {
       console.error(
         "[StudentService] Student Operations mirror sync failed:",
@@ -3403,41 +3464,44 @@ export async function recordVerifiedPayment(
         "PAYMENT_VERIFIED",
       data: {
         studentId:
-          student.studentId,
+          verifiedStudent.studentId,
 
         internshipPlan:
-          student.internshipPlan,
+          verifiedStudent.internshipPlan,
+
+        planCode:
+          getInternshipPlanCode(selectedPlan),
 
         internshipStatus:
-          student.internshipStatus,
+          verifiedStudent.internshipStatus,
 
         paymentStatus:
-          student.paymentStatus,
+          verifiedStudent.paymentStatus,
 
         paymentAmount:
-          student.paymentAmount,
+          verifiedStudent.paymentAmount,
 
         paymentCurrency:
-          student.paymentCurrency,
+          verifiedStudent.paymentCurrency,
 
         razorpayOrderId:
-          student.razorpayOrderId,
+          verifiedStudent.razorpayOrderId,
 
         razorpayPaymentId:
-          student.razorpayPaymentId,
+          verifiedStudent.razorpayPaymentId,
 
         studentOpsApprovalStatus:
-          student.studentOpsApprovalStatus,
+          verifiedStudent.studentOpsApprovalStatus,
 
         studentOpsStatus:
-          student.studentOpsStatus,
+          verifiedStudent.studentOpsStatus,
 
         dashboardStatus:
-          student.dashboardStatus,
+          verifiedStudent.dashboardStatus,
 
         receiptEmailSent:
           booleanValue(
-            student.receiptEmailSent,
+            verifiedStudent.receiptEmailSent,
           ),
       },
     };

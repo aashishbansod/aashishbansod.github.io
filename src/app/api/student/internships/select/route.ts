@@ -549,6 +549,11 @@ export async function POST(request: NextRequest) {
     const selectionDeadline = student.internshipSelectionDeadlineAt
       ? new Date(student.internshipSelectionDeadlineAt as string | number | Date)
       : null;
+    const selectionDeadlineInvalid =
+      Boolean(
+        student.internshipSelectionDeadlineAt &&
+        (!selectionDeadline || !Number.isFinite(selectionDeadline.getTime()))
+      );
     const selectionDeadlineExpired =
       Boolean(
         selectionDeadline &&
@@ -558,7 +563,8 @@ export async function POST(request: NextRequest) {
 
     if (
       student.internshipSelectionWindowExpired === true ||
-      selectionDeadlineExpired
+      selectionDeadlineExpired ||
+      selectionDeadlineInvalid
     ) {
       if (cleanString(student.razorpayOrderId, 100)) {
         return json(
@@ -612,7 +618,10 @@ export async function POST(request: NextRequest) {
             "Your 72-hour internship selection session has expired. Contact support to request a new selection window.",
           data: {
             expired: true,
-            deadlineAt: selectionDeadline,
+            deadlineAt:
+              selectionDeadline && Number.isFinite(selectionDeadline.getTime())
+                ? selectionDeadline
+                : null,
             paymentStatus: existingPaymentStatus || "unpaid",
             dashboardStatus: "locked",
             dashboardLoginEnabled: false,
@@ -623,7 +632,7 @@ export async function POST(request: NextRequest) {
       );
     }
     if (
-      existingPaymentStatus === "paid" ||
+      ["paid", "refunded", "partially-refunded"].includes(existingPaymentStatus) ||
       [
         "payment-completed",
         "approved",
@@ -647,7 +656,7 @@ export async function POST(request: NextRequest) {
     }
     const rawExistingPlan = cleanString(student.internshipPlan, 50)
       .toUpperCase()
-      .replace(/[\\s-]+/g, "_");
+      .replace(/[\s-]+/g, "_");
     const existingPlanDetails = rawExistingPlan
       ? getInternshipPlan(rawExistingPlan)
       : null;
@@ -701,6 +710,7 @@ export async function POST(request: NextRequest) {
             paymentAttempt: hasUnresolvedOrder ? "resume-existing-order" : "continue",
             dashboardStatus: "locked",
             dashboardLoginEnabled: false,
+            operationsApprovalRequired: true,
             nextStep: "PAYMENT",
           },
         },
@@ -836,6 +846,7 @@ export async function POST(request: NextRequest) {
           paymentStatus: "pending",
           dashboardStatus: "locked",
           dashboardLoginEnabled: false,
+          operationsApprovalRequired: true,
           nextStep: "PAYMENT",
         },
       },

@@ -14,11 +14,7 @@ import {
 
 } from "lucide-react";
 
-
-
 type PlanCode = "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
-
-
 
 type Profile = {
   studentId?: string;
@@ -46,7 +42,7 @@ type Profile = {
   razorpayPaymentId?: string | null;
 };
 
-
+type Eligibility = { eligible: boolean; applicationApproved?: boolean; assessmentPassed?: boolean; internshipApplicationAllowed?: boolean; reasonCode?: string; reason?: string };
 
 type RawPlan = {
 
@@ -55,8 +51,6 @@ type RawPlan = {
   price?: number | string; priceInPaise?: number | string; currency?: string; stipend?: string | number;
 
 };
-
-
 
 type RawProgram = {
 
@@ -74,23 +68,13 @@ type RawProgram = {
 
 };
 
-
-
 type Plan = { internshipId: string; planCode: PlanCode; duration: string; months: 1 | 3 | 6; price: number; currency: string; stipend?: string | number };
-
-
 
 type Program = { id: string; title: string; description: string; domain: string; mode: string; location: string; skills: string[]; technologies: string[]; plans: Plan[] };
 
-
-
 type Payload = { success?: boolean; message?: string; error?: string; data?: unknown; student?: unknown; profile?: unknown; internships?: unknown; items?: unknown; results?: unknown };
 
-
-
 const PLAN_ORDER: PlanCode[] = ["ONE_MONTH", "THREE_MONTHS", "SIX_MONTHS"];
-
-
 
 const PLAN_INFO: Record<PlanCode, { label: string; months: 1 | 3 | 6; price: number; tier: string }> = {
 
@@ -122,8 +106,6 @@ const list = (v: unknown): string[] => Array.isArray(v)
 
   : typeof v === "string" ? [...new Set(v.split(",").map(s => s.trim()).filter(Boolean))] : [];
 
-
-
 function getError(payload: unknown, fallback: string) {
 
   if (!payload || typeof payload !== "object") return fallback;
@@ -133,8 +115,6 @@ function getError(payload: unknown, fallback: string) {
   return str(p.message) || str(p.error) || fallback;
 
 }
-
-
 
 function getProfile(payload: unknown): Profile | null {
 
@@ -163,8 +143,6 @@ function getProfile(payload: unknown): Profile | null {
   return payload as Profile;
 
 }
-
-
 
 function getPrograms(payload: unknown): RawProgram[] {
 
@@ -196,8 +174,6 @@ function getPrograms(payload: unknown): RawProgram[] {
 
 }
 
-
-
 function resolvePlan(v: unknown, months: unknown): PlanCode | null {
 
   const c = str(v).toUpperCase().replace(/[\s-]+/g, "_");
@@ -212,8 +188,6 @@ function resolvePlan(v: unknown, months: unknown): PlanCode | null {
 
 }
 
-
-
 function normalizeProgram(r: RawProgram): Program | null {
 
   const s = status(r.status);
@@ -224,7 +198,7 @@ function normalizeProgram(r: RawProgram): Program | null {
 
   if (!id) return null;
 
-  const currency = str(r.currency).toUpperCase() || "INR";
+  const currency = "INR";
 
   const source = Array.isArray(r.plans) && r.plans.length ? r.plans : [{
 
@@ -244,19 +218,14 @@ function normalizeProgram(r: RawProgram): Program | null {
 
     const config = PLAN_INFO[code];
 
-    const rawPrice = num(p.price);
-
-    const paise = num(p.priceInPaise);
-
-    const price = rawPrice !== null && rawPrice > 0 ? rawPrice : paise !== null && paise > 0 ? paise / 100 : null;
-    if (price === null || !Number.isFinite(price) || price <= 0) continue;
-
     map.set(code, {
-
-      internshipId: str(p.internshipId) || id, planCode: code, duration: str(p.duration) || config.label,
-
-      months: config.months, price: Math.round(price), currency: str(p.currency).toUpperCase() || currency, stipend: p.stipend,
-
+      internshipId: str(p.internshipId) || id,
+      planCode: code,
+      duration: config.label,
+      months: config.months,
+      price: config.price,
+      currency: "INR",
+      stipend: p.stipend,
     });
 
   }
@@ -281,23 +250,17 @@ function normalizeProgram(r: RawProgram): Program | null {
 
 }
 
-
-
 function approved(p: Profile) {
 
   return status(p.applicationStatus) === "approved" || status(p.adminApprovalStatus) === "approved";
 
 }
 
-
-
 function passed(p: Profile) {
 
   return p.assessmentPassed === true || (status(p.assessmentStatus) === "passed" && status(p.resultStatus) === "passed");
 
 }
-
-
 
 function money(n: number, currency = "INR") {
 
@@ -306,8 +269,6 @@ function money(n: number, currency = "INR") {
   catch { return `${currency} ${Math.round(n).toLocaleString("en-IN")}`; }
 
 }
-
-
 
 function modeName(m: string) {
 
@@ -323,8 +284,6 @@ function modeName(m: string) {
 
 }
 
-
-
 function modeKey(m: string) {
 
   const v = modeName(m).toLowerCase();
@@ -333,8 +292,6 @@ function modeKey(m: string) {
 
 }
 
-
-
 function localToday() {
 
   const d = new Date();
@@ -342,8 +299,6 @@ function localToday() {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 
 }
-
-
 
 function validDob(v: string) {
 
@@ -363,8 +318,6 @@ function validDob(v: string) {
 
 }
 
-
-
 function iconFor(domain: string) {
 
   const d = domain.toLowerCase();
@@ -377,8 +330,6 @@ function iconFor(domain: string) {
 
 }
 
-
-
 export default function StudentInternshipsPage() {
 
   const router = useRouter();
@@ -386,6 +337,7 @@ export default function StudentInternshipsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const [programs, setPrograms] = useState<Program[]>([]);
+  const [eligibility, setEligibility] = useState<Eligibility | null>(null);
 
   const [loading, setLoading] = useState(true);
 
@@ -433,14 +385,51 @@ export default function StudentInternshipsPage() {
       if (!next) throw new Error("Student profile response was invalid.");
 
       setProfile(next);
+      setEligibility(null);
+      setPrograms([]);
 
-
-      if (!approved(next) || !passed(next) || next.internshipApplicationAllowed === false) {
-
-        setPrograms([]);
-
+      if (!approved(next) || !passed(next)) {
+        setEligibility({
+          eligible: false,
+          applicationApproved: approved(next),
+          assessmentPassed: passed(next),
+          reason: !approved(next)
+            ? "Main Admin application approval is required."
+            : "Your official assessment result must be Passed.",
+        });
         return;
+      }
 
+      const eligibilityResponse = await fetch("/api/student/internships", {
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      const eligibilityPayload: unknown = await eligibilityResponse.json().catch(() => null);
+      if (eligibilityResponse.status === 401) {
+        router.replace("/login?next=/student/internships");
+        return;
+      }
+      if (!eligibilityResponse.ok) {
+        throw new Error(getError(eligibilityPayload, "Unable to verify internship eligibility."));
+      }
+      const eligibilityRoot = eligibilityPayload && typeof eligibilityPayload === "object"
+        ? eligibilityPayload as Record<string, unknown>
+        : {};
+      const eligibilityData = eligibilityRoot.data && typeof eligibilityRoot.data === "object"
+        ? eligibilityRoot.data as Record<string, unknown>
+        : {};
+      const eligibilityValue = eligibilityData.eligibility && typeof eligibilityData.eligibility === "object"
+        ? eligibilityData.eligibility as Eligibility
+        : null;
+      if (!eligibilityValue) {
+        throw new Error("Internship eligibility response was invalid.");
+      }
+      setEligibility(eligibilityValue);
+
+      if (eligibilityValue.eligible !== true) {
+        setPrograms([]);
+        return;
       }
 
       const ir = await fetch("/api/internships", { credentials: "include", cache: "no-store", headers: { Accept: "application/json" } });
@@ -550,9 +539,15 @@ export default function StudentInternshipsPage() {
     else router.push("/student/dashboard");
   }, [submitting, backingOut, paymentInProgress, expireSelectionSession, router]);
 
-  const canSelect = Boolean(profile && approved(profile) && passed(profile) && profile.internshipApplicationAllowed !== false && !serverSessionExpired);
-
-
+  const canSelect = Boolean(
+    profile &&
+    approved(profile) &&
+    passed(profile) &&
+    eligibility?.eligible === true &&
+    !serverSessionExpired &&
+    !paymentInProgress &&
+    !["paid", "refunded"].includes(status(profile.paymentStatus))
+  );
 
   const assignedDomain = str(profile?.selectedInternshipDomain) ||
 
@@ -639,7 +634,7 @@ export default function StudentInternshipsPage() {
 
     if (!profile || !chosenProgram || !chosenPlan) { setFormError("Choose an internship and duration."); return; }
 
-    if (!canSelect) { setFormError("A passed assessment is required before internship selection."); return; }
+    if (!canSelect) { setFormError("Your account is not currently eligible for a new internship selection. Refresh your profile or contact support."); return; }
 
     if (!validDob(dob)) { setFormError("Enter a valid date of birth."); return; }
 
@@ -691,7 +686,11 @@ export default function StudentInternshipsPage() {
 
   if (!assignedDomain) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-xl rounded-3xl border border-amber-200 bg-white p-8 text-center shadow-xl"><LockKeyhole className="mx-auto text-amber-600" size={32}/><h1 className="mt-4 text-2xl font-black">Internship domain not assigned</h1><p className="mt-3 text-sm leading-6 text-slate-600">Your student profile does not contain a selected internship or assessment domain yet. Please contact Student Operations to correct your profile. Other domains remain hidden.</p><button onClick={() => void loadData(true)} disabled={refreshing} className="mt-6 rounded-xl border px-5 py-3 text-sm font-bold disabled:opacity-60"><RefreshCw size={15} className={`mr-2 inline ${refreshing?"animate-spin":""}`}/>Refresh profile</button></section></main>;
 
-  if (!passed(profile) || profile.internshipApplicationAllowed === false) return <main className="grid min-h-screen place-items-center bg-gradient-to-b from-blue-50 via-slate-50 to-white p-4 sm:p-8"><section className="w-full max-w-2xl overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-2xl shadow-blue-950/10"><div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 p-8 text-white sm:p-10"><div className="flex items-center gap-3"><div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/10"><LockKeyhole size={25}/></div><div><p className="text-xs font-black uppercase tracking-[.2em] text-blue-200">Student pathway</p><p className="mt-1 text-sm font-bold">Internship selection locked</p></div></div><h1 className="mt-8 text-3xl font-black sm:text-4xl">Pass your assessment to unlock internships</h1><p className="mt-4 max-w-xl text-sm leading-7 text-blue-100">Active programs and paid plans stay hidden until your official result is recorded as Passed. A pending result does not unlock selection.</p></div><div className="grid gap-3 p-6 sm:grid-cols-3 sm:p-8">{[{title:"Complete",body:"Finish the technical assessment."},{title:"Result verified",body:"Wait until the official result says Passed."},{title:"Select program",body:"Choose a domain and duration after unlock."}].map((x,i)=><div key={x.title} className="rounded-2xl border border-slate-200 p-4"><BadgeCheck className="text-blue-600" size={21}/><p className="mt-3 text-sm font-extrabold">{i+1}. {x.title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{x.body}</p></div>)}</div><div className="flex flex-col gap-3 border-t bg-slate-50 p-6 sm:flex-row sm:justify-between sm:p-8"><button onClick={() => void loadData(true)} disabled={refreshing} className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-5 py-3 text-sm font-bold disabled:opacity-60"><RefreshCw size={16} className={refreshing ? "animate-spin" : ""}/> Refresh result</button><button onClick={() => router.push("/student/assessment")} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700">Go to assessment <ArrowRight size={17}/></button></div></section></main>;
+  if (paymentInProgress) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-xl rounded-3xl border border-amber-200 bg-white p-8 text-center shadow-xl"><Clock3 className="mx-auto text-amber-600" size={34}/><p className="mt-4 text-xs font-black uppercase tracking-[.2em] text-blue-700">Payment reconciliation</p><h1 className="mt-3 text-2xl font-black">Payment status is being confirmed</h1><p className="mt-3 text-sm leading-6 text-slate-600">A Razorpay order is already linked to your internship selection. Do not create another order or select a different plan until the existing payment is reconciled. Refresh this page after confirmation.</p><button onClick={() => void loadData(true)} disabled={refreshing} className="mt-6 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white disabled:opacity-60"><RefreshCw size={16} className={refreshing ? "animate-spin" : ""}/>Refresh payment status</button></section></main>;
+
+  if (["paid", "refunded"].includes(status(profile.paymentStatus))) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-xl rounded-3xl border border-emerald-200 bg-white p-8 text-center shadow-xl"><ShieldCheck className="mx-auto text-emerald-600" size={34}/><p className="mt-4 text-xs font-black uppercase tracking-[.2em] text-emerald-700">Enrollment status</p><h1 className="mt-3 text-2xl font-black">{status(profile.paymentStatus) === "paid" ? "Payment verified" : "Payment refunded"}</h1><p className="mt-3 text-sm leading-6 text-slate-600">{status(profile.paymentStatus) === "paid" ? "Your payment has been recorded. Student Operations approval is still required before dashboard credentials are issued." : "This payment is marked as refunded. Contact support for the next step."}</p><button onClick={() => router.push("/student/dashboard")} className="mt-6 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white">Continue <ArrowRight size={16}/></button></section></main>;
+
+  if (!passed(profile) || eligibility?.eligible !== true) return <main className="grid min-h-screen place-items-center bg-gradient-to-b from-blue-50 via-slate-50 to-white p-4 sm:p-8"><section className="w-full max-w-2xl overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-2xl shadow-blue-950/10"><div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 p-8 text-white sm:p-10"><div className="flex items-center gap-3"><div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/10"><LockKeyhole size={25}/></div><div><p className="text-xs font-black uppercase tracking-[.2em] text-blue-200">Student pathway</p><p className="mt-1 text-sm font-bold">Internship selection locked</p></div></div><h1 className="mt-8 text-3xl font-black sm:text-4xl">{!passed(profile) ? "Pass your assessment to unlock internships" : "Internship selection is not available yet"}</h1><p className="mt-4 max-w-xl text-sm leading-7 text-blue-100">{eligibility?.reason || (!passed(profile) ? "Active programs and paid plans stay hidden until your official result is recorded as Passed. A pending result does not unlock selection." : "Your eligibility is being checked against the official student record. Refresh your status or contact support if this continues.")}</p></div><div className="grid gap-3 p-6 sm:grid-cols-3 sm:p-8">{[{title:"Complete",body:"Finish the technical assessment."},{title:"Result verified",body:"Wait until the official result says Passed."},{title:"Select program",body:"Choose a domain and duration after unlock."}].map((x,i)=><div key={x.title} className="rounded-2xl border border-slate-200 p-4"><BadgeCheck className="text-blue-600" size={21}/><p className="mt-3 text-sm font-extrabold">{i+1}. {x.title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{x.body}</p></div>)}</div><div className="flex flex-col gap-3 border-t bg-slate-50 p-6 sm:flex-row sm:justify-between sm:p-8"><button onClick={() => void loadData(true)} disabled={refreshing} className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-5 py-3 text-sm font-bold disabled:opacity-60"><RefreshCw size={16} className={refreshing ? "animate-spin" : ""}/> Refresh result</button><button onClick={() => !passed(profile) ? router.push("/student/assessment") : void loadData(true)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700">{!passed(profile) ? "Go to assessment" : "Check eligibility again"} <ArrowRight size={17}/></button></div></section></main>;
 
   return <main className="min-h-screen bg-slate-50 text-slate-950">
 
@@ -711,9 +710,9 @@ export default function StudentInternshipsPage() {
 
           <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">Select a program from your assigned domain and choose the duration that fits your goals.</p>
 
-          {hasUnpaidSession && <div className="mt-5 flex flex-col items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-center sm:flex-row sm:justify-center"><span className="inline-flex items-center gap-2 text-sm font-bold text-amber-900"><Clock3 size={16}/> Selection session active</span><span className="font-mono text-lg font-black tabular-nums text-amber-950">{countdown}</span><span className="text-xs text-amber-800">Time remaining · change your plan before payment</span></div>}
+          {hasUnpaidSession && <div className="mt-5 flex flex-col items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-center sm:flex-row sm:justify-center"><span className="inline-flex items-center gap-2 text-sm font-bold text-amber-900"><Clock3 size={16}/> Selection window active</span><span className="font-mono text-lg font-black tabular-nums text-amber-950">{countdown}</span><span className="text-xs text-amber-800">72-hour selection window · complete your plan selection</span></div>}
 
-          {serverSessionExpired && <div role="status" className="mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">Your internship selection session has expired. A new selection is not available from this session.</div>}
+          {serverSessionExpired && <div role="status" className="mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">Your 72-hour internship selection window has expired. Contact support if you need assistance.</div>}
 
           {sessionError && <div role="alert" className="mt-3 max-w-xl rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{sessionError}</div>}
 
@@ -748,7 +747,7 @@ export default function StudentInternshipsPage() {
 
     <section className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6 lg:px-8 lg:py-9"><div className="mb-7 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 lg:grid-cols-[minmax(240px,1fr)_250px_190px]"><label className="relative"><span className="sr-only">Search programs</span><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><input value={search} onChange={e => setSearch(e.target.value)} type="search" placeholder="Search domains, skills or technologies…" className="h-12 w-full rounded-xl border bg-slate-50 pl-11 pr-4 text-sm outline-none focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10"/></label><label className="relative"><span className="sr-only">Domain filter</span><select value={domainFilter} onChange={e => setDomainFilter(e.target.value)} className="h-12 w-full appearance-none rounded-xl border bg-white px-4 pr-9 text-sm font-semibold outline-none focus:border-blue-500"><option value="ALL">All domains</option>{domains.map(d => <option key={d} value={d}>{d}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/></label><label className="relative"><span className="sr-only">Mode filter</span><select value={modeFilter} onChange={e => setModeFilter(e.target.value)} className="h-12 w-full appearance-none rounded-xl border bg-white px-4 pr-9 text-sm font-semibold outline-none focus:border-blue-500"><option value="ALL">All modes</option><option value="REMOTE">Remote</option><option value="ONSITE">On-site</option><option value="HYBRID">Hybrid</option><option value="OTHER">Other</option></select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/></label></div>
 
-    {domainPrograms.length === 0 ? <Empty title={`No active programs for ${assignedDomain}`} message="Only programs matching your assigned domain can be shown. Ask Student Operations to check domain mapping or program availability." onClick={() => void loadData(true)} /> : filtered.length === 0 ? <Empty title="No matching programs" message="Try another search or clear the filters." onClick={() => {setSearch("");setDomainFilter("ALL");setModeFilter("ALL");}}/> : <div className="space-y-10">{groups.map(([domain, items]) => { const Icon = iconFor(domain); const assigned = Boolean(assignedDomain && domain.toLowerCase() === assignedDomain.toLowerCase()); return <section key={domain}><div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-700/15"><Icon size={23}/></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-black tracking-tight sm:text-2xl">{domain}</h2>{assigned && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-emerald-700">Your assessment domain</span>}</div><p className="mt-1 text-sm text-slate-500">{items.length} available {items.length === 1 ? "program" : "programs"}</p></div></div><span className="inline-flex items-center gap-1.5 self-start rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 sm:self-auto"><ShieldCheck size={14} className="text-emerald-600"/> Active programs only</span></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{items.map(p => {const cheapest = Math.min(...p.plans.map(x => x.price)); const isPopular = p.plans.some(x => x.planCode === "THREE_MONTHS"); return <article key={p.id} className={`group relative flex min-w-0 flex-col overflow-hidden rounded-3xl border bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-950/10 ${isPopular ? "border-blue-500 ring-2 ring-blue-500/20 shadow-lg shadow-blue-600/10" : "border-slate-200 hover:border-blue-200"}`}><div className={`h-2 ${isPopular ? "bg-gradient-to-r from-blue-700 via-indigo-600 to-cyan-400" : "bg-gradient-to-r from-slate-300 via-slate-200 to-slate-300"}`}/>{isPopular && <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-700 px-3 py-2.5 text-center text-xs font-black uppercase tracking-[.12em] text-white shadow-sm"><Sparkles size={15} className="shrink-0"/> Most Popular Internship <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] tracking-normal">₹999 · 3 Months</span></div>}<div className="flex flex-1 flex-col p-5 sm:p-6"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><Icon size={22}/></div><div className="min-w-0"><h3 className="break-words text-lg font-black leading-snug">{p.title}</h3><p className="mt-1 text-xs font-bold text-blue-700">{p.domain}</p></div></div><p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">{p.description}</p><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><Laptop size={13} className="mr-1 inline"/> Mode</p><p className="mt-1 text-sm font-bold">{modeName(p.mode)}</p></div><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><MapPin size={13} className="mr-1 inline"/> Location</p><p className="mt-1 truncate text-sm font-bold">{p.location}</p></div></div>{(p.skills.length > 0 || p.technologies.length > 0) && <div className="mt-4"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Skills & technologies</p><div className="mt-2 flex flex-wrap gap-1.5">{[...p.skills,...p.technologies].filter((s,i,a)=>a.indexOf(s)===i).slice(0,5).map(s=><span key={s} className="rounded-lg border bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">{s}</span>)}</div></div>}<div className="mt-5 flex items-end justify-between gap-3 border-t border-slate-100 pt-4"><div><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Plans from</p><p className="mt-1 text-2xl font-black tracking-tight">{money(cheapest,p.plans[0]?.currency || "INR")}</p><p className="mt-1 text-xs text-slate-500">{p.plans.length} duration option{p.plans.length===1?"":"s"}</p>{isPopular && <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-extrabold text-blue-800"><Sparkles size={12}/> Best value · 3-month plan available</p>}</div><button onClick={()=>openProgram(p)} disabled={serverSessionExpired} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-blue-600/15 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">Select <ArrowRight size={16}/></button></div></div></article>})}</div></section>})}</div>}
+    {domainPrograms.length === 0 ? <Empty title={`No active programs for ${assignedDomain}`} message="Only programs matching your assigned domain can be shown. Ask Student Operations to check domain mapping or program availability." onClick={() => void loadData(true)} /> : filtered.length === 0 ? <Empty title="No matching programs" message="Try another search or clear the filters." onClick={() => {setSearch("");setDomainFilter("ALL");setModeFilter("ALL");}}/> : <div className="space-y-10">{groups.map(([domain, items]) => { const Icon = iconFor(domain); const assigned = Boolean(assignedDomain && domain.toLowerCase() === assignedDomain.toLowerCase()); return <section key={domain}><div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-700/15"><Icon size={23}/></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-black tracking-tight sm:text-2xl">{domain}</h2>{assigned && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-emerald-700">Your assessment domain</span>}</div><p className="mt-1 text-sm text-slate-500">{items.length} available {items.length === 1 ? "program" : "programs"}</p></div></div><span className="inline-flex items-center gap-1.5 self-start rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 sm:self-auto"><ShieldCheck size={14} className="text-emerald-600"/> Active programs only</span></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{items.map(p => {const cheapest = Math.min(...p.plans.map(x => x.price)); const isPopular = p.plans.some(x => x.planCode === "THREE_MONTHS"); return <article key={p.id} className={`group relative flex min-w-0 flex-col overflow-hidden rounded-3xl border bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-950/10 ${isPopular ? "border-blue-500 ring-2 ring-blue-500/20 shadow-lg shadow-blue-600/10" : "border-slate-200 hover:border-blue-200"}`}><div className={`h-2 ${isPopular ? "bg-gradient-to-r from-blue-700 via-indigo-600 to-cyan-400" : "bg-gradient-to-r from-slate-300 via-slate-200 to-slate-300"}`}/>{isPopular && <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-700 px-3 py-2.5 text-center text-xs font-black uppercase tracking-[.12em] text-white shadow-sm"><Sparkles size={15} className="shrink-0"/> Most Popular Internship <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] tracking-normal">₹999 · 3 Months</span></div>}<div className="flex flex-1 flex-col p-5 sm:p-6"><div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><Icon size={22}/></div><div className="min-w-0"><h3 className="break-words text-lg font-black leading-snug">{p.title}</h3><p className="mt-1 text-xs font-bold text-blue-700">{p.domain}</p></div></div><p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">{p.description}</p><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><Laptop size={13} className="mr-1 inline"/> Mode</p><p className="mt-1 text-sm font-bold">{modeName(p.mode)}</p></div><div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><MapPin size={13} className="mr-1 inline"/> Location</p><p className="mt-1 truncate text-sm font-bold">{p.location}</p></div></div>{(p.skills.length > 0 || p.technologies.length > 0) && <div className="mt-4"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Skills & technologies</p><div className="mt-2 flex flex-wrap gap-1.5">{[...p.skills,...p.technologies].filter((s,i,a)=>a.indexOf(s)===i).slice(0,5).map(s=><span key={s} className="rounded-lg border bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">{s}</span>)}</div></div>}<div className="mt-5 flex items-end justify-between gap-3 border-t border-slate-100 pt-4"><div><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Plans from</p><p className="mt-1 text-2xl font-black tracking-tight">{money(cheapest,p.plans[0]?.currency || "INR")}</p><p className="mt-1 text-xs text-slate-500">{p.plans.length} duration option{p.plans.length===1?"":"s"}</p>{isPopular && <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-extrabold text-blue-800"><Sparkles size={12}/> Best value · 3-month plan available</p>}</div><button onClick={()=>openProgram(p)} disabled={!canSelect} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-blue-600/15 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">Select <ArrowRight size={16}/></button></div></div></article>})}</div></section>})}</div>}
 
     <div className="mt-10 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-950"><ShieldCheck className="mt-0.5 shrink-0 text-blue-700" size={19}/><p><strong>Secure enrollment:</strong> selecting a plan does not activate your dashboard. Payment must be verified and Student Operations must approve your profile. Your Internship ID and temporary password are generated securely by the server after approval.</p></div>
 
@@ -758,13 +757,11 @@ export default function StudentInternshipsPage() {
 
 {plan.planCode === "THREE_MONTHS" && <span className="absolute inset-x-0 top-0 flex items-center justify-center rounded-t-[14px] bg-gradient-to-r from-blue-600 to-indigo-600 py-1 text-[10px] font-black uppercase tracking-wider text-white"><Sparkles size={11} className="mr-1"/> Most popular</span>}
 
-<p className={`text-xs font-bold ${plan.planCode === "THREE_MONTHS" ? "text-blue-700" : "text-slate-500"}`}>{cfg.tier}</p><p className="mt-2 text-sm font-extrabold">{plan.duration}</p><p className="mt-2 text-2xl font-black">{money(plan.price,plan.currency)}</p><p className="mt-2 flex items-center gap-1 text-xs font-semibold text-slate-500"><Clock3 size={13}/>{plan.months} month{plan.months===1?"":"s"}</p>{active&&<span className="absolute right-3 bottom-3 grid h-5 w-5 place-items-center rounded-full bg-blue-600 text-white"><Check size={12}/></span>}</button>})}</div></div><div><label htmlFor="student-dob" className="mb-2 block text-sm font-extrabold">Date of birth</label><input id="student-dob" type="date" required max={localToday()} value={dob} onChange={e=>setDob(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"/><p className="mt-2 text-xs leading-5 text-slate-500">Sent in the secure request body, never in the URL. Your date of birth will not be used as your login password.</p></div>{formError&&<div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{formError}</div>}<div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><p className="flex items-center gap-2 font-extrabold"><CreditCard size={15}/> Payment is next</p><p className="mt-1">Dashboard access stays locked until payment verification and Student Operations approval. Your Internship ID and a temporary login credential are issued only after approval.</p>{hasUnpaidSession && <p className="mt-2 font-bold">Your current session has {countdown} remaining. You can change the plan while this session is active.</p>}</div><div className="flex flex-col-reverse gap-3 border-t pt-5 sm:flex-row sm:justify-end"><button type="button" onClick={closeModal} disabled={submitting} className="rounded-xl border px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={submitting||!chosenPlan||!validDob(dob)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting?<><LoaderCircle size={17} className="animate-spin"/> Saving selection…</>:<>Continue to payment <ArrowRight size={17}/></>}</button></div></form></section></div>}
+<p className={`text-xs font-bold ${plan.planCode === "THREE_MONTHS" ? "text-blue-700" : "text-slate-500"}`}>{cfg.tier}</p><p className="mt-2 text-sm font-extrabold">{plan.duration}</p><p className="mt-2 text-2xl font-black">{money(plan.price,plan.currency)}</p><p className="mt-2 flex items-center gap-1 text-xs font-semibold text-slate-500"><Clock3 size={13}/>{plan.months} month{plan.months===1?"":"s"}</p>{active&&<span className="absolute right-3 bottom-3 grid h-5 w-5 place-items-center rounded-full bg-blue-600 text-white"><Check size={12}/></span>}</button>})}</div></div><div><label htmlFor="student-dob" className="mb-2 block text-sm font-extrabold">Date of birth</label><input id="student-dob" type="date" required max={localToday()} value={dob} onChange={e=>setDob(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"/><p className="mt-2 text-xs leading-5 text-slate-500">Sent in the secure request body, never in the URL. Your date of birth will not be used as your login password.</p></div>{formError&&<div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{formError}</div>}<div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><p className="flex items-center gap-2 font-extrabold"><CreditCard size={15}/> Payment is next</p><p className="mt-1">Dashboard access stays locked until payment verification and Student Operations approval. Your Internship ID and a temporary login credential are issued only after approval.</p>{hasUnpaidSession && <p className="mt-2 font-bold">Your selection window has {countdown} remaining.</p>}</div><div className="flex flex-col-reverse gap-3 border-t pt-5 sm:flex-row sm:justify-end"><button type="button" onClick={closeModal} disabled={submitting} className="rounded-xl border px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={submitting||!chosenPlan||!validDob(dob)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-extrabold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{submitting?<><LoaderCircle size={17} className="animate-spin"/> Saving selection…</>:<>Continue to payment <ArrowRight size={17}/></>}</button></div></form></section></div>}
 
   </main>;
 
 }
-
-
 
 function Stat({label,value,detail,success=false}:{label:string;value:string;detail:string;success?:boolean}) {
 
@@ -772,15 +769,11 @@ function Stat({label,value,detail,success=false}:{label:string;value:string;deta
 
 }
 
-
-
 function Empty({title,message,onClick}:{title:string;message:string;onClick:()=>void}) {
 
   return <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><BriefcaseBusiness className="mx-auto text-slate-400" size={29}/><h2 className="mt-4 text-xl font-black">{title}</h2><p className="mt-2 text-sm text-slate-500">{message}</p><button onClick={onClick} className="mt-5 rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold hover:bg-slate-50">Clear filters / refresh</button></div>;
 
 }
-
-
 
 function LockedScreen({title,message,action,onAction,refreshing}:{title:string;message:string;action:string;onAction:()=>void;refreshing:boolean}) {
 

@@ -140,6 +140,14 @@ type StudentRecord = {
 
   internshipPlan?: unknown;
 
+  internshipPlanCode?: unknown;
+
+  internshipDurationDays?: unknown;
+
+  paymentAttemptGroupId?: unknown;
+
+  razorpayCheckoutExpiresAt?: unknown;
+
   internshipStatus?: unknown;
 
   paymentStatus?: unknown;
@@ -741,7 +749,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const plan = PLAN_CONFIG[planCode];
 
-    if (cleanString(student.internshipPlan).toLowerCase() !== plan.studentPlan) {
+    const storedPlanCode = parsePlanCode(student.internshipPlanCode) || parsePlanCode(student.internshipPlan);
+
+    if (storedPlanCode !== planCode || (cleanString(student.internshipPlan).toLowerCase() !== plan.studentPlan && !parsePlanCode(student.internshipPlan))) {
 
       return jsonResponse({ success: false, code: "STUDENT_PLAN_MISMATCH", message: "Payment plan does not match your selected internship plan." }, 409);
 
@@ -1053,6 +1063,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     }
 
+    const attemptGroupId = crypto.randomUUID();
+    const checkoutSessionStartedAt = new Date();
+    const checkoutSessionExpiresAt = new Date(checkoutSessionStartedAt.getTime() + CHECKOUT_SESSION_DURATION_MS);
     if (!reusingExistingOrder) {
       const primaryPersistResult = await Student.updateOne(
         {
@@ -1060,6 +1073,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           paymentStatus: { $nin: ["paid", "refunded"] },
           internshipStatus: student.internshipStatus,
           internshipPlan: student.internshipPlan,
+          internshipPlanCode: student.internshipPlanCode ?? { $in: [null, ""] },
           paymentAmount: student.paymentAmount,
           paymentCurrency: student.paymentCurrency,
           razorpayOrderId: existingOrderId || { $in: ["", null] },
@@ -1072,6 +1086,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             paymentStatus: "pending",
             paymentAmount: plan.price,
             paymentCurrency: "INR",
+            internshipPlanCode: planCode,
+            internshipDurationDays: plan.durationDays,
+            paymentAttemptGroupId: attemptGroupId,
+            razorpayCheckoutExpiresAt: checkoutSessionExpiresAt,
+            paymentExpiredAt: null,
           },
         },
       ).exec();
@@ -1085,8 +1104,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     }
 
-    const checkoutSessionStartedAt = new Date();
-    const checkoutSessionExpiresAt = new Date(checkoutSessionStartedAt.getTime() + CHECKOUT_SESSION_DURATION_MS);
+    if (reusingExistingOrder) {
+      await Student.updateOne(
+        { _id: student._id, razorpayOrderId: orderId, paymentStatus: "pending" },
+        { $set: { internshipPlanCode: planCode, internshipDurationDays: plan.durationDays, paymentAttemptGroupId: attemptGroupId, razorpayCheckoutExpiresAt: checkoutSessionExpiresAt, paymentExpiredAt: null } },
+      ).exec();
+    }
 
     return jsonResponse({
 

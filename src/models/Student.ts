@@ -3,6 +3,24 @@ import mongoose, {
   type InferSchemaType,
   type Model,
 } from "mongoose";
+
+export type StudentInternshipPlanCode = "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
+
+export const STUDENT_INTERNSHIP_PLANS = {
+  ONE_MONTH: { code: "ONE_MONTH", legacyName: "1 month", name: "1 Month", months: 1, days: 30, amount: 499, amountInPaise: 49900 },
+  THREE_MONTHS: { code: "THREE_MONTHS", legacyName: "3 months", name: "3 Months", months: 3, days: 90, amount: 999, amountInPaise: 99900 },
+  SIX_MONTHS: { code: "SIX_MONTHS", legacyName: "6 months", name: "6 Months", months: 6, days: 180, amount: 1699, amountInPaise: 169900 },
+} as const;
+
+export function normalizeStudentInternshipPlan(value: unknown): StudentInternshipPlanCode | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase().replace(/[\\s-]+/g, "_");
+  if (normalized === "ONE_MONTH" || normalized === "1_MONTH") return "ONE_MONTH";
+  if (normalized === "THREE_MONTHS" || normalized === "3_MONTHS") return "THREE_MONTHS";
+  if (normalized === "SIX_MONTHS" || normalized === "6_MONTHS") return "SIX_MONTHS";
+  return null;
+}
+
 const nullableDate = {
   type: Date,
   default: null,
@@ -323,8 +341,9 @@ const StudentSchema = new Schema(
     },
     internshipPlan: {
       type: String,
-      enum: ["", "1 month", "3 months", "6 months"],
+      enum: ["", "1 month", "3 months", "6 months", "1 Month", "3 Months", "6 Months"],
       default: "",
+      trim: true,
     },
     internshipPlanCode: {
       type: String,
@@ -418,6 +437,20 @@ const StudentSchema = new Schema(
       trim: true,
       default: "",
       index: true,
+    },
+    paymentAttemptGroupId: {
+      type: String,
+      trim: true,
+      default: "",
+      maxlength: [120, "Payment attempt group ID cannot exceed 120 characters."],
+      index: true,
+    },
+    razorpayCheckoutExpiresAt: nullableDate,
+    paymentExpiredAt: nullableDate,
+    paymentVerificationSource: {
+      type: String,
+      enum: ["", "razorpay_checkout", "razorpay_webhook", "admin_reconciliation", "legacy"],
+      default: "",
     },
     razorpaySignature: {
       type: String,
@@ -769,6 +802,8 @@ StudentSchema.index({ accountLocked: 1, lockedUntil: 1 });
 StudentSchema.index({ credentialsExpiresAt: 1, loginEnabled: 1 });
 StudentSchema.index({ internshipStatus: 1, internshipPlan: 1 });
 StudentSchema.index({ internshipPlanCode: 1, paymentStatus: 1, updatedAt: -1 });
+StudentSchema.index({ paymentAttemptGroupId: 1, updatedAt: -1 });
+StudentSchema.index({ razorpayCheckoutExpiresAt: 1, paymentStatus: 1 });
 StudentSchema.index({ paymentStatus: 1, paymentCompletedAt: -1 });
 StudentSchema.index({
     paymentStatus: 1,
@@ -834,6 +869,53 @@ StudentSchema.pre("validate", function normalizeStudentData() {
 
   if (typeof this.paymentCurrency === "string") {
     this.paymentCurrency = this.paymentCurrency.trim().toUpperCase();
+  }
+
+  const selectedPlanCode =
+    normalizeStudentInternshipPlan(this.internshipPlanCode) ??
+    normalizeStudentInternshipPlan(this.internshipPlan);
+
+  if (selectedPlanCode) {
+    const plan = STUDENT_INTERNSHIP_PLANS[selectedPlanCode];
+    this.internshipPlanCode = plan.code;
+    this.internshipPlan = plan.legacyName;
+    this.internshipDurationMonths = plan.months;
+    this.internshipDurationDays = plan.days;
+
+    if (this.paymentAmount > 0 && this.paymentAmount !== plan.amount) {
+      this.invalidate("paymentAmount", "Payment amount does not match the selected internship plan.");
+    }
+
+    if (this.paymentCurrency && this.paymentCurrency !== "INR") {
+      this.invalidate("paymentCurrency", "Internship plan payments must use INR.");
+    }
+  } else if (this.internshipPlanCode || this.internshipPlan) {
+    this.invalidate("internshipPlanCode", "Select a valid internship plan.");
+  }
+
+  if (this.paymentStatus === "paid") {
+    if (!this.paymentCompletedAt) this.paymentCompletedAt = new Date();
+    if (!this.paymentVerifiedAt) this.paymentVerifiedAt = this.paymentCompletedAt;
+    if (this.internshipPlanCode && !this.razorpayOrderId) {
+      this.invalidate("razorpayOrderId", "A paid internship record must include a Razorpay order ID.");
+    }
+    if (this.internshipPlanCode && !this.razorpayPaymentId) {
+      this.invalidate("razorpayPaymentId", "A paid internship record must include a Razorpay payment ID.");
+    }
+  }
+
+  if (this.paymentStatus === "pending" && this.paymentAmount <= 0 && this.internshipPlanCode) {
+    this.invalidate("paymentAmount", "A pending selected plan must have a valid payment amount.");
+  }
+
+  if (this.internshipSelectionDeadlineAt && this.internshipSelectionWindowStartedAt) {
+    if (this.internshipSelectionDeadlineAt.getTime() < this.internshipSelectionWindowStartedAt.getTime()) {
+      this.invalidate("internshipSelectionDeadlineAt", "Selection deadline cannot be earlier than its start time.");
+    }
+  }
+
+  if (this.internshipSelectionWindowExpired && !this.internshipSelectionExpiredAt) {
+    this.internshipSelectionExpiredAt = new Date();
   }
 
   if (typeof this.fullName === "string") {

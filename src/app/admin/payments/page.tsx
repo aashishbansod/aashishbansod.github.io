@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
-type PaymentStatus = "success" | "pending" | "failed" | "refunded";
+type PaymentStatus = "success" | "pending" | "failed" | "refunded" | "expired";
 type ApprovalStatus = "pending" | "approved" | "rejected" | "not_assigned";
 type PaymentFilter = "all" | PaymentStatus;
 type ApprovalFilter = "all" | ApprovalStatus;
@@ -28,6 +28,11 @@ type Payment = {
   mobile?: string;
   internship?: string;
   internshipName?: string;
+  planCode?: string;
+  planName?: string;
+  durationDays?: number;
+  checkoutExpiresAt?: string;
+  selectionExpiresAt?: string;
   domain?: string;
   amount?: number | string;
   currency?: string;
@@ -61,6 +66,7 @@ type PaymentStats = {
   pending: number;
   failed: number;
   refunded: number;
+  expired: number;
   revenue: number;
 };
 
@@ -86,6 +92,7 @@ const EMPTY_STATS: PaymentStats = {
   pending: 0,
   failed: 0,
   refunded: 0,
+  expired: 0,
   revenue: 0,
 };
 
@@ -95,6 +102,7 @@ const PAYMENT_FILTERS: { value: PaymentFilter; label: string }[] = [
   { value: "pending", label: "Pending" },
   { value: "failed", label: "Failed" },
   { value: "refunded", label: "Refunded" },
+  { value: "expired", label: "Expired checkout" },
 ];
 
 const APPROVAL_FILTERS: { value: ApprovalFilter; label: string }[] = [
@@ -138,6 +146,25 @@ function getStudentId(payment: Payment): string {
   return text(payment.studentId, student.studentId, student._id, student.id);
 }
 
+function getPlanCode(payment: Payment): string {
+  const raw = text(payment.planCode, payment.planName).toUpperCase().replace(/[\s-]+/g, "_");
+  if (["ONE_MONTH", "THREE_MONTHS", "SIX_MONTHS"].includes(raw)) return raw;
+  if (raw.includes("SIX") || raw.includes("6_MONTH")) return "SIX_MONTHS";
+  if (raw.includes("THREE") || raw.includes("3_MONTH")) return "THREE_MONTHS";
+  if (raw.includes("ONE") || raw.includes("1_MONTH")) return "ONE_MONTH";
+  return raw || "PLAN_NOT_REPORTED";
+}
+
+function getPlanLabel(payment: Payment): string {
+  const code = getPlanCode(payment);
+  const labels: Record<string, string> = {
+    ONE_MONTH: "One Month · 30 Days · ₹499",
+    THREE_MONTHS: "Three Months · 90 Days · ₹999",
+    SIX_MONTHS: "Six Months · 180 Days · ₹1,699",
+  };
+  return labels[code] || text(payment.planName, payment.planCode, "Plan not reported");
+}
+
 function getInternship(payment: Payment): string {
   const internship = record(payment.internshipDetails);
   return text(
@@ -173,6 +200,10 @@ function getStatus(payment: Payment): PaymentStatus {
 
   if (["refunded", "refund", "partially_refunded"].includes(value)) {
     return "refunded";
+  }
+
+  if (["expired", "checkout_expired", "order_expired", "session_expired"].includes(value)) {
+    return "expired";
   }
 
   return "pending";
@@ -320,8 +351,10 @@ function calculateStats(payments: Payment[]): PaymentStats {
       stats.pending += 1;
     } else if (status === "failed") {
       stats.failed += 1;
-    } else {
+    } else if (status === "refunded") {
       stats.refunded += 1;
+    } else {
+      stats.expired += 1;
     }
 
     return stats;
@@ -350,6 +383,7 @@ function resolveStats(
     pending: numberOr(serverStats.pending, calculated.pending),
     failed: numberOr(serverStats.failed, calculated.failed),
     refunded: numberOr(serverStats.refunded, calculated.refunded),
+    expired: numberOr(serverStats.expired, calculated.expired),
     revenue: numberOr(serverStats.revenue, calculated.revenue),
   };
 }
@@ -360,6 +394,7 @@ function StatusBadge({ status }: { status: PaymentStatus }) {
     pending: "border-amber-200 bg-amber-50 text-amber-700",
     failed: "border-rose-200 bg-rose-50 text-rose-700",
     refunded: "border-violet-200 bg-violet-50 text-violet-700",
+    expired: "border-slate-200 bg-slate-100 text-slate-700",
   };
 
   const labels: Record<PaymentStatus, string> = {
@@ -367,6 +402,7 @@ function StatusBadge({ status }: { status: PaymentStatus }) {
     pending: "Pending",
     failed: "Failed",
     refunded: "Refunded",
+    expired: "Expired checkout",
   };
 
   return (
@@ -496,6 +532,7 @@ function exportPayments(payments: Payment[]) {
     "Student ID",
     "Email",
     "Internship",
+    "Plan",
     "Amount",
     "Payment Status",
     "Payment ID",
@@ -512,6 +549,7 @@ function exportPayments(payments: Payment[]) {
     getStudentId(payment),
     getStudentEmail(payment),
     getInternship(payment),
+    getPlanCode(payment),
     getAmount(payment),
     getStatus(payment),
     text(payment.paymentId, payment.razorpayPaymentId),
@@ -859,7 +897,7 @@ export default function AdminPaymentsPage() {
 
         <section
           aria-label="Financial overview"
-          className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"
+          className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6"
         >
           <StatCard
             label="Total Payments"
@@ -894,6 +932,15 @@ export default function AdminPaymentsPage() {
             description={`${stats.failed} failed · ${stats.refunded} refunded`}
             icon={<Icon name="failed" />}
             tone="text-rose-600"
+            loading={loading}
+          />
+
+          <StatCard
+            label="Expired Checkouts"
+            value={stats.expired.toLocaleString("en-IN")}
+            description="Expired unpaid checkout sessions"
+            icon={<Icon name="clock" />}
+            tone="text-slate-700"
             loading={loading}
           />
 
@@ -1186,6 +1233,9 @@ export default function AdminPaymentsPage() {
                             <p className="max-w-[160px] truncate text-sm font-bold text-slate-800">
                               {getInternship(payment)}
                             </p>
+                            <p className="mt-1 max-w-[160px] truncate text-[10px] font-bold text-blue-600">
+                              {getPlanLabel(payment)}
+                            </p>
                           </td>
 
                           <td className="px-4 py-4">
@@ -1280,6 +1330,11 @@ export default function AdminPaymentsPage() {
                       <DetailItem
                         label="Internship"
                         value={getInternship(payment)}
+                      />
+
+                      <DetailItem
+                        label="Internship Plan"
+                        value={getPlanLabel(payment)}
                       />
 
                       <DetailItem
@@ -1534,6 +1589,19 @@ export default function AdminPaymentsPage() {
                   <DetailItem
                     label="Domain"
                     value={text(selectedPayment.domain) || "—"}
+                  />
+                  <DetailItem
+                    label="Internship Plan"
+                    value={getPlanLabel(selectedPayment)}
+                  />
+                  <DetailItem
+                    label="Plan Code"
+                    value={getPlanCode(selectedPayment)}
+                    mono
+                  />
+                  <DetailItem
+                    label="Checkout Expires At"
+                    value={dateTime(text(selectedPayment.checkoutExpiresAt, selectedPayment.selectionExpiresAt))}
                   />
                 </div>
               </section>

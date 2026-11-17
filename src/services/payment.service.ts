@@ -17,12 +17,18 @@ import {
 import { sendPaymentReceiptEmail } from "@/lib/email";
 
 export type InternshipPlanCode =
+  | "ONE_MONTH"
+  | "THREE_MONTHS"
+  | "SIX_MONTHS";
 
+export type LegacyInternshipPlanCode =
   | "1 month"
-
   | "3 months"
-
   | "6 months";
+
+export type InternshipPlanInput =
+  | InternshipPlanCode
+  | LegacyInternshipPlanCode;
 
 export interface PaymentPlan {
 
@@ -46,7 +52,7 @@ export interface CreatePaymentOrderInput {
 
   studentId: string;
 
-  plan: InternshipPlanCode;
+  plan: InternshipPlanInput;
 
   track?: string;
 
@@ -170,68 +176,34 @@ class PaymentServiceError extends Error {
 
 }
 
-export const PAYMENT_PLANS: Record<
-
-  InternshipPlanCode,
-
-  PaymentPlan
-
-> = {
-
-  "1 month": {
-
-    code: "1 month",
-
+export const PAYMENT_PLANS: Record<InternshipPlanCode, PaymentPlan> = {
+  ONE_MONTH: {
+    code: "ONE_MONTH",
     name: "1 Month",
-
     durationMonths: 1,
-
     durationDays: 30,
-
     amount: 499,
-
     amountInPaise: 49900,
-
     currency: "INR",
-
   },
-
-  "3 months": {
-
-    code: "3 months",
-
+  THREE_MONTHS: {
+    code: "THREE_MONTHS",
     name: "3 Months",
-
     durationMonths: 3,
-
     durationDays: 90,
-
     amount: 999,
-
     amountInPaise: 99900,
-
     currency: "INR",
-
   },
-
-  "6 months": {
-
-    code: "6 months",
-
+  SIX_MONTHS: {
+    code: "SIX_MONTHS",
     name: "6 Months",
-
     durationMonths: 6,
-
     durationDays: 180,
-
     amount: 1699,
-
     amountInPaise: 169900,
-
     currency: "INR",
-
   },
-
 };
 
 const RAZORPAY_API =
@@ -324,46 +296,43 @@ function normalizeStudentId(
 
 }
 
-function isPlan(
-
+export function normalizeInternshipPlanCode(
   value: unknown,
+): InternshipPlanCode | null {
+  const normalized = cleanString(value).toUpperCase().replace(/[\\s-]+/g, "_");
 
-): value is InternshipPlanCode {
-
-  return (
-
-    value === "1 month" ||
-
-    value === "3 months" ||
-
-    value === "6 months"
-
-  );
-
-}
-
-function getPlan(
-
-  value: unknown,
-
-): PaymentPlan {
-
-  if (!isPlan(value)) {
-
-    throw new PaymentServiceError(
-
-      "INVALID_INTERNSHIP_PLAN",
-
-      "Invalid internship plan.",
-
-      400,
-
-    );
-
+  if (normalized === "ONE_MONTH" || normalized === "1_MONTH") {
+    return "ONE_MONTH";
   }
 
-  return PAYMENT_PLANS[value];
+  if (normalized === "THREE_MONTHS" || normalized === "3_MONTHS") {
+    return "THREE_MONTHS";
+  }
 
+  if (normalized === "SIX_MONTHS" || normalized === "6_MONTHS") {
+    return "SIX_MONTHS";
+  }
+
+  return null;
+}
+
+function getPlan(value: unknown): PaymentPlan {
+  const code = normalizeInternshipPlanCode(value);
+
+  if (!code) {
+    throw new PaymentServiceError(
+      "INVALID_INTERNSHIP_PLAN",
+      "Invalid internship plan.",
+      400,
+    );
+  }
+
+  return PAYMENT_PLANS[code];
+}
+
+export function getPaymentPlan(value: unknown): PaymentPlan | null {
+  const code = normalizeInternshipPlanCode(value);
+  return code ? PAYMENT_PLANS[code] : null;
 }
 
 function toNumber(
@@ -1068,7 +1037,7 @@ export async function createPaymentOrder(
 
     }
 
-    
+
 
     if (
 
@@ -1176,16 +1145,10 @@ export async function createPaymentOrder(
 
     }
 
-    
+
 
     if (
-
-      cleanString(
-
-        student.internshipPlan,
-
-      ) !== plan.code
-
+      normalizeInternshipPlanCode(student.internshipPlan) !== plan.code
     ) {
 
       throw new PaymentServiceError(
@@ -1268,7 +1231,7 @@ export async function createPaymentOrder(
 
     }
 
-    
+
 
     const existingOrderId =
 
@@ -1329,12 +1292,15 @@ export async function createPaymentOrder(
         const existingStudentId = cleanString(existingNotes.studentId);
         const existingStudentObjectId = cleanString(existingNotes.studentObjectId);
         const existingPlan = cleanString(existingNotes.internshipPlan);
+        const normalizedExistingPlan = existingPlan
+          ? normalizeInternshipPlanCode(existingPlan)
+          : null;
 
         const existingOwnershipValid =
           (!existingStudentId || existingStudentId === studentId) &&
           (!existingStudentObjectId ||
             existingStudentObjectId === objectIdString(student._id)) &&
-          (!existingPlan || existingPlan === plan.code);
+          (!existingPlan || normalizedExistingPlan === plan.code);
 
         if (
 
@@ -1446,7 +1412,7 @@ export async function createPaymentOrder(
 
     }
 
-    
+
 
     const receipt =
 
@@ -1586,7 +1552,7 @@ export async function createPaymentOrder(
 
     }
 
-    
+
 
     const pending =
 
@@ -1830,7 +1796,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     const storedOrder =
 
@@ -1860,7 +1826,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     if (
 
@@ -1888,7 +1854,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     const [
 
@@ -1959,7 +1925,10 @@ export async function verifyPayment(
       );
     }
 
-    if (notesPlan && notesPlan !== plan.code) {
+    if (
+      notesPlan &&
+      normalizeInternshipPlanCode(notesPlan) !== plan.code
+    ) {
       throw new PaymentServiceError(
         "RAZORPAY_ORDER_PLAN_MISMATCH",
         "Razorpay order does not match the selected internship plan.",
@@ -2121,7 +2090,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     if (
       cleanString(student.paymentStatus) === "paid" &&
@@ -2262,7 +2231,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     const committed =
 
@@ -2310,7 +2279,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     const updated =
 
@@ -2334,7 +2303,7 @@ export async function verifyPayment(
 
     }
 
-    
+
 
     const receipt =
 
@@ -2567,12 +2536,8 @@ export async function getPaymentStatus(
           ),
 
         internshipPlan:
-
-          cleanString(
-
-            student.internshipPlan,
-
-          ),
+          normalizeInternshipPlanCode(student.internshipPlan) ||
+          cleanString(student.internshipPlan),
 
         internshipStatus:
 
@@ -2705,6 +2670,10 @@ async function sendPaymentReceipt(
 const paymentService = {
 
   PAYMENT_PLANS,
+
+  normalizeInternshipPlanCode,
+
+  getPaymentPlan,
 
   createPaymentOrder,
 

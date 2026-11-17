@@ -15,6 +15,14 @@ export const revalidate = 0;
 const MAX_BODY_BYTES = 512 * 1024;
 const INR = "INR";
 
+const PAYMENT_PLANS = {
+  ONE_MONTH: { amount: 499, paise: 49_900, durationDays: 30, duration: "1 Month" },
+  THREE_MONTHS: { amount: 999, paise: 99_900, durationDays: 90, duration: "3 Months" },
+  SIX_MONTHS: { amount: 1_699, paise: 169_900, durationDays: 180, duration: "6 Months" },
+} as const;
+
+type InternshipPlanCode = keyof typeof PAYMENT_PLANS;
+
 type JsonObject = Record<string, unknown>;
 type PaymentStatus = "success" | "pending" | "failed" | "refunded";
 
@@ -78,6 +86,7 @@ type StudentRecord = {
   internshipDurationDays?: unknown;
   studentOpsApprovalStatus?: unknown;
   studentOpsStatus?: unknown;
+  paymentAttemptGroupId?: unknown;
 };
 
 function clean(value: unknown, max = 200): string {
@@ -96,6 +105,20 @@ function asNumber(value: unknown): number {
   }
 
   return 0;
+}
+
+function normalizePlanCode(value: unknown): InternshipPlanCode | null {
+  const key = clean(value, 60).toUpperCase().replace(/[\\s-]+/g, "_");
+
+  if (["ONE_MONTH", "1_MONTH", "1M"].includes(key)) return "ONE_MONTH";
+  if (["THREE_MONTHS", "3_MONTHS", "3M"].includes(key)) return "THREE_MONTHS";
+  if (["SIX_MONTHS", "6_MONTHS", "6M"].includes(key)) return "SIX_MONTHS";
+
+  return null;
+}
+
+function resolveStudentPlan(student: StudentRecord): InternshipPlanCode | null {
+  return normalizePlanCode(student.internshipPlan);
 }
 
 function asObject(value: unknown): value is JsonObject {
@@ -296,6 +319,8 @@ async function syncPaymentLedger(
   notes: string
 ): Promise<void> {
   const amount = asNumber(student.paymentAmount);
+  const planCode = resolveStudentPlan(student);
+  const plan = planCode ? PAYMENT_PLANS[planCode] : null;
 
   if (!orderId || !Number.isFinite(amount) || amount <= 0) {
     throw new Error("Payment ledger data is invalid.");
@@ -345,11 +370,22 @@ async function syncPaymentLedger(
         $set: {
           ...details,
           amount,
+          currency: INR,
           status,
           method: "Razorpay",
           paymentId,
           orderId,
           notes,
+          ...(planCode ? {
+            planCode,
+            planName: plan?.duration,
+            planDurationDays: plan?.durationDays,
+          } : {}),
+          attemptGroupId: textValue(student.paymentAttemptGroupId, 120),
+          checkoutExpiresAt: null,
+          expiredAt: null,
+          verifiedAt: status === "success" ? new Date() : null,
+          verificationSource: status === "success" ? "razorpay_webhook" : undefined,
           archivedAt: null,
           archivedBy: "",
         },
@@ -586,7 +622,51 @@ async function handleCapturedPayment(
     );
   }
 
+  const planCode = resolveStudentPlan(student);
+  if (!planCode) {
+    return response(
+      {
+        success: false,
+        code: "STUDENT_PLAN_CODE_INVALID",
+        message: "The student's selected internship plan is missing or invalid. Payment requires reconciliation.",
+      },
+      409
+    );
+  }
+
+  const selectedPlan = PAYMENT_PLANS[planCode];
   const expectedAmountPaise = paiseFromRupees(student.paymentAmount);
+  if (
+    expectedAmountPaise !== selectedPlan.paise ||
+    Math.round(asNumber(student.internshipDurationDays)) !== selectedPlan.durationDays
+  ) {
+    return response(
+      {
+        success: false,
+        code: "STUDENT_PLAN_CONFIGURATION_MISMATCH",
+        message: "Stored internship plan amount or duration does not match the approved plan configuration.",
+      },
+      409
+    );
+  }
+
+  const paymentNotes = asObject(payment?.notes) ? payment?.notes : null;
+  const orderNotes = asObject(order?.notes) ? order?.notes : null;
+  const notesPlanCode = normalizePlanCode(
+    paymentNotes?.planCode ?? orderNotes?.planCode
+  );
+  if (notesPlanCode && notesPlanCode !== planCode) {
+    return response(
+      {
+        success: false,
+        code: "RAZORPAY_PLAN_MISMATCH",
+        message: "Razorpay payment metadata does not match the student's selected plan.",
+      },
+      409
+    );
+  }
+
+  const expectedAmountPaiseFromPlan = selectedPlan.paise;
   const receivedAmountPaise = Math.round(asNumber(payment?.amount));
   const paymentCurrency = clean(
     payment?.currency || order?.currency
@@ -595,9 +675,9 @@ async function handleCapturedPayment(
   const orderCurrency = clean(order?.currency).toUpperCase();
 
   if (
-    expectedAmountPaise < 100 ||
+    expectedAmountPaiseFromPlan < 100 ||
     receivedAmountPaise <= 0 ||
-    receivedAmountPaise !== expectedAmountPaise
+    receivedAmountPaise !== expectedAmountPaiseFromPlan
   ) {
     console.error("[RAZORPAY WEBHOOK] Amount mismatch", {
       orderId,
@@ -632,7 +712,7 @@ async function handleCapturedPayment(
 
   if (
     order &&
-    (!orderAmountPaise || orderAmountPaise !== expectedAmountPaise)
+    (!orderAmountPaise || orderAmountPaise !== expectedAmountPaiseFromPlan)
   ) {
     return response(
       {
@@ -812,6 +892,11 @@ async function handleCapturedPayment(
     orderId,
     paymentId,
     paymentStatus: "paid",
+    planCode,
+    planName: selectedPlan.duration,
+    durationDays: selectedPlan.durationDays,
+    amount: selectedPlan.amount,
+    currency: INR,
     studentOperationsStatus: "pending-review",
     dashboardStatus: "locked",
   });

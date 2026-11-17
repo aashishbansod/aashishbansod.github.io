@@ -33,6 +33,52 @@ const approvalStatuses = [
   "rejected",
 ] as const;
 
+const internshipPlans = {
+  ONE_MONTH: {
+    durationMonths: 1,
+    durationDays: 30,
+    amount: 499,
+    currency: "INR",
+    legacyLabel: "1 month",
+  },
+  THREE_MONTHS: {
+    durationMonths: 3,
+    durationDays: 90,
+    amount: 999,
+    currency: "INR",
+    legacyLabel: "3 months",
+  },
+  SIX_MONTHS: {
+    durationMonths: 6,
+    durationDays: 180,
+    amount: 1699,
+    currency: "INR",
+    legacyLabel: "6 months",
+  },
+} as const;
+
+type InternshipPlanCode = keyof typeof internshipPlans;
+
+const internshipPlanAliases: Record<string, InternshipPlanCode> = {
+  ONE_MONTH: "ONE_MONTH",
+  "1_MONTH": "ONE_MONTH",
+  "1_MONTHS": "ONE_MONTH",
+  "1 MONTH": "ONE_MONTH",
+  "1 MONTHS": "ONE_MONTH",
+  THREE_MONTHS: "THREE_MONTHS",
+  "3_MONTH": "THREE_MONTHS",
+  "3 MONTHS": "THREE_MONTHS",
+  SIX_MONTHS: "SIX_MONTHS",
+  "6_MONTH": "SIX_MONTHS",
+  "6 MONTHS": "SIX_MONTHS",
+};
+
+function normalizeInternshipPlanCode(value: unknown): InternshipPlanCode | "" {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().toUpperCase().replace(/[-\\s]+/g, "_");
+  return internshipPlanAliases[normalized] ?? internshipPlanAliases[value.trim().toUpperCase()] ?? "";
+}
+
 const operationsStatuses = [
   "not-ready",
   "payment-pending",
@@ -156,8 +202,25 @@ const StudentOperationsSchema = new Schema(
     },
     internshipPlan: {
       type: String,
-      enum: ["", "1 month", "3 months", "6 months"],
+      enum: [
+        "",
+        "1 month",
+        "3 months",
+        "6 months",
+        "1 Month",
+        "3 Months",
+        "6 Months",
+        "ONE_MONTH",
+        "THREE_MONTHS",
+        "SIX_MONTHS",
+      ],
       default: "",
+    },
+    internshipPlanCode: {
+      type: String,
+      enum: ["", "ONE_MONTH", "THREE_MONTHS", "SIX_MONTHS"],
+      default: "",
+      index: true,
     },
     internshipDurationMonths: {
       type: Number,
@@ -176,7 +239,7 @@ const StudentOperationsSchema = new Schema(
 
     paymentStatus: {
       type: String,
-      enum: ["unpaid", "pending", "paid", "failed", "refunded"],
+      enum: ["unpaid", "pending", "paid", "failed", "expired", "refunded"],
       default: "unpaid",
       index: true,
     },
@@ -191,6 +254,20 @@ const StudentOperationsSchema = new Schema(
       uppercase: true,
       maxlength: 3,
       default: "INR",
+    },
+    paymentAttemptGroupId: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      default: "",
+      index: true,
+    },
+    razorpayCheckoutExpiresAt: nullableDate,
+    paymentExpiredAt: nullableDate,
+    paymentVerificationSource: {
+      type: String,
+      enum: ["", "razorpay_checkout", "razorpay_webhook", "admin_reconciliation", "legacy"],
+      default: "",
     },
 
     studentOpsApprovalStatus: {
@@ -483,6 +560,21 @@ StudentOperationsSchema.index(
 );
 
 StudentOperationsSchema.index(
+  { internshipPlanCode: 1, paymentStatus: 1, createdAt: -1 },
+  { name: "student_operations_plan_payment_created" },
+);
+
+StudentOperationsSchema.index(
+  { paymentAttemptGroupId: 1, updatedAt: -1 },
+  { name: "student_operations_payment_attempt_updated" },
+);
+
+StudentOperationsSchema.index(
+  { razorpayCheckoutExpiresAt: 1, paymentStatus: 1 },
+  { name: "student_operations_checkout_expiry_status" },
+);
+
+StudentOperationsSchema.index(
   { projectStatus: 1, certificateStatus: 1, internshipEndsAt: 1 },
   { name: "student_operations_project_certificate_eligibility" },
 );
@@ -523,6 +615,72 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
 
   if (typeof this.internshipTrack === "string") {
     this.internshipTrack = this.internshipTrack.trim();
+  }
+
+  const normalizedPlanCode = normalizeInternshipPlanCode(
+    this.internshipPlanCode || this.internshipPlan,
+  );
+
+  if (normalizedPlanCode) {
+    const plan = internshipPlans[normalizedPlanCode];
+    this.internshipPlanCode = normalizedPlanCode;
+    this.internshipPlan = plan.legacyLabel;
+    this.internshipDurationMonths = plan.durationMonths;
+    this.internshipDurationDays = plan.durationDays;
+    this.paymentCurrency = plan.currency;
+
+    if (
+      typeof this.paymentAmount === "number" &&
+      this.paymentAmount > 0 &&
+      this.paymentAmount !== plan.amount
+    ) {
+      this.invalidate(
+        "paymentAmount",
+        "Payment amount does not match the selected internship plan.",
+      );
+    }
+
+    if (
+      this.paymentStatus === "paid" &&
+      (!this.paymentAmount || this.paymentAmount !== plan.amount)
+    ) {
+      this.invalidate(
+        "paymentAmount",
+        "A paid internship record must match the selected plan amount.",
+      );
+    }
+  } else if (this.internshipPlanCode) {
+    this.invalidate(
+      "internshipPlanCode",
+      "Select a supported internship plan.",
+    );
+  }
+
+  if (
+    this.paymentVerificationSource &&
+    this.paymentStatus !== "paid"
+  ) {
+    this.invalidate(
+      "paymentVerificationSource",
+      "Payment verification source is only valid for paid records.",
+    );
+  }
+
+  if (
+    this.paymentExpiredAt instanceof Date &&
+    this.paymentStatus !== "expired"
+  ) {
+    this.invalidate(
+      "paymentExpiredAt",
+      "Payment expiry timestamp requires expired payment status.",
+    );
+  }
+
+  if (
+    this.razorpayCheckoutExpiresAt instanceof Date &&
+    this.paymentStatus === "paid"
+  ) {
+    this.razorpayCheckoutExpiresAt = null;
   }
 
   if (typeof this.paymentCurrency === "string") {

@@ -157,6 +157,8 @@ type StudentRecord = {
 
   razorpayPaymentId?: unknown;
 
+  paymentAttemptGroupId?: unknown;
+
   receiptEmailSent?: unknown;
 
   studentOpsStatus?: unknown;
@@ -518,7 +520,7 @@ async function upsertVerifiedPaymentLedger(input: {
   orderId: string;
   paymentId: string;
   email: string;
-  plan: { duration: string };
+  plan: { code: PlanCode; duration: string; days: number; amount: number };
 }): Promise<boolean> {
   const existingByPayment = await Payment.findOne({
     paymentId: input.paymentId,
@@ -528,7 +530,7 @@ async function upsertVerifiedPaymentLedger(input: {
   if (existingByPayment) return false;
 
   const existingOrder = await Payment.findOne({ orderId: input.orderId })
-    .select({ paymentId: 1, status: 1 })
+    .select({ paymentId: 1, status: 1, planCode: 1 })
     .lean()
     .exec();
 
@@ -536,6 +538,8 @@ async function upsertVerifiedPaymentLedger(input: {
     if (statusOf(existingOrder.status) === "refunded") return false;
     const existingPaymentId = clean(existingOrder.paymentId);
     if (existingPaymentId && existingPaymentId !== input.paymentId) return false;
+    const existingPlanCode = normalizePlan((existingOrder as unknown as Record<string, unknown>).planCode);
+    if (existingPlanCode && existingPlanCode !== input.plan.code) return false;
   }
 
   const update = {
@@ -543,17 +547,26 @@ async function upsertVerifiedPaymentLedger(input: {
       studentName: clean(input.student.fullName) || "Student",
       studentId: clean(input.student.studentId) || clean(input.student._id),
       email: input.email,
-      internship: getTitle(input.internship),
+      internship: input.plan.duration,
+      planCode: input.plan.code,
+      planName: input.plan.duration,
+      planDurationDays: input.plan.days,
       amount: input.amount,
+      currency: "INR",
       status: "success",
       method: "Razorpay",
       paymentId: input.paymentId,
       orderId: input.orderId,
+      attemptGroupId: clean(input.student.paymentAttemptGroupId, 120),
+      checkoutExpiresAt: null,
+      expiredAt: null,
+      verifiedAt: new Date(),
+      verificationSource: "razorpay_checkout",
       archivedAt: null,
       archivedBy: "",
     },
     $setOnInsert: {
-      notes: `Plan: ${input.plan.duration}`,
+      notes: `Plan: ${input.plan.duration} (${input.plan.code})`,
       receiptEmailStatus: "pending",
       receiptEmailSentAt: null,
       receiptEmailLastAttemptAt: null,
@@ -595,7 +608,7 @@ async function upsertVerifiedPaymentLedger(input: {
       Number((error as { code?: unknown }).code) === 11000
     ) {
       const ledger = await Payment.findOne({ orderId: input.orderId })
-        .select({ paymentId: 1, status: 1 })
+        .select({ paymentId: 1, status: 1, planCode: 1 })
         .lean()
         .exec();
 
@@ -805,7 +818,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return fail("Your internship selection is not awaiting payment.", "INTERNSHIP_NOT_PAYMENT_PENDING", 409);
     }
 
-    if (clean(student.internshipPlan).toLowerCase() !== plan.studentPlan) {
+    const storedPlanCode = normalizePlan(student.internshipPlan);
+
+    if (storedPlanCode !== planCode) {
 
       return fail("Selected internship duration does not match this payment.", "STUDENT_PLAN_MISMATCH", 409);
 
@@ -1005,61 +1020,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     });
 
-    if (!committed.success && committed.code === "INTERNSHIP_SELECTION_WINDOW_EXPIRED") {
-      const reconciliationAt = new Date();
-      const reconciliation = await Student.updateOne(
-        {
-          _id: new mongoose.Types.ObjectId(auth.userId),
-          razorpayOrderId: orderId,
-          paymentStatus: { $in: ["pending", "paid"] },
-          $or: [
-            { razorpayPaymentId: "" },
-            { razorpayPaymentId: paymentId },
-            { razorpayPaymentId: { $exists: false } },
-          ],
-        },
-        {
-          $set: {
-            paymentStatus: "paid",
-            razorpayPaymentId: paymentId,
-            razorpaySignature: receivedSignature,
-            paymentCompletedAt: reconciliationAt,
-            internshipStatus: "approved",
-            studentOpsApprovalStatus: "pending",
-            studentOpsStatus: "pending-review",
-            dashboardStatus: "locked",
-            dashboardLoginEnabled: false,
-            dashboardCredentialsGenerated: false,
-            operationsSyncStatus: "pending",
-            operationsSyncError: "Captured payment requires manual reconciliation because the 72-hour selection window expired.",
-          },
-        },
-      ).exec();
-
-      if (!reconciliation.matchedCount) {
-        const latest = (await Student.findById(auth.userId).select({
-          paymentStatus: 1,
-          razorpayOrderId: 1,
-          razorpayPaymentId: 1,
-        }).lean().exec()) as Record<string, unknown> | null;
-
-        if (
-          statusOf(latest?.paymentStatus) !== "paid" ||
-          clean(latest?.razorpayOrderId) !== orderId ||
-          clean(latest?.razorpayPaymentId) !== paymentId
-        ) {
-          console.error("[PAYMENT VERIFY] Captured payment reconciliation could not be persisted.");
-          return fail("Payment was captured by Razorpay but could not be safely recorded. Contact support with your payment ID.", "CAPTURED_PAYMENT_RECONCILIATION_REQUIRED", 202);
-        }
-      }
-
-      console.error("[PAYMENT VERIFY] Captured payment saved for manual reconciliation after selection deadline.");
-    } else if (!committed.success) {
-      console.error("[PAYMENT VERIFY] Payment commit rejected:", committed.code || "unknown");
-      return fail(committed.message || "Verified payment could not be saved.", committed.code || "PAYMENT_COMMIT_FAILED", 409);
+    if (!committed.success) {
+      console.error("[PAYMENT VERIFY] Captured payment could not be committed:", committed.code || "unknown");
+      return fail(
+        "Razorpay captured the payment, but the student record could not be safely updated. Keep your payment ID and contact support for reconciliation.",
+        "CAPTURED_PAYMENT_RECONCILIATION_REQUIRED",
+        202,
+      );
     }
 
-    const manualReconciliationRequired = !committed.success;
+    const manualReconciliationRequired = false;
 
     const applicationId = clean(student.applicationId);
 
@@ -1095,7 +1065,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       orderId,
       paymentId,
       email,
-      plan,
+      plan: {
+        code: planCode,
+        duration: plan.duration,
+        days: plan.days,
+        amount: plan.amount,
+      },
     });
 
     if (!ledgerSaved) {

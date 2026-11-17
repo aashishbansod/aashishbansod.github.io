@@ -74,9 +74,15 @@ export type InternshipPlan =
   keyof typeof INTERNSHIP_PLANS;
 
 function normalizeInternshipPlan(value: unknown): InternshipPlan | null {
-  const normalized = cleanString(value)
+  const rawValue = cleanString(value);
+  const code = rawValue.toUpperCase().replace(/[\\s-]+/g, "_");
+  if (code === "ONE_MONTH" || code === "1_MONTH") return "1 month";
+  if (code === "THREE_MONTHS" || code === "3_MONTHS") return "3 months";
+  if (code === "SIX_MONTHS" || code === "6_MONTHS") return "6 months";
+
+  const normalized = rawValue
     .toLowerCase()
-    .replace(/[\s_-]+/g, " ")
+    .replace(/[\\s_-]+/g, " ")
     .trim();
 
   const aliases: Record<string, InternshipPlan> = {
@@ -582,6 +588,9 @@ async function syncStudentOperationsRecord(
     internshipStatus: cleanString(student.internshipStatus) || "not-started",
     internshipTrack: cleanString(student.internshipTrack),
     internshipPlan: cleanString(student.internshipPlan),
+    internshipPlanCode: getInternshipPlanByCode(student.internshipPlanCode || student.internshipPlan)
+      ? getInternshipPlanCode(getInternshipPlanByCode(student.internshipPlanCode || student.internshipPlan) as InternshipPlan)
+      : "",
     internshipDurationMonths: numberValue(
       student.internshipDurationMonths,
       numberValue(student.internshipDurationDays) / 30,
@@ -954,7 +963,7 @@ function createExpiryDate(
 }
 
 function getVerifiedInternshipDurationDays(student: StudentDocument): number {
-  const plan = normalizeInternshipPlan(student.internshipPlan);
+  const plan = normalizeInternshipPlan(student.internshipPlanCode || student.internshipPlan);
   const configuredDays = plan ? INTERNSHIP_PLANS[plan].durationDays : 0;
   const storedDays = numberValue(student.internshipDurationDays, 0);
   const durationDays = configuredDays || storedDays;
@@ -2786,6 +2795,7 @@ export async function selectInternship(
         $set: {
           internshipTrack: cleanString(input.track),
           internshipPlan: plan,
+          internshipPlanCode: getInternshipPlanCode(plan),
           internshipDurationMonths: selectedPlan.durationMonths,
           internshipDurationDays: selectedPlan.durationDays,
           internshipSelectionAt: selectedAt,
@@ -2798,6 +2808,9 @@ export async function selectInternship(
           paymentStatus: "pending",
           paymentAmount: selectedPlan.amount,
           paymentCurrency: selectedPlan.currency,
+          paymentAttemptGroupId: "",
+          razorpayCheckoutExpiresAt: null,
+          paymentExpiredAt: null,
           studentOpsStatus: "not-ready",
           studentOpsApprovalStatus: "pending",
           dashboardStatus: "locked",
@@ -3067,7 +3080,7 @@ export async function markPaymentPending(
       };
     }
 
-    const selectedPlan = normalizeInternshipPlan(student.internshipPlan);
+    const selectedPlan = normalizeInternshipPlan(student.internshipPlanCode || student.internshipPlan);
 
     if (!selectedPlan) {
       return {
@@ -3154,7 +3167,11 @@ export async function markPaymentPending(
       {
         $set: {
           razorpayOrderId: orderId,
+          internshipPlanCode: getInternshipPlanCode(selectedPlan),
           paymentCurrency: officialPlan.currency,
+          paymentAttemptGroupId: cleanString(student.paymentAttemptGroupId) || crypto.randomUUID(),
+          razorpayCheckoutExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+          paymentExpiredAt: null,
           paymentStatus: "pending",
           paymentAmount: officialPlan.amount,
           studentOpsStatus: "not-ready",
@@ -3240,7 +3257,7 @@ export async function recordVerifiedPayment(
       };
     }
 
-    const selectedPlan = normalizeInternshipPlan(student.internshipPlan);
+    const selectedPlan = normalizeInternshipPlan(student.internshipPlanCode || student.internshipPlan);
 
     if (!selectedPlan) {
       return {
@@ -3389,6 +3406,10 @@ export async function recordVerifiedPayment(
       journeyExpired: false,
       paymentCompletedAt: verifiedAt,
       paymentVerifiedAt: verifiedAt,
+      paymentVerificationSource: input.razorpaySignature ? "razorpay_checkout" : "razorpay_webhook",
+      razorpayCheckoutExpiresAt: null,
+      paymentExpiredAt: null,
+      internshipPlanCode: getInternshipPlanCode(selectedPlan),
       internshipStatus: "approved",
       studentOpsApprovalStatus: "pending",
       studentOpsStatus: "pending-review",

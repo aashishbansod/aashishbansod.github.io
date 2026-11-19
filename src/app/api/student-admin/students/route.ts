@@ -8,9 +8,12 @@ import {
 import {
   approveStudentOperations,
   generateDashboardCredentials,
-  listStudents,
   type StudentActor,
 } from "@/services/student.service";
+import StudentModelSource from "@/models/Student";
+import connectDB from "@/lib/db";
+
+const StudentModel: any = StudentModelSource;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,15 +39,7 @@ const SUPPORTED_ACTIONS = new Set([
   "resend-credentials",
 ]);
 
-const ALLOWED_QUERY_FILTERS = new Set([
-  "applicationStatus",
-  "assessmentStatus",
-  "internshipStatus",
-  "paymentStatus",
-  "studentOpsApprovalStatus",
-  "studentOpsStatus",
-  "dashboardStatus",
-]);
+
 
 type JsonObject = Record<string, unknown>;
 
@@ -437,53 +432,6 @@ function positiveInteger(
   return Math.min(parsed, maximum);
 }
 
-function buildListQuery(request: NextRequest): {
-  applicationStatus?: string;
-  assessmentStatus?: string;
-  internshipStatus?: string;
-  paymentStatus?: string;
-  studentOpsApprovalStatus?: string;
-  studentOpsStatus?: string;
-  dashboardStatus?: string;
-  search?: string;
-  page: number;
-  limit: number;
-} {
-  const search = queryString(request, "search").slice(0, MAX_SEARCH_LENGTH);
-  const query: Record<string, string | undefined> = {};
-
-  for (const key of ALLOWED_QUERY_FILTERS) {
-    const value = queryString(request, key).slice(0, 80);
-    if (value) query[key] = value;
-  }
-
-  return {
-    applicationStatus: query.applicationStatus,
-    assessmentStatus: query.assessmentStatus,
-    internshipStatus: query.internshipStatus,
-    paymentStatus: query.paymentStatus,
-    studentOpsApprovalStatus: query.studentOpsApprovalStatus,
-    studentOpsStatus: query.studentOpsStatus,
-    dashboardStatus: query.dashboardStatus,
-    search: search || undefined,
-    page: positiveInteger(queryString(request, "page"), 1, 10_000),
-    limit: positiveInteger(
-      queryString(request, "limit"),
-      DEFAULT_PAGE_SIZE,
-      MAX_PAGE_SIZE,
-    ),
-  };
-}
-
-function isPendingQueue(request: NextRequest): boolean {
-  const queue = lowerString(request.nextUrl.searchParams.get("queue"));
-  return (
-    queue === "pending" ||
-    queue === "review" ||
-    queue === "student-operations"
-  );
-}
-
 async function parsePostBody(
   request: NextRequest,
   requestId: string,
@@ -703,30 +651,264 @@ function handleServiceResult(
   );
 }
 
+function normalizePlanCode(value: unknown): string {
+  const raw = cleanString(value).toUpperCase().replace(/[\s-]+/g, "_");
+  if (["ONE_MONTH", "1_MONTH", "1_MONTHS", "1 MONTH", "1 MONTHS"].includes(raw)) return "ONE_MONTH";
+  if (["THREE_MONTHS", "3_MONTH", "3_MONTHS"].includes(raw)) return "THREE_MONTHS";
+  if (["SIX_MONTHS", "6_MONTH", "6_MONTHS"].includes(raw)) return "SIX_MONTHS";
+  return "";
+}
+
+function normalizeStudentRecord(record: JsonObject): JsonObject {
+  const planCode = normalizePlanCode(record.internshipPlanCode || record.internshipPlan);
+  const plan = planCode === "ONE_MONTH"
+    ? { durationMonths: 1, durationDays: 30, amount: 499, name: "1 Month" }
+    : planCode === "THREE_MONTHS"
+      ? { durationMonths: 3, durationDays: 90, amount: 999, name: "3 Months" }
+      : planCode === "SIX_MONTHS"
+        ? { durationMonths: 6, durationDays: 180, amount: 1699, name: "6 Months" }
+        : null;
+  const id = record._id && typeof record._id === "object" && "toString" in record._id
+    ? String(record._id)
+    : cleanString(record._id);
+  const iso = (value: unknown) => {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  };
+  return {
+    id,
+    studentId: cleanString(record.studentId),
+    dashboardStudentId: cleanString(record.dashboardStudentId),
+    applicationId: cleanString(record.applicationId),
+    fullName: cleanString(record.fullName),
+    email: cleanString(record.email).toLowerCase(),
+    phone: cleanString(record.phone),
+    applicationStatus: cleanString(record.applicationStatus),
+    adminApprovalStatus: cleanString(record.adminApprovalStatus),
+    assessmentStatus: cleanString(record.assessmentStatus),
+    resultStatus: cleanString(record.resultStatus),
+    internshipStatus: cleanString(record.internshipStatus),
+    internshipPlan: cleanString(record.internshipPlan) || plan?.name || "",
+    internshipPlanCode: planCode,
+    internshipDurationMonths: Number(record.internshipDurationMonths) || plan?.durationMonths || 0,
+    internshipDurationDays: Number(record.internshipDurationDays) || plan?.durationDays || 0,
+    internshipTrack: cleanString(record.internshipTrack),
+    internshipStartedAt: iso(record.internshipStartedAt),
+    internshipEndsAt: iso(record.internshipEndsAt),
+    paymentStatus: cleanString(record.paymentStatus),
+    paymentAmount: Number(record.paymentAmount) || plan?.amount || 0,
+    paymentCurrency: cleanString(record.paymentCurrency) || "INR",
+    paymentAttemptGroupId: cleanString(record.paymentAttemptGroupId),
+    razorpayOrderId: cleanString(record.razorpayOrderId),
+    razorpayPaymentId: cleanString(record.razorpayPaymentId),
+    razorpayCheckoutExpiresAt: iso(record.razorpayCheckoutExpiresAt),
+    paymentExpiredAt: iso(record.paymentExpiredAt),
+    paymentCompletedAt: iso(record.paymentCompletedAt),
+    paymentVerifiedAt: iso(record.paymentVerifiedAt),
+    paymentVerificationSource: cleanString(record.paymentVerificationSource),
+    studentOpsApprovalStatus: cleanString(record.studentOpsApprovalStatus),
+    studentOpsStatus: cleanString(record.studentOpsStatus),
+    dashboardStatus: cleanString(record.dashboardStatus),
+    dashboardLoginEnabled: record.dashboardLoginEnabled === true,
+    dashboardCredentialsGenerated: record.dashboardCredentialsGenerated === true,
+    dashboardCredentialsGeneratedAt: iso(record.dashboardCredentialsGeneratedAt),
+    dashboardCredentialsExpiresAt: iso(record.dashboardCredentialsExpiresAt),
+    dashboardLoginEnabledAt: iso(record.dashboardLoginEnabledAt),
+    dashboardAccountLocked: record.dashboardAccountLocked === true,
+    dashboardLockedUntil: iso(record.dashboardLockedUntil),
+    learningStatus: cleanString(record.learningStatus),
+    taskCompletionPercentage: Number(record.taskCompletionPercentage) || 0,
+    learningProgressPercentage: Number(record.learningProgressPercentage) || 0,
+    attendancePercentage: Number(record.attendancePercentage) || 0,
+    weeklyAssessmentStatus: cleanString(record.weeklyAssessmentStatus),
+    saturdayAssessmentStatus: cleanString(record.saturdayAssessmentStatus),
+    projectStatus: cleanString(record.projectStatus),
+    projectCompletionPercentage: Number(record.projectCompletionPercentage) || 0,
+    certificateStatus: cleanString(record.certificateStatus),
+    certificateId: cleanString(record.certificateId),
+    createdAt: iso(record.createdAt),
+    updatedAt: iso(record.updatedAt),
+  };
+}
+
+function buildMongoStudentFilter(request: NextRequest): JsonObject {
+  const filter: JsonObject = {};
+  const statusFields = [
+    "applicationStatus",
+    "assessmentStatus",
+    "internshipStatus",
+    "paymentStatus",
+    "studentOpsApprovalStatus",
+    "studentOpsStatus",
+    "dashboardStatus",
+  ] as const;
+
+  for (const field of statusFields) {
+    const value = queryString(request, field).slice(0, 80);
+    if (value) filter[field] = value;
+  }
+
+  const planCode = queryString(request, "internshipPlanCode");
+  if (planCode) {
+    const normalized = normalizePlanCode(planCode);
+    if (normalized) filter.internshipPlanCode = normalized;
+    else filter.internshipPlanCode = "__unsupported_plan__";
+  }
+
+  const clauses: JsonObject[] = [];
+  const login = lowerString(queryString(request, "dashboardLogin"));
+  const activeLogin: JsonObject = {
+    dashboardLoginEnabled: true,
+    dashboardCredentialsGenerated: true,
+    dashboardStatus: "active",
+    dashboardAccountLocked: { $ne: true },
+    $or: [
+      { dashboardCredentialsExpiresAt: null },
+      { dashboardCredentialsExpiresAt: { $exists: false } },
+      { dashboardCredentialsExpiresAt: { $gt: new Date() } },
+    ],
+  };
+
+  if (login === "active") clauses.push(activeLogin);
+  if (login === "off") clauses.push({ $nor: [activeLogin] });
+
+  const search = queryString(request, "search").slice(0, MAX_SEARCH_LENGTH);
+  if (search) {
+    const escaped = search.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+    const regex = new RegExp(escaped, "i");
+    clauses.push({
+      $or: [
+        { studentId: regex },
+        { dashboardStudentId: regex },
+        { applicationId: regex },
+        { fullName: regex },
+        { email: regex },
+        { phone: regex },
+        { internshipTrack: regex },
+      ],
+    });
+  }
+
+  if (clauses.length) filter.$and = clauses;
+  return filter;
+}
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const requestId = getRequestId(request);
 
   try {
     const authentication = await authenticateAdmin(request, requestId);
-
     if (!authentication.success) return authentication.response;
 
-    const query = buildListQuery(request);
+    await connectDB();
 
-    if (isPendingQueue(request)) {
-      query.paymentStatus = "paid";
-      query.studentOpsApprovalStatus = "pending";
-      query.studentOpsStatus = "pending-review";
-    }
+    const page = positiveInteger(queryString(request, "page"), 1, 100_000);
+    const limit = positiveInteger(queryString(request, "limit"), DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+    const skip = (page - 1) * limit;
+    const filter = buildMongoStudentFilter(request);
+    const now = new Date();
 
-    const result = await listStudents(query);
-    return handleServiceResult(result, requestId);
-  } catch (error) {
-    console.error("[StudentAdminStudents][GET] Request failed.", {
+    const activeLoginFilter: JsonObject = {
+      dashboardLoginEnabled: true,
+      dashboardCredentialsGenerated: true,
+      dashboardStatus: "active",
+      dashboardAccountLocked: { $ne: true },
+      $or: [
+        { dashboardCredentialsExpiresAt: null },
+        { dashboardCredentialsExpiresAt: { $exists: false } },
+        { dashboardCredentialsExpiresAt: { $gt: now } },
+      ],
+    };
+
+    const [
+      records,
+      total,
+      totalStudents,
+      activeLoginCount,
+      paidCount,
+      pendingPaymentCount,
+      expiredPaymentCount,
+      refundedPaymentCount,
+      oneMonthCount,
+      threeMonthCount,
+      sixMonthCount,
+      pendingOperationsCount,
+      activeOperationsCount,
+    ] = await Promise.all([
+      StudentModel.find(filter)
+        .select([
+          "studentId dashboardStudentId applicationId fullName email phone",
+          "applicationStatus adminApprovalStatus assessmentStatus resultStatus",
+          "internshipStatus internshipPlan internshipPlanCode internshipDurationMonths internshipDurationDays",
+          "internshipTrack internshipStartedAt internshipEndsAt paymentStatus paymentAmount paymentCurrency",
+          "paymentAttemptGroupId razorpayOrderId razorpayPaymentId razorpayCheckoutExpiresAt paymentExpiredAt",
+          "paymentCompletedAt paymentVerifiedAt paymentVerificationSource",
+          "studentOpsApprovalStatus studentOpsStatus dashboardStatus dashboardLoginEnabled",
+          "dashboardCredentialsGenerated dashboardCredentialsGeneratedAt dashboardCredentialsExpiresAt",
+          "dashboardLoginEnabledAt dashboardAccountLocked dashboardLockedUntil",
+          "learningStatus taskCompletionPercentage learningProgressPercentage attendancePercentage",
+          "weeklyAssessmentStatus saturdayAssessmentStatus projectStatus projectCompletionPercentage",
+          "certificateStatus certificateId createdAt updatedAt",
+        ].join(" "))
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
+      StudentModel.countDocuments(filter).exec(),
+      StudentModel.countDocuments({}).exec(),
+      StudentModel.countDocuments(activeLoginFilter).exec(),
+      StudentModel.countDocuments({ paymentStatus: "paid" }).exec(),
+      StudentModel.countDocuments({ paymentStatus: "pending" }).exec(),
+      StudentModel.countDocuments({ paymentStatus: "expired" }).exec(),
+      StudentModel.countDocuments({ paymentStatus: "refunded" }).exec(),
+      StudentModel.countDocuments({ internshipPlanCode: "ONE_MONTH" }).exec(),
+      StudentModel.countDocuments({ internshipPlanCode: "THREE_MONTHS" }).exec(),
+      StudentModel.countDocuments({ internshipPlanCode: "SIX_MONTHS" }).exec(),
+      StudentModel.countDocuments({ studentOpsApprovalStatus: "pending", paymentStatus: "paid" }).exec(),
+      StudentModel.countDocuments({ studentOpsStatus: "active" }).exec(),
+    ]);
+
+    const students = records.map((record: JsonObject) => normalizeStudentRecord(record));
+    const activeLogin = Math.max(0, Number(activeLoginCount) || 0);
+    const inactiveLogin = Math.max(0, Number(totalStudents) - activeLogin);
+
+    return successResponse(
       requestId,
-      error,
-    });
-
+      "Student records and live statistics loaded successfully.",
+      {
+        students,
+        total: Math.max(0, Number(total) || 0),
+        page,
+        limit,
+        totalPages: Math.ceil(Math.max(0, Number(total) || 0) / limit),
+        statistics: {
+          totalStudents: Number(totalStudents) || 0,
+          dashboardLoginEnabled: activeLogin,
+          dashboardLoginDisabled: inactiveLogin,
+          activeStudents: Number(activeOperationsCount) || 0,
+          paidStudents: Number(paidCount) || 0,
+          pendingPayments: Number(pendingPaymentCount) || 0,
+          expiredPayments: Number(expiredPaymentCount) || 0,
+          refundedPayments: Number(refundedPaymentCount) || 0,
+          pendingOperationsApprovals: Number(pendingOperationsCount) || 0,
+          internshipPlans: {
+            ONE_MONTH: Number(oneMonthCount) || 0,
+            THREE_MONTHS: Number(threeMonthCount) || 0,
+            SIX_MONTHS: Number(sixMonthCount) || 0,
+          },
+        },
+        generatedAt: now.toISOString(),
+        viewer: {
+          id: authentication.admin.id,
+          role: authentication.admin.role,
+          sessionType: authentication.admin.sessionType,
+        },
+      },
+    );
+  } catch (error) {
+    console.error("[StudentAdminStudents][GET] Request failed.", { requestId, error });
     return errorResponse(
       requestId,
       "Unable to load Student Operations students.",

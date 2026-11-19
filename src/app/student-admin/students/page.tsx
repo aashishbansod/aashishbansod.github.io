@@ -22,14 +22,28 @@ type Student = {
   resultStatus?: string;
   internshipStatus?: string;
   internshipPlan?: string;
+  internshipPlanCode?: "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS" | string;
+  internshipDurationMonths?: number;
+  internshipDurationDays?: number;
   internshipTrack?: string;
   paymentStatus: string;
   paymentAmount?: number;
+  paymentCurrency?: string;
+  paymentAttemptGroupId?: string;
+  razorpayCheckoutExpiresAt?: string | null;
+  paymentExpiredAt?: string | null;
+  paymentVerificationSource?: string;
+  paymentCompletedAt?: string | null;
+  paymentVerifiedAt?: string | null;
   studentOpsApprovalStatus?: string;
   studentOpsStatus?: string;
   dashboardStatus?: string;
   dashboardLoginEnabled?: boolean;
+  dashboardLoginEnabledAt?: string | null;
   dashboardCredentialsGenerated?: boolean;
+  dashboardCredentialsExpiresAt?: string | null;
+  dashboardAccountLocked?: boolean;
+  dashboardDeactivatedAt?: string | null;
   learningStatus?: string;
   taskCompletionPercentage?: number;
   learningProgressPercentage?: number;
@@ -54,6 +68,18 @@ type ApiResponse = {
     page?: number;
     limit?: number;
     totalPages?: number;
+    statistics?: {
+      totalStudents?: number;
+      dashboardLoginEnabled?: number;
+      dashboardLoginDisabled?: number;
+      activeDashboardLogins?: number;
+      inactiveDashboardLogins?: number;
+      paidStudents?: number;
+      pendingPayments?: number;
+      expiredPayments?: number;
+      planCounts?: { ONE_MONTH?: number; THREE_MONTHS?: number; SIX_MONTHS?: number };
+    };
+    generatedAt?: string;
   };
 };
 
@@ -64,7 +90,8 @@ type FilterKey =
   | "assessmentStatus"
   | "internshipStatus"
   | "paymentStatus"
-  | "dashboardStatus";
+  | "dashboardStatus"
+  | "dashboardLoginEnabled";
 
 const API_URL = "/api/student-admin/students";
 const PAGE_SIZE = 25;
@@ -78,6 +105,7 @@ const FILTERS: { key: FilterKey; label: string; options: string[] }[] = [
   { key: "internshipStatus", label: "Internship", options: ["not-started", "pending", "approved", "active", "completed", "rejected"] },
   { key: "paymentStatus", label: "Payment", options: ["unpaid", "pending", "paid", "failed", "refunded"] },
   { key: "dashboardStatus", label: "Dashboard access", options: ["locked", "pending", "active", "completed", "disabled"] },
+  { key: "dashboardLoginEnabled", label: "Dashboard login", options: ["true", "false"] },
 ];
 
 const EMPTY_FILTERS: Record<FilterKey, string> = {
@@ -88,6 +116,7 @@ const EMPTY_FILTERS: Record<FilterKey, string> = {
   internshipStatus: "",
   paymentStatus: "",
   dashboardStatus: "",
+  dashboardLoginEnabled: "",
 };
 
 function safeText(value: unknown, fallback = "—"): string {
@@ -142,6 +171,30 @@ function Progress({ label, value }: { label: string; value: unknown }) {
   return <div><div className="mb-1.5 flex justify-between gap-2"><span className="text-[10px] font-semibold text-slate-500">{label}</span><span className="text-[10px] font-bold text-slate-700">{amount === null ? "—" : `${amount}%`}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-600" style={{ width: `${amount ?? 0}%` }} /></div></div>;
 }
 
+const PLAN_DETAILS = {
+  ONE_MONTH: { label: "1 Month", amount: 499, days: 30 },
+  THREE_MONTHS: { label: "3 Months", amount: 999, days: 90 },
+  SIX_MONTHS: { label: "6 Months", amount: 1699, days: 180 },
+} as const;
+
+function resolvePlan(student: Student) {
+  const raw = safeText(student.internshipPlanCode || student.internshipPlan, "").toUpperCase().replace(/[\\s-]+/g, "_");
+  if (raw === "ONE_MONTH" || raw === "1_MONTH" || raw === "1_MONTHS") return PLAN_DETAILS.ONE_MONTH;
+  if (raw === "THREE_MONTHS" || raw === "3_MONTH" || raw === "3_MONTHS") return PLAN_DETAILS.THREE_MONTHS;
+  if (raw === "SIX_MONTHS" || raw === "6_MONTH" || raw === "6_MONTHS") return PLAN_DETAILS.SIX_MONTHS;
+  return null;
+}
+
+function formatMoney(value: unknown, currency = "INR") {
+  const amount = safeNumber(value);
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 }).format(amount);
+}
+
+function LoginStatus({ enabled, locked }: { enabled?: boolean; locked?: boolean }) {
+  const active = enabled === true && locked !== true;
+  return <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold ${active ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-100 text-slate-600"}`}><span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-emerald-500" : "bg-slate-400"}`} />{active ? "Login active" : "Login off"}</span>;
+}
+
 export default function StudentAdminStudentsPage() {
   const [students, setStudents] = useState<Student[]>([]);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -150,6 +203,7 @@ export default function StudentAdminStudentsPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
+  const [serverStatistics, setServerStatistics] = useState<ApiResponse["data"] extends infer T ? T extends { statistics?: infer S } ? S | null : null : null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -159,8 +213,12 @@ export default function StudentAdminStudentsPage() {
   const requestSequence = useRef(0);
 
   const activeFilterCount = useMemo(() => Object.values(filters).filter(Boolean).length, [filters]);
-  const activeOnPage = useMemo(() => students.filter((item) => ["active", "completed"].includes(safeText(item.studentOpsStatus, "").toLowerCase())).length, [students]);
   const paidOnPage = useMemo(() => students.filter((item) => safeText(item.paymentStatus, "").toLowerCase() === "paid").length, [students]);
+  const loginActiveOnPage = useMemo(() => students.filter((item) => item.dashboardLoginEnabled === true && item.dashboardAccountLocked !== true).length, [students]);
+  const loginOffOnPage = useMemo(() => Math.max(0, students.length - loginActiveOnPage), [students, loginActiveOnPage]);
+  const loginActiveCount = serverStatistics?.dashboardLoginEnabled ?? serverStatistics?.activeDashboardLogins ?? loginActiveOnPage;
+  const loginOffCount = serverStatistics?.dashboardLoginDisabled ?? serverStatistics?.inactiveDashboardLogins ?? loginOffOnPage;
+  const countsAreGlobal = typeof serverStatistics?.dashboardLoginEnabled === "number" || typeof serverStatistics?.activeDashboardLogins === "number";
 
   const loadStudents = useCallback(async (initial = false, signal?: AbortSignal) => {
     const requestId = ++requestSequence.current;
@@ -244,8 +302,8 @@ export default function StudentAdminStudentsPage() {
 
   function exportCurrentPage() {
     if (!students.length) return;
-    const columns = ["Student ID", "Dashboard ID", "Application ID", "Name", "Email", "Phone", "Application", "Assessment", "Internship", "Plan", "Track", "Payment", "Operations Approval", "Operations Status", "Dashboard", "Attendance", "Task Completion", "Learning Progress", "Certificate", "Joined"];
-    const rows = students.map((item) => [item.studentId, item.dashboardStudentId, item.applicationId, item.fullName, item.email, item.phone, item.applicationStatus, item.assessmentStatus, item.internshipStatus, item.internshipPlan, item.internshipTrack, item.paymentStatus, item.studentOpsApprovalStatus, item.studentOpsStatus, item.dashboardStatus, item.attendancePercentage, item.taskCompletionPercentage, item.learningProgressPercentage, item.certificateStatus, item.createdAt]);
+    const columns = ["Student ID", "Dashboard ID", "Application ID", "Name", "Email", "Phone", "Application", "Assessment", "Internship", "Plan Code", "Plan", "Duration Days", "Track", "Payment Amount", "Payment Currency", "Payment", "Dashboard Login", "Operations Approval", "Operations Status", "Dashboard", "Attendance", "Task Completion", "Learning Progress", "Certificate", "Joined"];
+    const rows = students.map((item) => [item.studentId, item.dashboardStudentId, item.applicationId, item.fullName, item.email, item.phone, item.applicationStatus, item.assessmentStatus, item.internshipStatus, item.internshipPlanCode, item.internshipPlan, item.internshipDurationDays, item.internshipTrack, item.paymentAmount, item.paymentCurrency, item.paymentStatus, item.dashboardLoginEnabled ? "active" : "off", item.studentOpsApprovalStatus, item.studentOpsStatus, item.dashboardStatus, item.attendancePercentage, item.taskCompletionPercentage, item.learningProgressPercentage, item.certificateStatus, item.createdAt]);
     const cell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
     const csv = [columns, ...rows].map((row) => row.map(cell).join(",")).join("\r\n");
     const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8;" });
@@ -288,9 +346,15 @@ export default function StudentAdminStudentsPage() {
 
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Metric label="Matching students" value={total.toLocaleString("en-IN")} note="Records matching current search and filters" icon={Users} tone="bg-blue-50 text-blue-600" />
-          <Metric label="Records on this page" value={students.length} note={`Page ${page}${totalPages ? ` of ${totalPages}` : ""}`} icon={FileText} tone="bg-violet-50 text-violet-600" />
-          <Metric label="Active on this page" value={activeOnPage} note="Active or completed operations status in this page" icon={CheckCircle2} tone="bg-emerald-50 text-emerald-600" />
-          <Metric label="Paid on this page" value={paidOnPage} note="Paid status in this result page" icon={CreditCard} tone="bg-amber-50 text-amber-600" />
+          <Metric label="Dashboard login active" value={loginActiveCount.toLocaleString("en-IN")} note={countsAreGlobal ? "Live total across all Operations records" : "Current page only; global count requires dashboard API statistics"} icon={CheckCircle2} tone="bg-emerald-50 text-emerald-600" />
+          <Metric label="Dashboard login off" value={loginOffCount.toLocaleString("en-IN")} note={countsAreGlobal ? "Live total across all Operations records" : "Current page only; global count requires dashboard API statistics"} icon={ShieldCheck} tone="bg-slate-100 text-slate-600" />
+          <Metric label="Paid on this page" value={paidOnPage} note="Verified paid records in current result page" icon={CreditCard} tone="bg-amber-50 text-amber-600" />
+        </section>
+        {!countsAreGlobal && <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[11px] leading-5 text-amber-800">Dashboard login counts currently reflect only the loaded page. For accurate live totals across all students, the Students API must return aggregate login statistics; the API update is the next required step.</p>}
+        <section className="grid gap-3 sm:grid-cols-3">
+          <Metric label="1-month plans" value={serverStatistics?.planCounts?.ONE_MONTH ?? students.filter((item) => resolvePlan(item)?.days === 30).length} note="₹499 · 30 days" icon={CalendarDays} tone="bg-cyan-50 text-cyan-700" />
+          <Metric label="3-month plans" value={serverStatistics?.planCounts?.THREE_MONTHS ?? students.filter((item) => resolvePlan(item)?.days === 90).length} note="₹999 · 90 days" icon={BriefcaseBusiness} tone="bg-violet-50 text-violet-700" />
+          <Metric label="6-month plans" value={serverStatistics?.planCounts?.SIX_MONTHS ?? students.filter((item) => resolvePlan(item)?.days === 180).length} note="₹1,699 · 180 days" icon={GraduationCap} tone="bg-indigo-50 text-indigo-700" />
         </section>
 
         <section className="overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,0.035)]">
@@ -309,8 +373,8 @@ export default function StudentAdminStudentsPage() {
 
           <div className="hidden overflow-x-auto lg:block">
             <table className="w-full min-w-[1160px] border-collapse text-left">
-              <thead><tr className="bg-slate-50 text-[9px] font-black uppercase tracking-[0.13em] text-slate-500"><th className="px-5 py-4">Student</th><th className="px-4 py-4">Identifiers</th><th className="px-4 py-4">Internship track</th><th className="px-4 py-4">Operations</th><th className="px-4 py-4">Application</th><th className="px-4 py-4">Assessment</th><th className="px-4 py-4">Payment</th><th className="px-4 py-4">Joined</th><th className="px-5 py-4 text-right">Profile</th></tr></thead>
-              {!loading && students.length > 0 && <tbody className="divide-y divide-slate-100">{students.map((student) => <tr key={student.id || student.studentId} className="transition hover:bg-blue-50/30"><td className="px-5 py-4"><div className="flex min-w-0 items-center gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-blue-50 to-cyan-50 text-[10px] font-black text-blue-700">{initials(student.fullName)}</span><div className="min-w-0"><p className="max-w-[190px] truncate text-xs font-bold text-slate-900">{safeText(student.fullName, "Student")}</p><p className="mt-1 flex max-w-[190px] items-center gap-1 truncate text-[10px] text-slate-500"><Mail size={10} />{safeText(student.email)}</p></div></div></td><td className="px-4 py-4"><p className="text-[10px] font-bold text-slate-700">{safeText(student.studentId)}</p><p className="mt-1 text-[9px] text-slate-400">{safeText(student.dashboardStudentId, "No dashboard ID")}</p></td><td className="px-4 py-4"><p className="max-w-[170px] truncate text-[11px] font-semibold text-slate-700">{safeText(student.internshipTrack, "Unassigned")}</p><p className="mt-1 text-[10px] text-slate-400">{safeText(student.internshipPlan, "No plan")}</p></td><td className="px-4 py-4"><Status value={student.studentOpsStatus} /></td><td className="px-4 py-4"><Status value={student.applicationStatus} /></td><td className="px-4 py-4"><Status value={student.assessmentStatus} /></td><td className="px-4 py-4"><Status value={student.paymentStatus} /></td><td className="px-4 py-4 text-[10px] text-slate-500">{formatDate(student.createdAt)}</td><td className="px-5 py-4 text-right"><button type="button" onClick={() => setSelected(student)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[10px] font-bold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"><Eye size={13} /> View</button></td></tr>)}</tbody>}
+              <thead><tr className="bg-slate-50 text-[9px] font-black uppercase tracking-[0.13em] text-slate-500"><th className="px-5 py-4">Student</th><th className="px-4 py-4">Identifiers</th><th className="px-4 py-4">Internship / Plan</th><th className="px-4 py-4">Login access</th><th className="px-4 py-4">Operations</th><th className="px-4 py-4">Application</th><th className="px-4 py-4">Assessment</th><th className="px-4 py-4">Payment</th><th className="px-4 py-4">Joined</th><th className="px-5 py-4 text-right">Profile</th></tr></thead>
+              {!loading && students.length > 0 && <tbody className="divide-y divide-slate-100">{students.map((student) => <tr key={student.id || student.studentId} className="transition hover:bg-blue-50/30"><td className="px-5 py-4"><div className="flex min-w-0 items-center gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-blue-50 to-cyan-50 text-[10px] font-black text-blue-700">{initials(student.fullName)}</span><div className="min-w-0"><p className="max-w-[190px] truncate text-xs font-bold text-slate-900">{safeText(student.fullName, "Student")}</p><p className="mt-1 flex max-w-[190px] items-center gap-1 truncate text-[10px] text-slate-500"><Mail size={10} />{safeText(student.email)}</p></div></div></td><td className="px-4 py-4"><p className="text-[10px] font-bold text-slate-700">{safeText(student.studentId)}</p><p className="mt-1 text-[9px] text-slate-400">{safeText(student.dashboardStudentId, "No dashboard ID")}</p></td><td className="px-4 py-4"><p className="max-w-[170px] truncate text-[11px] font-semibold text-slate-700">{safeText(student.internshipTrack, "Unassigned")}</p><p className="mt-1 text-[10px] font-bold text-blue-700">{resolvePlan(student)?.label ?? safeText(student.internshipPlan, "No plan")}</p><p className="mt-0.5 text-[9px] text-slate-400">{resolvePlan(student) ? `${formatMoney(resolvePlan(student)?.amount)} · ${resolvePlan(student)?.days} days` : "Plan not assigned"}</p></td><td className="px-4 py-4"><LoginStatus enabled={student.dashboardLoginEnabled} locked={student.dashboardAccountLocked} /></td><td className="px-4 py-4"><Status value={student.studentOpsStatus} /></td><td className="px-4 py-4"><Status value={student.applicationStatus} /></td><td className="px-4 py-4"><Status value={student.assessmentStatus} /></td><td className="px-4 py-4"><Status value={student.paymentStatus} /></td><td className="px-4 py-4 text-[10px] text-slate-500">{formatDate(student.createdAt)}</td><td className="px-5 py-4 text-right"><button type="button" onClick={() => setSelected(student)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[10px] font-bold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"><Eye size={13} /> View</button></td></tr>)}</tbody>}
             </table>
             {loading && <div className="space-y-3 p-5">{Array.from({ length: 7 }).map((_, index) => <div key={index} className="grid grid-cols-4 gap-4">{Array.from({ length: 4 }).map((__, cell) => <div key={cell} className="h-12 animate-pulse rounded-xl bg-slate-100" />)}</div>)}</div>}
             {!loading && students.length === 0 && <EmptyState filtered={Boolean(search || activeFilterCount)} onClear={clearFilters} />}
@@ -318,7 +382,7 @@ export default function StudentAdminStudentsPage() {
 
           <div className="space-y-3 p-3 lg:hidden">
             {loading && <div className="space-y-3 p-2">{Array.from({ length: 5 }).map((_, index) => <div key={index} className="h-32 animate-pulse rounded-2xl bg-slate-100" />)}</div>}
-            {!loading && students.map((student) => <article key={student.id || student.studentId} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-50 text-xs font-black text-blue-700">{initials(student.fullName)}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-950">{safeText(student.fullName, "Student")}</p><p className="mt-1 truncate text-[10px] text-slate-500">{safeText(student.email)}</p><p className="mt-1 text-[10px] font-bold text-blue-700">{safeText(student.studentId)}</p></div><button type="button" onClick={() => setSelected(student)} aria-label={`View ${student.fullName}`} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Eye size={15} /></button></div><div className="mt-4 grid grid-cols-2 gap-3"><div><p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Internship</p><p className="mt-1 truncate text-[11px] font-semibold text-slate-700">{safeText(student.internshipTrack, "Unassigned")}</p></div><div><p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Joined</p><p className="mt-1 text-[11px] font-semibold text-slate-700">{formatDate(student.createdAt)}</p></div></div><div className="mt-3 flex flex-wrap gap-1.5"><Status value={student.studentOpsStatus} /><Status value={student.paymentStatus} /></div></article>)}
+            {!loading && students.map((student) => <article key={student.id || student.studentId} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-50 text-xs font-black text-blue-700">{initials(student.fullName)}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-950">{safeText(student.fullName, "Student")}</p><p className="mt-1 truncate text-[10px] text-slate-500">{safeText(student.email)}</p><p className="mt-1 text-[10px] font-bold text-blue-700">{safeText(student.studentId)}</p></div><button type="button" onClick={() => setSelected(student)} aria-label={`View ${student.fullName}`} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Eye size={15} /></button></div><div className="mt-4 grid grid-cols-2 gap-3"><div><p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Internship</p><p className="mt-1 truncate text-[11px] font-semibold text-slate-700">{safeText(student.internshipTrack, "Unassigned")}</p></div><div><p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Joined</p><p className="mt-1 text-[11px] font-semibold text-slate-700">{formatDate(student.createdAt)}</p></div></div><div className="mt-3 flex flex-wrap gap-1.5"><Status value={student.studentOpsStatus} /><Status value={student.paymentStatus} /><LoginStatus enabled={student.dashboardLoginEnabled} locked={student.dashboardAccountLocked} /></div><div className="mt-3 rounded-xl bg-blue-50/70 p-3"><p className="text-[9px] font-bold uppercase tracking-wider text-blue-600">Internship plan</p><p className="mt-1 text-xs font-bold text-slate-900">{resolvePlan(student)?.label ?? safeText(student.internshipPlan, "No plan")}</p><p className="mt-1 text-[10px] text-slate-500">{resolvePlan(student) ? `${formatMoney(resolvePlan(student)?.amount)} · ${resolvePlan(student)?.days} days` : "Plan not assigned"}</p></div></article>)}
             {!loading && students.length === 0 && <EmptyState filtered={Boolean(search || activeFilterCount)} onClear={clearFilters} />}
           </div>
 
@@ -348,13 +412,21 @@ function StudentDetails({ student, onClose }: { student: Student; onClose: () =>
     { label: "Assessment", value: student.assessmentStatus, icon: GraduationCap },
     { label: "Assessment result", value: student.resultStatus, icon: CheckCircle2 },
     { label: "Internship", value: student.internshipStatus, icon: BriefcaseBusiness },
-    { label: "Internship plan", value: student.internshipPlan, icon: CalendarDays },
+    { label: "Internship plan", value: resolvePlan(student)?.label ?? student.internshipPlan, icon: CalendarDays },
+    { label: "Plan code", value: student.internshipPlanCode, icon: BriefcaseBusiness },
+    { label: "Plan duration", value: student.internshipDurationDays ? `${student.internshipDurationDays} days / ${student.internshipDurationMonths ?? "—"} months` : undefined, icon: CalendarDays },
+    { label: "Plan amount", value: resolvePlan(student) ? formatMoney(resolvePlan(student)?.amount) : student.paymentAmount ? formatMoney(student.paymentAmount, student.paymentCurrency || "INR") : undefined, icon: CreditCard },
     { label: "Internship track", value: student.internshipTrack, icon: GraduationCap },
     { label: "Payment", value: student.paymentStatus, icon: CreditCard },
+    { label: "Payment verification", value: student.paymentVerificationSource, icon: ShieldCheck },
+    { label: "Payment verified at", value: formatDate(student.paymentVerifiedAt || student.paymentCompletedAt), icon: Clock3 },
+    { label: "Checkout expiry", value: formatDate(student.razorpayCheckoutExpiresAt), icon: Clock3 },
     { label: "Operations approval", value: student.studentOpsApprovalStatus, icon: BadgeCheck },
     { label: "Operations status", value: student.studentOpsStatus, icon: Activity },
     { label: "Dashboard status", value: student.dashboardStatus, icon: ShieldCheck },
-    { label: "Dashboard login", value: student.dashboardLoginEnabled ? "Enabled" : "Disabled", icon: ShieldCheck },
+    { label: "Dashboard login", value: student.dashboardLoginEnabled && !student.dashboardAccountLocked ? "Active" : "Off", icon: ShieldCheck },
+    { label: "Dashboard login enabled at", value: formatDate(student.dashboardLoginEnabledAt), icon: Clock3 },
+    { label: "Dashboard credentials expiry", value: formatDate(student.dashboardCredentialsExpiresAt), icon: Clock3 },
     { label: "Credentials generated", value: student.dashboardCredentialsGenerated ? "Yes" : "No", icon: CheckCircle2 },
     { label: "Learning status", value: student.learningStatus, icon: GraduationCap },
     { label: "Project status", value: student.projectStatus, icon: FileText },

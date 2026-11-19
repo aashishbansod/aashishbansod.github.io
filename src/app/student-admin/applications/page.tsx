@@ -42,12 +42,19 @@ type StudentRecord = {
   internshipTrack?: string;
   paymentStatus?: string;
   paymentAmount?: number;
+  paymentCurrency?: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  paymentVerifiedAt?: string | null;
+  paymentVerificationSource?: string;
+  internshipPlanCode?: string;
+  internshipDurationDays?: number;
+  dateOfBirth?: string | null;
   studentOpsApprovalStatus?: string;
   studentOpsStatus?: string;
   dashboardStatus?: string;
   dashboardLoginEnabled?: boolean;
   dashboardCredentialsGenerated?: boolean;
-  dateOfBirth?: string | null;
   internshipId?: string;
   planCode?: string;
   durationMonths?: number;
@@ -173,9 +180,27 @@ function planDuration(student: StudentRecord): string {
 
 function canApproveStudent(student: StudentRecord): boolean {
   return isPaymentVerified(student) &&
+    isAssessmentPassed(student) &&
     Boolean(clean(student.internshipTrack || student.internshipPlan, "")) &&
     Boolean(student.email?.trim());
 }
+
+function domainCode(value?: string): string {
+  const source = (value || "").toLowerCase();
+  const rules: Array<[RegExp, string]> = [
+    [/java/, "JD"],
+    [/mern|mean|full.?stack|node|react/, "FS"],
+    [/frontend|front.?end|ui.?ux|web design/, "FD"],
+    [/backend|back.?end|spring|python|django/, "BD"],
+    [/android|mobile|flutter|ios/, "AD"],
+    [/data science|data analytics|machine learning|ai|ml/, "AI"],
+    [/cyber|security|ethical hacking/, "CS"],
+    [/cloud|devops/, "CD"],
+    [/testing|qa|software test/, "QA"],
+  ];
+  return rules.find(([pattern]) => pattern.test(source))?.[1] || "GN";
+}
+
 
 function buildQuery(tab: QueueTab, page: number, search: string): string {
   const params = new URLSearchParams({
@@ -344,7 +369,7 @@ export default function StudentAdminApplicationsPage() {
     }
 
     if (action === "approve" && !canApproveStudent(selectedStudent)) {
-      setError("Approval is blocked: verified payment, selected internship plan/domain and student email must be present. Refresh the record and verify it in Payments before approval.");
+      setError("Approval is blocked: Main Admin approval, passed assessment, captured payment, selected internship plan/domain and student email must be confirmed by the server. Refresh the record and verify it in Payments before approval.");
       return;
     }
 
@@ -416,6 +441,10 @@ export default function StudentAdminApplicationsPage() {
       "Assessment",
       "Payment Status",
       "Payment Amount",
+      "Plan Code",
+      "Plan Duration Days",
+      "Razorpay Order ID",
+      "Razorpay Payment ID",
       "Operations Approval",
       "Created At",
     ];
@@ -430,6 +459,10 @@ export default function StudentAdminApplicationsPage() {
       student.assessmentStatus || student.resultStatus,
       student.paymentStatus,
       student.paymentAmount,
+      student.internshipPlanCode || student.planCode,
+      student.internshipDurationDays,
+      student.razorpayOrderId,
+      student.razorpayPaymentId,
       student.studentOpsApprovalStatus,
       student.createdAt,
     ]);
@@ -503,6 +536,13 @@ export default function StudentAdminApplicationsPage() {
                 <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
                 Refresh
               </button>
+              <a
+                href="/student-admin/payments"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 text-sm font-semibold text-blue-700 transition hover:bg-blue-100"
+              >
+                <CreditCard size={16} />
+                Payments & refunds
+              </a>
               <button
                 type="button"
                 onClick={exportCurrentPage}
@@ -696,6 +736,8 @@ export default function StudentAdminApplicationsPage() {
                         <td className="px-5 py-4">
                           <p className="text-sm font-semibold text-slate-800">{clean(student.internshipTrack || student.internshipPlan)}</p>
                           <p className="mt-1 text-xs font-semibold text-blue-700">{planDuration(student)}</p>
+                         <p className="mt-1 text-[10px] font-bold tracking-wide text-slate-500">CNTS-{domainCode(student.internshipTrack || student.internshipPlan)}-YEAR-RANDOM</p>
+                          <p className="mt-1 text-[11px] font-bold tracking-wide text-slate-500">ID PREFIX: CNTS-{domainCode(student.internshipTrack || student.internshipPlan)}-YEAR-RANDOM</p>
                           <p className="mt-1 text-xs text-slate-500">{clean(student.internshipStatus, "Not set")}</p>
                         </td>
                         <td className="px-5 py-4">
@@ -753,6 +795,7 @@ export default function StudentAdminApplicationsPage() {
                         <p className="text-xs text-slate-400">Internship</p>
                         <p className="mt-1 font-semibold text-slate-700">{clean(student.internshipTrack || student.internshipPlan)}</p>
                          <p className="mt-1 text-xs font-semibold text-blue-700">{planDuration(student)}</p>
+                         <p className="mt-1 text-[10px] font-bold tracking-wide text-slate-500">CNTS-{domainCode(student.internshipTrack || student.internshipPlan)}-YEAR-RANDOM</p>
                       </div>
                       <div>
                         <p className="text-xs text-slate-400">Payment</p>
@@ -867,6 +910,15 @@ export default function StudentAdminApplicationsPage() {
                   <div className="flex items-center gap-2 text-xs font-semibold text-slate-500"><CreditCard size={14} /> Payment verification</div>
                   <div className="mt-2"><StatusPill value={selectedStudent.paymentStatus} /></div>
                   <p className="mt-2 text-sm font-bold text-slate-900">{formatCurrency(selectedStudent.paymentAmount)}</p>
+                  <p className="mt-1 break-all text-xs text-slate-500">Order ID: {clean(selectedStudent.razorpayOrderId)}</p>
+                  <p className="mt-1 break-all text-xs text-slate-500">Payment ID: {clean(selectedStudent.razorpayPaymentId)}</p>
+                  <p className="mt-1 text-xs text-slate-500">Verified: {formatDate(selectedStudent.paymentVerifiedAt)}</p>
+                  <p className="mt-1 text-xs text-slate-500">Source: {clean(selectedStudent.paymentVerificationSource)}</p>
+                  {isPaymentVerified(selectedStudent) && (
+                    <a href="/student-admin/payments" className="mt-3 inline-flex items-center gap-2 text-xs font-bold text-blue-700 hover:text-blue-900">
+                      <Banknote size={14} /> Open payment record for refund review
+                    </a>
+                  )}
                 </div>
 
                 <div className="rounded-xl border border-slate-200 p-4 sm:col-span-2">

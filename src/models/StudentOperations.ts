@@ -33,7 +33,7 @@ const approvalStatuses = [
   "rejected",
 ] as const;
 
-const internshipPlans = {
+export const STUDENT_OPERATIONS_INTERNSHIP_PLANS = {
   ONE_MONTH: {
     durationMonths: 1,
     durationDays: 30,
@@ -57,7 +57,7 @@ const internshipPlans = {
   },
 } as const;
 
-type InternshipPlanCode = keyof typeof internshipPlans;
+export type InternshipPlanCode = keyof typeof STUDENT_OPERATIONS_INTERNSHIP_PLANS;
 
 const internshipPlanAliases: Record<string, InternshipPlanCode> = {
   ONE_MONTH: "ONE_MONTH",
@@ -65,18 +65,30 @@ const internshipPlanAliases: Record<string, InternshipPlanCode> = {
   "1_MONTHS": "ONE_MONTH",
   "1 MONTH": "ONE_MONTH",
   "1 MONTHS": "ONE_MONTH",
+  "1M": "ONE_MONTH",
   THREE_MONTHS: "THREE_MONTHS",
   "3_MONTH": "THREE_MONTHS",
   "3 MONTHS": "THREE_MONTHS",
+  "3M": "THREE_MONTHS",
   SIX_MONTHS: "SIX_MONTHS",
   "6_MONTH": "SIX_MONTHS",
   "6 MONTHS": "SIX_MONTHS",
+  "6M": "SIX_MONTHS",
 };
 
-function normalizeInternshipPlanCode(value: unknown): InternshipPlanCode | "" {
+export function normalizeStudentOperationsInternshipPlanCode(
+  value: unknown,
+): InternshipPlanCode | "" {
   if (typeof value !== "string") return "";
-  const normalized = value.trim().toUpperCase().replace(/[-\\s]+/g, "_");
-  return internshipPlanAliases[normalized] ?? internshipPlanAliases[value.trim().toUpperCase()] ?? "";
+
+  const raw = value.trim().toUpperCase();
+  const normalized = raw.replace(/[\s-]+/g, "_");
+
+  return (
+    internshipPlanAliases[normalized] ??
+    internshipPlanAliases[raw] ??
+    ""
+  );
 }
 
 const operationsStatuses = [
@@ -248,6 +260,22 @@ const StudentOperationsSchema = new Schema(
       min: 0,
       default: 0,
     },
+    razorpayOrderId: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      default: "",
+      index: true,
+    },
+    razorpayPaymentId: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      default: "",
+      index: true,
+    },
+    paymentCompletedAt: nullableDate,
+    paymentVerifiedAt: nullableDate,
     paymentCurrency: {
       type: String,
       trim: true,
@@ -568,6 +596,14 @@ StudentOperationsSchema.index(
   { paymentAttemptGroupId: 1, updatedAt: -1 },
   { name: "student_operations_payment_attempt_updated" },
 );
+StudentOperationsSchema.index(
+  { razorpayOrderId: 1, paymentStatus: 1 },
+  { name: "student_operations_razorpay_order_status" },
+);
+StudentOperationsSchema.index(
+  { razorpayPaymentId: 1, paymentStatus: 1 },
+  { name: "student_operations_razorpay_payment_status" },
+);
 
 StudentOperationsSchema.index(
   { razorpayCheckoutExpiresAt: 1, paymentStatus: 1 },
@@ -613,16 +649,20 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
     this.phone = this.phone.trim();
   }
 
+  if (typeof this.paymentCurrency === "string") {
+    this.paymentCurrency = this.paymentCurrency.trim().toUpperCase();
+  }
+
   if (typeof this.internshipTrack === "string") {
     this.internshipTrack = this.internshipTrack.trim();
   }
 
-  const normalizedPlanCode = normalizeInternshipPlanCode(
+  const normalizedPlanCode = normalizeStudentOperationsInternshipPlanCode(
     this.internshipPlanCode || this.internshipPlan,
   );
 
   if (normalizedPlanCode) {
-    const plan = internshipPlans[normalizedPlanCode];
+    const plan = STUDENT_OPERATIONS_INTERNSHIP_PLANS[normalizedPlanCode];
     this.internshipPlanCode = normalizedPlanCode;
     this.internshipPlan = plan.legacyLabel;
     this.internshipDurationMonths = plan.durationMonths;
@@ -647,6 +687,15 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
       this.invalidate(
         "paymentAmount",
         "A paid internship record must match the selected plan amount.",
+      );
+    }
+    if (
+      this.paymentStatus === "paid" &&
+      this.paymentCurrency !== plan.currency
+    ) {
+      this.invalidate(
+        "paymentCurrency",
+        "A paid internship record must use the selected plan currency.",
       );
     }
   } else if (this.internshipPlanCode) {
@@ -676,15 +725,29 @@ StudentOperationsSchema.pre("validate", function normalizeStudentOperations() {
     );
   }
 
+  if (this.paymentStatus === "paid") {
+    this.razorpayCheckoutExpiresAt = null;
+    this.paymentExpiredAt = null;
+  }
+
   if (
-    this.razorpayCheckoutExpiresAt instanceof Date &&
-    this.paymentStatus === "paid"
+    this.paymentStatus === "expired" &&
+    this.razorpayCheckoutExpiresAt instanceof Date
   ) {
     this.razorpayCheckoutExpiresAt = null;
   }
 
-  if (typeof this.paymentCurrency === "string") {
-    this.paymentCurrency = this.paymentCurrency.trim().toUpperCase();
+  if (this.paymentStatus !== "paid") {
+    this.paymentCompletedAt = null;
+    this.paymentVerifiedAt = null;
+  }
+
+  if (typeof this.razorpayOrderId === "string") {
+    this.razorpayOrderId = this.razorpayOrderId.trim();
+  }
+
+  if (typeof this.razorpayPaymentId === "string") {
+    this.razorpayPaymentId = this.razorpayPaymentId.trim();
   }
 
   if (typeof this.certificateId === "string") {

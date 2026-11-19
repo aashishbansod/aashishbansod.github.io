@@ -29,6 +29,82 @@ type AuthenticatedStudentAdmin = {
   role: "Student Operations Admin";
 };
 
+type InternshipPlanCode = "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS";
+
+const INTERNSHIP_PLANS: Record<
+  InternshipPlanCode,
+  { name: string; durationDays: number; amountRupees: number; amountPaise: number }
+> = {
+  ONE_MONTH: {
+    name: "1 Month",
+    durationDays: 30,
+    amountRupees: 499,
+    amountPaise: 49900,
+  },
+  THREE_MONTHS: {
+    name: "3 Months",
+    durationDays: 90,
+    amountRupees: 999,
+    amountPaise: 99900,
+  },
+  SIX_MONTHS: {
+    name: "6 Months",
+    durationDays: 180,
+    amountRupees: 1699,
+    amountPaise: 169900,
+  },
+};
+
+function normalizePlanCode(value: unknown): InternshipPlanCode | null {
+  const normalized = cleanString(value, 80)
+    .toUpperCase()
+    .replace(/[\\s-]+/g, "_");
+
+  if (["ONE_MONTH", "1_MONTH", "1M", "ONE", "MONTHLY"].includes(normalized)) {
+    return "ONE_MONTH";
+  }
+
+  if (
+    ["THREE_MONTHS", "3_MONTHS", "3M", "THREE_MONTH", "QUARTERLY"].includes(
+      normalized,
+    )
+  ) {
+    return "THREE_MONTHS";
+  }
+
+  if (
+    ["SIX_MONTHS", "6_MONTHS", "6M", "SIX_MONTH", "HALF_YEARLY"].includes(
+      normalized,
+    )
+  ) {
+    return "SIX_MONTHS";
+  }
+
+  return null;
+}
+
+function resolvePlanCode(student: StudentOperationsDashboardStudent): InternshipPlanCode | null {
+  const record = student as unknown as JsonObject;
+  const candidates = [
+    record.internshipPlanCode,
+    record.planCode,
+    record.internshipPlan,
+    record.internshipPlanName,
+  ];
+
+  for (const candidate of candidates) {
+    const direct = normalizePlanCode(candidate);
+    if (direct) return direct;
+  }
+
+  const duration = safeCount(record.internshipDurationDays);
+  if (duration === 30) return "ONE_MONTH";
+  if (duration === 90) return "THREE_MONTHS";
+  if (duration === 180) return "SIX_MONTHS";
+
+  return null;
+}
+
 function cleanString(value: unknown, maxLength = 500): string {
   if (typeof value !== "string") return "";
   return value.replace(/\u0000/g, "").trim().slice(0, maxLength);
@@ -284,6 +360,9 @@ function safeDate(value: unknown): string | null {
 function normalizeStudent(
   student: StudentOperationsDashboardStudent,
 ): Record<string, unknown> {
+  const record = student as unknown as JsonObject;
+  const planCode = resolvePlanCode(student);
+  const plan = planCode ? INTERNSHIP_PLANS[planCode] : null;
   const fullName = cleanString(student.fullName, 200) || "Student";
   const domain = cleanString(student.internshipTrack, 150) ||
     cleanString(student.internshipPlan, 150) ||
@@ -308,7 +387,16 @@ function normalizeStudent(
     assessmentStatus: cleanString(student.assessmentStatus, 80),
     internshipStatus: cleanString(student.internshipStatus, 80),
     internshipPlan: cleanString(student.internshipPlan, 150),
+    internshipPlanCode: planCode,
+    internshipPlanName: plan?.name || cleanString(record.internshipPlanName, 150),
+    internshipDurationDays: plan?.durationDays || safeCount(record.internshipDurationDays),
+    internshipPlanAmount: plan?.amountRupees || safeNumber(record.internshipPlanAmount),
+    internshipPlanAmountPaise: plan?.amountPaise || safeCount(record.internshipPlanAmountPaise),
     internshipTrack: cleanString(student.internshipTrack, 150),
+    paymentAttemptGroupId: cleanString(record.paymentAttemptGroupId, 150),
+    razorpayCheckoutExpiresAt: safeDate(record.razorpayCheckoutExpiresAt),
+    paymentExpiredAt: safeDate(record.paymentExpiredAt),
+    paymentVerificationSource: cleanString(record.paymentVerificationSource, 40),
     status: studentOpsStatus || studentOpsApprovalStatus || "pending",
     studentOpsApprovalStatus,
     studentOpsStatus,
@@ -366,6 +454,21 @@ async function loadStats() {
       page: 1,
       limit: 1,
     }),
+    listStudentOperationsDashboardRecords({
+      paymentStatus: "failed",
+      page: 1,
+      limit: 1,
+    }),
+    listStudentOperationsDashboardRecords({
+      paymentStatus: "expired",
+      page: 1,
+      limit: 1,
+    }),
+    listStudentOperationsDashboardRecords({
+      paymentStatus: "refunded",
+      page: 1,
+      limit: 1,
+    }),
   ] as const;
 
   const results = await Promise.all(requests);
@@ -385,6 +488,9 @@ async function loadStats() {
     failedStudents: extractTotal(results[4]),
     paidEnrollments: extractTotal(results[5]),
     pendingPayments: extractTotal(results[6]),
+    failedPayments: extractTotal(results[7]),
+    expiredPayments: extractTotal(results[8]),
+    refundedPayments: extractTotal(results[9]),
   };
 }
 
@@ -482,6 +588,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       message: "Student Operations dashboard loaded successfully.",
       data: {
         stats,
+        internshipPlans: Object.entries(INTERNSHIP_PLANS).map(([code, plan]) => ({
+          code,
+          name: plan.name,
+          durationDays: plan.durationDays,
+          amountRupees: plan.amountRupees,
+          amountPaise: plan.amountPaise,
+          currency: "INR",
+        })),
         recentStudents: students,
         generatedAt: new Date().toISOString(),
         statistics: {

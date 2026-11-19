@@ -75,14 +75,14 @@ export type InternshipPlan =
 
 function normalizeInternshipPlan(value: unknown): InternshipPlan | null {
   const rawValue = cleanString(value);
-  const code = rawValue.toUpperCase().replace(/[\\s-]+/g, "_");
+  const code = rawValue.toUpperCase().replace(/[\s-]+/g, "_");
   if (code === "ONE_MONTH" || code === "1_MONTH") return "1 month";
   if (code === "THREE_MONTHS" || code === "3_MONTHS") return "3 months";
   if (code === "SIX_MONTHS" || code === "6_MONTHS") return "6 months";
 
   const normalized = rawValue
     .toLowerCase()
-    .replace(/[\\s_-]+/g, " ")
+    .replace(/[\s_-]+/g, " ")
     .trim();
 
   const aliases: Record<string, InternshipPlan> = {
@@ -601,6 +601,12 @@ async function syncStudentOperationsRecord(
     paymentStatus: cleanString(student.paymentStatus) || "unpaid",
     paymentAmount: numberValue(student.paymentAmount),
     paymentCurrency: cleanString(student.paymentCurrency).toUpperCase() || "INR",
+    paymentAttemptGroupId: cleanString(student.paymentAttemptGroupId),
+    razorpayCheckoutExpiresAt: dateOrNull(student.razorpayCheckoutExpiresAt),
+    paymentExpiredAt: dateOrNull(student.paymentExpiredAt),
+    paymentVerificationSource: cleanString(student.paymentVerificationSource),
+    paymentCompletedAt: dateOrNull(student.paymentCompletedAt),
+    paymentVerifiedAt: dateOrNull(student.paymentVerifiedAt),
     studentOpsApprovalStatus:
       cleanString(student.studentOpsApprovalStatus) || "pending",
     operationsApprovalStatus:
@@ -3204,6 +3210,8 @@ export async function markPaymentPending(
         razorpayOrderId: updatedStudent.razorpayOrderId,
         planCode: getInternshipPlanCode(selectedPlan),
         internshipPlan: officialPlan.name,
+        internshipDurationMonths: officialPlan.durationMonths,
+        internshipDurationDays: officialPlan.durationDays,
         paymentAmount: updatedStudent.paymentAmount,
         paymentCurrency: updatedStudent.paymentCurrency,
         paymentStatus: updatedStudent.paymentStatus,
@@ -3493,6 +3501,12 @@ export async function recordVerifiedPayment(
         planCode:
           getInternshipPlanCode(selectedPlan),
 
+        internshipDurationMonths:
+          officialPlan.durationMonths,
+
+        internshipDurationDays:
+          officialPlan.durationDays,
+
         internshipStatus:
           verifiedStudent.internshipStatus,
 
@@ -3583,6 +3597,19 @@ export async function approveStudentOperations(
 
     if (
       !isStatus(
+        student.applicationStatus,
+        "approved",
+      ) || !isStatus(student.assessmentStatus, "passed")
+    ) {
+      return {
+        success: false,
+        message: "Main Admin application approval and a passed assessment are required.",
+        code: "STUDENT_NOT_ELIGIBLE",
+      };
+    }
+
+    if (
+      !isStatus(
         student.internshipStatus,
         "approved",
       )
@@ -3593,6 +3620,69 @@ export async function approveStudentOperations(
           "Internship is not ready for Student Operations approval.",
         code:
           "INTERNSHIP_NOT_APPROVED",
+      };
+    }
+
+    const selectedPlan = normalizeInternshipPlan(
+      student.internshipPlanCode || student.internshipPlan,
+    );
+
+    if (!selectedPlan) {
+      return {
+        success: false,
+        message: "A valid internship plan is required before Student Operations approval.",
+        code: "INTERNSHIP_PLAN_REQUIRED",
+      };
+    }
+
+    const officialPlan = INTERNSHIP_PLANS[selectedPlan];
+    const verifiedAmount = numberValue(student.paymentAmount, -1);
+    const verifiedCurrency = cleanString(student.paymentCurrency).toUpperCase();
+
+    if (
+      verifiedAmount !== officialPlan.amount ||
+      verifiedCurrency !== officialPlan.currency ||
+      !cleanString(student.razorpayOrderId) ||
+      !cleanString(student.razorpayPaymentId)
+    ) {
+      return {
+        success: false,
+        message: "Verified Razorpay payment details do not match the selected internship plan.",
+        code: "PAYMENT_PLAN_MISMATCH",
+      };
+    }
+
+    const verifiedDurationDays = getVerifiedInternshipDurationDays(student);
+
+    if (verifiedDurationDays !== officialPlan.durationDays) {
+      return {
+        success: false,
+        message: "The saved internship duration does not match the selected plan.",
+        code: "INTERNSHIP_DURATION_MISMATCH",
+      };
+    }
+
+    if (
+      input.approved === true &&
+      isStatus(student.studentOpsApprovalStatus, "approved") &&
+      isStatus(student.dashboardStatus, "active") &&
+      student.dashboardLoginEnabled === true &&
+      student.dashboardCredentialsEmailSent === true
+    ) {
+      return {
+        success: true,
+        message: "Student Operations approval and dashboard activation are already complete.",
+        code: "STUDENT_OPS_ALREADY_APPROVED",
+        data: {
+          studentId: student.studentId,
+          dashboardStudentId: student.dashboardStudentId,
+          studentOpsApprovalStatus: student.studentOpsApprovalStatus,
+          studentOpsStatus: student.studentOpsStatus,
+          dashboardStatus: student.dashboardStatus,
+          dashboardLoginEnabled: student.dashboardLoginEnabled,
+          credentialsGenerated: student.dashboardCredentialsGenerated === true,
+          credentialsSent: true,
+        },
       };
     }
 
@@ -3736,8 +3826,10 @@ export async function approveStudentOperations(
         internshipStartedAt,
       );
 
-    student.internshipDurationDays =
-      internshipDurationDays;
+    student.internshipPlanCode = getInternshipPlanCode(selectedPlan);
+    student.internshipPlan = selectedPlan;
+    student.internshipDurationMonths = officialPlan.durationMonths;
+    student.internshipDurationDays = internshipDurationDays;
 
     student.internshipStartedAt =
       internshipStartedAt;
@@ -3791,8 +3883,18 @@ export async function approveStudentOperations(
         "[StudentService] Student Operations mirror sync failed after approval:",
         syncError,
       );
+      return {
+        success: false,
+        message: "Student Operations approval was saved, but the Operations database sync failed. Dashboard credentials remain locked. Retry after synchronization is restored.",
+        code: "STUDENT_OPERATIONS_SYNC_FAILED",
+        data: {
+          studentId: student.studentId,
+          studentOpsApprovalStatus: student.studentOpsApprovalStatus,
+          dashboardStatus: student.dashboardStatus,
+          dashboardLoginEnabled: false,
+        },
+      };
     }
-
 
     try {
       await sendDashboardCredentialsEmail({
@@ -5741,6 +5843,7 @@ export interface StudentOperationsDashboardQuery {
   studentOpsApprovalStatus?: string;
   studentOpsStatus?: string;
   dashboardStatus?: string;
+  internshipPlanCode?: string;
   search?: string;
   page?: number;
   limit?: number;
@@ -5759,10 +5862,19 @@ export interface StudentOperationsDashboardStudent {
   assessmentStatus: string;
   internshipStatus: string;
   internshipPlan: string;
+  internshipPlanCode: "ONE_MONTH" | "THREE_MONTHS" | "SIX_MONTHS" | "";
+  internshipDurationMonths: number;
+  internshipDurationDays: number;
   internshipTrack: string;
   paymentStatus: string;
   paymentAmount: number;
   paymentCurrency: string;
+  paymentAttemptGroupId: string;
+  razorpayCheckoutExpiresAt?: Date;
+  paymentExpiredAt?: Date;
+  paymentVerificationSource: string;
+  paymentCompletedAt?: Date;
+  paymentVerifiedAt?: Date;
   studentOpsApprovalStatus: string;
   studentOpsStatus: string;
   dashboardStatus: string;
@@ -5797,10 +5909,21 @@ function sanitizeOperationsDashboardStudent(
     assessmentStatus: cleanString(value.assessmentStatus) || "not-started",
     internshipStatus: cleanString(value.internshipStatus) || "not-started",
     internshipPlan: cleanString(value.internshipPlan),
+    internshipPlanCode: getInternshipPlanByCode(value.internshipPlanCode || value.internshipPlan)
+      ? getInternshipPlanCode(getInternshipPlanByCode(value.internshipPlanCode || value.internshipPlan) as InternshipPlan)
+      : "",
+    internshipDurationMonths: numberValue(value.internshipDurationMonths),
+    internshipDurationDays: numberValue(value.internshipDurationDays),
     internshipTrack: cleanString(value.internshipTrack),
     paymentStatus: cleanString(value.paymentStatus) || "unpaid",
     paymentAmount: numberValue(value.paymentAmount),
     paymentCurrency: cleanString(value.paymentCurrency).toUpperCase() || "INR",
+    paymentAttemptGroupId: cleanString(value.paymentAttemptGroupId),
+    razorpayCheckoutExpiresAt: dateOrNull(value.razorpayCheckoutExpiresAt) || undefined,
+    paymentExpiredAt: dateOrNull(value.paymentExpiredAt) || undefined,
+    paymentVerificationSource: cleanString(value.paymentVerificationSource),
+    paymentCompletedAt: dateOrNull(value.paymentCompletedAt) || undefined,
+    paymentVerifiedAt: dateOrNull(value.paymentVerifiedAt) || undefined,
     studentOpsApprovalStatus:
       cleanString(value.studentOpsApprovalStatus) ||
       cleanString(value.operationsApprovalStatus) ||
@@ -5880,6 +6003,11 @@ function buildOperationsDashboardFilter(
         filter[field] = value;
       }
     }
+  }
+
+  const planCode = cleanString(input.internshipPlanCode).toUpperCase();
+  if (["ONE_MONTH", "THREE_MONTHS", "SIX_MONTHS"].includes(planCode)) {
+    filter.internshipPlanCode = planCode;
   }
 
   const search = cleanString(input.search).slice(0, 120);
